@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teste de Emissão de Boleto - Banco Inter</title>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #f4f7f6; 
+            color: #333; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            padding: 20px;
+        }
+        .container { 
+            background-color: #fff; 
+            padding: 30px; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+            width: 100%; 
+            max-width: 550px; 
+        }
+        h1 { 
+            color: #ff7a00; 
+            font-size: 24px; 
+            margin-top: 0; 
+            text-align: center; 
+            border-bottom: 2px solid #ff7a00;
+            padding-bottom: 15px;
+            margin-bottom: 20px;
+        }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 14px; color: #555; }
+        input { 
+            width: 100%; 
+            padding: 10px; 
+            border: 1px solid #ccc; 
+            border-radius: 4px; 
+            box-sizing: border-box; 
+            font-size: 14px; 
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            border-color: #ff7a00;
+            outline: none;
+        }
+        button { 
+            background-color: #ff7a00; 
+            color: white; 
+            border: none; 
+            padding: 14px; 
+            width: 100%; 
+            border-radius: 6px; 
+            font-size: 16px; 
+            cursor: pointer; 
+            font-weight: bold; 
+            transition: background-color 0.3s; 
+            margin-top: 10px;
+        }
+        button:hover { background-color: #e06900; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .result { 
+            margin-top: 25px; 
+            padding: 20px; 
+            border-radius: 6px; 
+            font-size: 14px; 
+            word-break: break-all; 
+            white-space: pre-wrap; 
+            display: none; 
+        }
+        .success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .row { display: flex; gap: 15px; }
+        .col { flex: 1; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Gerar Boleto Inter (Sandbox)</h1>
+    <form id="boletoForm">
+        <div class="form-group">
+            <label for="name">Nome do Pagador</label>
+            <input type="text" id="name" value="João da Silva Teste" required>
+        </div>
+        <div class="row">
+            <div class="col">
+                <div class="form-group">
+                    <label for="cpfCnpj">CPF/CNPJ (Apenas números)</label>
+                    <input type="text" id="cpfCnpj" value="12345678909" required>
+                </div>
+            </div>
+            <div class="col">
+                <div class="form-group">
+                    <label for="value">Valor (R$)</label>
+                    <input type="number" step="0.01" id="value" value="150.00" required>
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label for="email">E-mail do Pagador</label>
+            <input type="email" id="email" value="joao@teste.com" required>
+        </div>
+
+        <div class="row">
+            <div class="col">
+                <div class="form-group">
+                    <label for="zipCode">CEP (Apenas números)</label>
+                    <input type="text" id="zipCode" value="01001000" required>
+                </div>
+            </div>
+            <div class="col">
+                <div class="form-group">
+                    <label for="number">Número</label>
+                    <input type="text" id="number" value="100" required>
+                </div>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="street">Rua/Logradouro</label>
+            <input type="text" id="street" value="Praça da Sé" required>
+        </div>
+
+        <div class="row">
+            <div class="col">
+                <div class="form-group">
+                    <label for="neighborhood">Bairro</label>
+                    <input type="text" id="neighborhood" value="Sé" required>
+                </div>
+            </div>
+            <div class="col">
+                <div class="form-group">
+                    <label for="city">Cidade</label>
+                    <input type="text" id="city" value="São Paulo" required>
+                </div>
+            </div>
+            <div class="col">
+                <div class="form-group">
+                    <label for="state">UF (2 Letras)</label>
+                    <input type="text" id="state" value="SP" maxlength="2" required>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit" id="submitBtn">Emitir Boleto Teste</button>
+    </form>
+
+    <div id="resultBox" class="result"></div>
+</div>
+
+<script>
+document.getElementById('boletoForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('submitBtn');
+    const resultBox = document.getElementById('resultBox');
+    
+    btn.disabled = true;
+    btn.textContent = "Gerando...";
+    resultBox.style.display = 'none';
+    resultBox.className = 'result';
+
+    const payload = {
+        name: document.getElementById('name').value,
+        cpfCnpj: document.getElementById('cpfCnpj').value,
+        value: document.getElementById('value').value,
+        email: document.getElementById('email').value,
+        zipCode: document.getElementById('zipCode').value,
+        number: document.getElementById('number').value,
+        street: document.getElementById('street').value,
+        neighborhood: document.getElementById('neighborhood').value,
+        city: document.getElementById('city').value,
+        state: document.getElementById('state').value
+    };
+
+    try {
+        const response = await fetch('http://localhost:3000/api/boleto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        
+        const data = await response.json();
+        
+        resultBox.style.display = 'block';
+        if (response.ok && data.success) {
+            resultBox.classList.add('success');
+            
+            let pdfButtonHTML = '';
+            if (data.data.pdfBase64) {
+                pdfButtonHTML = `<br><button type="button" onclick="downloadPDF('${data.data.pdfBase64}')" style="background-color: #28a745; width: auto; padding: 10px 20px; font-size: 14px; margin-bottom: 15px;">⬇️ Baixar Boleto em PDF</button><br>`;
+            }
+
+            resultBox.innerHTML = `<strong>✅ Boleto Gerado com Sucesso!</strong><br><br>` + 
+                                  `<strong>Nosso Número:</strong> ${data.data.nossoNumero || 'N/A'}<br>` +
+                                  `<strong>Linha Digitável:</strong> ${data.data.linhaDigitavel || 'N/A'}<br>` +
+                                  `<strong>Código de Barras:</strong> ${data.data.codigoBarras || 'N/A'}<br>` +
+                                  pdfButtonHTML +
+                                  `<br><small>Resposta Completa:</small><br>` +
+                                  `<pre style="font-size: 12px; background: rgba(255,255,255,0.5); padding: 10px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(data.data, null, 2)}</pre>`;
+        } else {
+            resultBox.classList.add('error');
+            resultBox.innerHTML = `<strong>❌ Erro ao Gerar Boleto</strong><br><br>` + 
+                                  `<em>${data.message || 'Falha na requisição. Verifique o console do servidor.'}</em><br><br>` +
+                                  `<pre style="font-size: 12px; background: rgba(255,255,255,0.5); padding: 10px; border-radius: 4px; overflow-x: auto;">${JSON.stringify(data.error || data, null, 2)}</pre>`;
+        }
+    } catch (error) {
+        resultBox.style.display = 'block';
+        resultBox.classList.add('error');
+        resultBox.innerHTML = `<strong>❌ Erro de Conexão</strong><br><br>${error.message}`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Emitir Boleto Teste";
+    }
+});
+
+function downloadPDF(base64Data) {
+    const linkSource = `data:application/pdf;base64,${base64Data}`;
+    const downloadLink = document.createElement("a");
+    downloadLink.href = linkSource;
+    downloadLink.download = "boleto_sandbox_inter.pdf";
+    downloadLink.click();
+}
+</script>
+
+</body>
+</html>
