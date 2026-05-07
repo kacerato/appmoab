@@ -234,3 +234,56 @@ async def cancel_invoice(
     invoice.status = "cancelled"
     await db.flush()
     return {"message": "Fatura cancelada", "invoice_id": str(invoice.id)}
+
+
+@router.post("/{invoice_id}/emit-boleto", response_model=InvoiceResponse)
+async def force_emit_boleto(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Emite ou reemite o boleto no Banco Inter para uma fatura existente."""
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+
+    if not invoice.customer:
+        raise HTTPException(status_code=400, detail="Cliente não associado à fatura")
+
+    try:
+        inter_result = await inter_service.emitir_cobranca(
+            valor=invoice.amount,
+            cpf_cnpj=invoice.customer.cpf_cnpj,
+            nome=invoice.customer.name,
+            email=invoice.customer.email or "",
+            endereco=invoice.customer.address,
+            numero=invoice.customer.number or "S/N",
+            bairro=invoice.customer.neighborhood,
+            cidade=invoice.customer.city,
+            uf=invoice.customer.state,
+            cep=invoice.customer.zip_code,
+            data_vencimento=invoice.due_date,
+            seu_numero=str(invoice.id)[:15],
+            mensagem=f"Fatura {invoice.reference_month}"
+        )
+        invoice.inter_codigo_solicitacao = inter_result.get("codigoSolicitacao")
+        invoice.inter_nosso_numero = inter_result.get("nossoNumero")
+        invoice.inter_linha_digitavel = inter_result.get("linhaDigitavel")
+        invoice.inter_codigo_barras = inter_result.get("codigoBarras")
+        invoice.inter_pix_copia_cola = inter_result.get("pixCopiaECola")
+        await db.flush()
+        await db.refresh(invoice)
+        
+        resp = InvoiceResponse.model_validate(invoice)
+        resp.has_pdf = invoice.pdf_data is not None
+        resp.customer_name = invoice.customer.name
+        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+        return resp
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Erro ao emitir boleto forçado: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha ao emitir boleto: {str(e)}")

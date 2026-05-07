@@ -57,13 +57,30 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     } catch (e) { alert(e instanceof Error ? e.message : 'Erro'); }
   };
 
+  const emitBoleto = async () => {
+    setLoading(true);
+    try {
+      await api.post(`/invoices/${id}/emit-boleto`);
+      const updated = await api.get<Invoice>(`/invoices/${id}`);
+      setInv(updated);
+      alert('Boleto emitido com sucesso no Banco Inter!');
+    } catch (e: any) {
+      alert(e.message || 'Erro ao emitir boleto no Banco Inter');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading || !inv) return <div className="loading-page"><div className="spinner" style={{ width: 32, height: 32 }} /></div>;
 
   return (
     <>
       <Header title={`Fatura ${inv.reference_month}`} subtitle={inv.customer_name} actions={
         <div style={{ display: 'flex', gap: 8 }}>
-          {inv.has_pdf && <button className="btn btn-primary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>}
+          {!inv.inter_codigo_solicitacao && (
+            <button className="btn btn-primary btn-sm" onClick={emitBoleto}>Emitir Boleto Inter</button>
+          )}
+          {inv.has_pdf && <button className="btn btn-secondary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>}
           {['pending', 'sent'].includes(inv.status) && <button className="btn btn-danger btn-sm" onClick={cancelInvoice}><Ban size={14} /> Cancelar</button>}
         </div>
       } />
