@@ -32,15 +32,22 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
   const downloadPdf = async () => {
     const token = localStorage.getItem('token');
-    const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/invoices/${id}/pdf`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) { alert('PDF não disponível'); return; }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `boleto_${id.slice(0, 8)}.pdf`; a.click();
-    URL.revokeObjectURL(url);
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/invoices/${id}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) { 
+        alert('O Banco Inter ainda está processando o PDF deste boleto. Por favor, aguarde de 5 a 10 segundos e tente novamente.'); 
+        return; 
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `boleto_${id.slice(0, 8)}.pdf`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Erro de conexão ao tentar baixar o PDF.');
+    }
   };
 
   const copyToClipboard = (text: string) => {
@@ -80,7 +87,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           {!inv.inter_codigo_solicitacao && (
             <button className="btn btn-primary btn-sm" onClick={emitBoleto}>Emitir Boleto Inter</button>
           )}
-          {inv.has_pdf && <button className="btn btn-secondary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>}
+          {(inv.has_pdf || inv.inter_codigo_solicitacao) && (
+            <button className="btn btn-secondary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>
+          )}
           {['pending', 'sent'].includes(inv.status) && <button className="btn btn-danger btn-sm" onClick={cancelInvoice}><Ban size={14} /> Cancelar</button>}
         </div>
       } />
