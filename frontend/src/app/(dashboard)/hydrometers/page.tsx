@@ -147,7 +147,7 @@ export default function HydrometersPage() {
             </div>
             <form onSubmit={handleAdd}>
               <div className="form-group" style={{ marginBottom: 16 }}>
-                <label className="form-label">Cliente (O Código do cliente será o código do hidrômetro)</label>
+                <label className="form-label">Cliente (Um código de 6 dígitos será gerado automaticamente)</label>
                 <select
                   className="form-select"
                   value={form.customer_id}

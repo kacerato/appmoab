@@ -3,6 +3,8 @@ Router de Clientes — CRUD completo com filtros e paginação.
 """
 
 import uuid
+import random
+import string
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, func, or_, case
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,9 +118,15 @@ async def create_customer(
 
     if customer.has_hydrometer:
         from app.models.hydrometer import Hydrometer
+        
+        # Gera código aleatório de 6 caracteres para identificação mais fácil (ex: 7B3A9C)
+        def generate_short_code():
+            chars = string.ascii_uppercase + string.digits
+            return ''.join(random.choice(chars) for _ in range(6))
+            
         hydrometer = Hydrometer(
             customer_id=customer.id,
-            code=customer.cpf_cnpj,
+            code=generate_short_code(),
             location_description="Instalação Padrão",
             last_reading_value=0.0,
         )

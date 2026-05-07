@@ -1,6 +1,8 @@
 """Router de Hidrômetros — CRUD vinculado a clientes."""
 
 import uuid
+import random
+import string
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -62,12 +64,15 @@ async def create_hydrometer(
     if not customer:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
-    # O código do hidrômetro passa a ser o Documento do Cliente (se não informado manualmente)
-    target_code = data.code or customer.cpf_cnpj
+    # O código do hidrômetro recebe o informado ou um aleatório de 6 dígitos
+    target_code = data.code
+    if not target_code:
+        chars = string.ascii_uppercase + string.digits
+        target_code = ''.join(random.choice(chars) for _ in range(6))
 
     existing = await db.execute(select(Hydrometer).where(Hydrometer.code == target_code))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Este código de hidrômetro/cliente já está em uso")
+        raise HTTPException(status_code=400, detail="Este código já está em uso")
 
     hydrometer = Hydrometer(
         customer_id=data.customer_id,
