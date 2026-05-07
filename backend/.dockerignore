@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.example
+__pycache__
+*.pyc
+.git
+.gitignore
+*.md
+uploads/
+certs/*.crt
+certs/*.key
+certs/*.pem
+.venv
+venv

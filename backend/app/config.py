@@ -13,8 +13,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Configurações do sistema AquaMoab."""
 
+    _env_path: Path = Path(__file__).resolve().parent.parent / ".env"
+
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).resolve().parent.parent / ".env",
+        env_file=_env_path if _env_path.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
