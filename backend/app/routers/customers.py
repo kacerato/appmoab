@@ -26,7 +26,7 @@ router = APIRouter(prefix="/customers", tags=["Clientes"])
 @router.get("", response_model=CustomerListResponse)
 async def list_customers(
     page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
+    per_page: int = Query(20, ge=1, le=2000),
     search: str | None = None,
     status: str | None = None,
     has_hydrometer: bool | None = None,
@@ -175,5 +175,5 @@ async def delete_customer(
     if not customer:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
-    customer.status = "disconnected"
+    await db.delete(customer)
     await db.flush()
