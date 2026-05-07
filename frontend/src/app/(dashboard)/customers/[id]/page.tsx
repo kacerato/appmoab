@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState, use, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
-import { ArrowLeft, Droplets, FileText, MapPin, Calendar, Edit2 } from 'lucide-react';
+import { ArrowLeft, Droplets, FileText, MapPin, Calendar, Edit2, Trash2, Plus, X, Loader2 } from 'lucide-react';
 
 interface Customer {
   id: string; name: string; cpf_cnpj: string; phone: string; email: string;
@@ -25,8 +25,16 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [savingInvoice, setSavingInvoice] = useState(false);
 
-  useEffect(() => {
+  const [invoiceForm, setInvoiceForm] = useState({
+    amount: '',
+    reference_month: new Date().toISOString().slice(0, 7), // YYYY-MM
+    due_date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
+  });
+
+  const load = () => {
     Promise.all([
       api.get<Customer>(`/customers/${id}`),
       api.get<{ items: Invoice[] }>(`/invoices?customer_id=${id}&per_page=10`),
@@ -34,14 +42,52 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       setCustomer(c);
       setInvoices(inv.items);
     }).catch(console.error).finally(() => setLoading(false));
-  }, [id]);
+  };
+
+  useEffect(() => { load(); }, [id]);
+
+  const handleDelete = async () => {
+    if (!confirm('Deseja realmente desligar/remover este cliente?')) return;
+    try {
+      await api.delete(`/customers/${id}`);
+      router.push('/customers');
+    } catch (err: any) {
+      alert(err.message || 'Erro ao excluir');
+    }
+  };
+
+  const handleCreateInvoice = async (e: FormEvent) => {
+    e.preventDefault();
+    setSavingInvoice(true);
+    try {
+      await api.post('/invoices/manual', {
+        customer_id: id,
+        amount: parseFloat(invoiceForm.amount),
+        reference_month: invoiceForm.reference_month,
+        due_date: invoiceForm.due_date,
+      });
+      setShowInvoiceModal(false);
+      load();
+    } catch (err: any) {
+      alert(err.message || 'Erro ao gerar fatura avulsa');
+    } finally {
+      setSavingInvoice(false);
+    }
+  };
 
   if (loading || !customer) return <div className="loading-page"><div className="spinner" style={{ width: 32, height: 32 }} /></div>;
 
   return (
     <>
       <Header title={customer.name} subtitle={`CPF/CNPJ: ${customer.cpf_cnpj}`} actions={
-        <button className="btn btn-secondary btn-sm" onClick={() => router.push(`/customers/${id}/edit`)}><Edit2 size={14} /> Editar</button>
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button className="btn btn-secondary btn-sm" onClick={() => router.push(`/customers/${id}/edit`)}>
+            <Edit2 size={14} /> Editar
+          </button>
+          <button className="btn btn-danger btn-sm" onClick={handleDelete}>
+            <Trash2 size={14} /> Excluir
+          </button>
+        </div>
       } />
 
       <button className="btn btn-ghost btn-sm" onClick={() => router.push('/customers')} style={{ marginBottom: 20 }}>
@@ -103,8 +149,13 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
       <div className="card">
         <div className="card-header">
-          <span className="card-title">Últimas Faturas</span>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{customer.total_invoices} total</span>
+          <div>
+            <span className="card-title">Últimas Faturas</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>{customer.total_invoices} total</span>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => setShowInvoiceModal(true)}>
+            <Plus size={14} /> Cobrança Avulsa
+          </button>
         </div>
         <div className="table-wrapper" style={{ border: 'none' }}>
           <table className="data-table">
@@ -115,7 +166,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
               ) : invoices.map(inv => (
                 <tr key={inv.id} onClick={() => router.push(`/invoices/${inv.id}`)} style={{ cursor: 'pointer' }}>
                   <td className="cell-primary">{inv.reference_month}</td>
-                  <td>{inv.consumption_m3.toFixed(2)} m³</td>
+                  <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : 'Fixo / Avulso'}</td>
                   <td style={{ fontWeight: 600 }}>{fmt(inv.amount)}</td>
                   <td>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</td>
                   <td><span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span></td>
@@ -125,6 +176,60 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           </table>
         </div>
       </div>
+
+      {showInvoiceModal && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 400 }}>
+            <div className="modal-header">
+              <h2 className="modal-title">Gerar Boleto / Fatura Avulsa</h2>
+              <button className="btn btn-ghost btn-icon" onClick={() => setShowInvoiceModal(false)}><X size={20} /></button>
+            </div>
+            <form onSubmit={handleCreateInvoice}>
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Valor (R$)</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={invoiceForm.amount}
+                  onChange={e => setInvoiceForm({ ...invoiceForm, amount: e.target.value })}
+                  required
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Mês de Referência</label>
+                <input
+                  className="form-input"
+                  type="month"
+                  value={invoiceForm.reference_month}
+                  onChange={e => setInvoiceForm({ ...invoiceForm, reference_month: e.target.value })}
+                  required
+                />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 24 }}>
+                <label className="form-label">Data de Vencimento</label>
+                <input
+                  className="form-input"
+                  type="date"
+                  value={invoiceForm.due_date}
+                  onChange={e => setInvoiceForm({ ...invoiceForm, due_date: e.target.value })}
+                  required
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-ghost" onClick={() => setShowInvoiceModal(false)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={savingInvoice || !invoiceForm.amount}>
+                  {savingInvoice ? <Loader2 size={16} className="spinner" /> : 'Gerar Boleto'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
   );
 }

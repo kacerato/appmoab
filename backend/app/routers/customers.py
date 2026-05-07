@@ -113,6 +113,18 @@ async def create_customer(
     customer = Customer(**data.model_dump())
     db.add(customer)
     await db.flush()
+
+    if customer.has_hydrometer:
+        from app.models.hydrometer import Hydrometer
+        hydrometer = Hydrometer(
+            customer_id=customer.id,
+            code=customer.cpf_cnpj,
+            location_description="Instalação Padrão",
+            last_reading_value=0.0,
+        )
+        db.add(hydrometer)
+        await db.flush()
+
     await db.refresh(customer)
     return customer
 

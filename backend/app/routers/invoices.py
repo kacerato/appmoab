@@ -158,6 +158,49 @@ async def download_pdf(
     )
 
 
+@router.post("/manual", response_model=InvoiceResponse, status_code=201)
+async def create_manual_invoice(
+    data: InvoiceCreateManual,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Gera uma fatura/boleto avulso manualmente."""
+    customer_result = await db.execute(select(Customer).where(Customer.id == data.customer_id))
+    customer = customer_result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    invoice = Invoice(
+        customer_id=data.customer_id,
+        amount=data.amount,
+        reference_month=data.reference_month,
+        due_date=data.due_date,
+        consumption_m3=data.consumption_m3,
+        tariff_rate=data.tariff_rate,
+        status="pending"
+    )
+    db.add(invoice)
+    await db.flush()
+
+    # Opcional: já emitir o boleto no Inter
+    try:
+        from app.services.billing_engine import BillingEngine
+        engine = BillingEngine(db)
+        await engine._emit_inter_boleto(invoice, customer)
+        await db.flush()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Não foi possível emitir boleto Inter automático: {e}")
+
+    await db.refresh(invoice)
+    
+    resp = InvoiceResponse.model_validate(invoice)
+    resp.has_pdf = invoice.pdf_data is not None
+    resp.customer_name = customer.name
+    resp.customer_cpf_cnpj = customer.cpf_cnpj
+    return resp
+
+
 @router.post("/{invoice_id}/cancel", status_code=200)
 async def cancel_invoice(
     invoice_id: str,
