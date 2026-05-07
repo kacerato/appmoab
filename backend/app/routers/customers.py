@@ -4,7 +4,7 @@ Router de Clientes — CRUD completo com filtros e paginação.
 
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func, or_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -81,10 +81,10 @@ async def get_customer(
         select(
             func.count(Invoice.id),
             func.coalesce(func.sum(
-                func.case((Invoice.status == "pending", Invoice.amount), else_=0)
+                case((Invoice.status == "pending", Invoice.amount), else_=0)
             ), 0),
             func.coalesce(func.sum(
-                func.case((Invoice.status == "overdue", Invoice.amount), else_=0)
+                case((Invoice.status == "overdue", Invoice.amount), else_=0)
             ), 0),
         ).where(Invoice.customer_id == customer.id)
     )

@@ -82,7 +82,17 @@ export default function CustomersPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7}><div className="loading-page" style={{ height: 200 }}><div className="spinner" /></div></td></tr>
+              [...Array(5)].map((_, i) => (
+                <tr key={i}>
+                  <td><div className="skeleton" style={{ height: 20, width: '80%' }} /></td>
+                  <td><div className="skeleton" style={{ height: 20, width: '100%' }} /></td>
+                  <td><div className="skeleton" style={{ height: 20, width: '90%' }} /></td>
+                  <td><div className="skeleton" style={{ height: 20, width: '70%' }} /></td>
+                  <td><div className="skeleton" style={{ height: 20, width: '60%' }} /></td>
+                  <td><div className="skeleton" style={{ height: 20, width: '50%' }} /></td>
+                  <td><div className="skeleton" style={{ height: 24, width: 60, borderRadius: 99 }} /></td>
+                </tr>
+              ))
             ) : !data?.items.length ? (
               <tr><td colSpan={7}><div className="empty-state"><p>Nenhum cliente encontrado</p></div></td></tr>
             ) : data.items.map(c => (
