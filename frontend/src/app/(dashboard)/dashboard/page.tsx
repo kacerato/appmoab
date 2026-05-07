@@ -5,8 +5,9 @@ import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import {
   Users, FileText, AlertTriangle, DollarSign,
-  ClipboardCheck, Droplets, TrendingUp, TrendingDown
+  ClipboardCheck, Droplets, TrendingUp, TrendingDown, Settings
 } from 'lucide-react';
+import Link from 'next/link';
 
 interface DashboardData {
   customers: { total: number; active: number; with_hydrometer: number; without_hydrometer: number };
@@ -19,7 +20,7 @@ interface DashboardData {
   current_month: string;
 }
 
-function formatCurrency(v: number) {
+function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 }
 
@@ -38,7 +39,11 @@ export default function DashboardPage() {
     return (
       <>
         <Header title="Dashboard" subtitle="Visão geral do sistema" />
-        <div className="loading-page"><div className="spinner" style={{ width: 32, height: 32 }} /></div>
+        <div className="kpi-grid">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="kpi-card blue"><div className="skeleton" style={{ height: 20, width: '60%', marginBottom: 8 }} /><div className="skeleton" style={{ height: 36, width: '40%' }} /></div>
+          ))}
+        </div>
       </>
     );
   }
@@ -58,28 +63,28 @@ export default function DashboardPage() {
           <div className="kpi-label">Total de Clientes</div>
           <div className="kpi-value">{data.customers.total}</div>
           <div className="kpi-sub">
-            {data.customers.with_hydrometer} com hidrômetro · {data.customers.without_hydrometer} sem hidrômetro
+            {data.customers.with_hydrometer} com hidrômetro · {data.customers.without_hydrometer} sem
           </div>
         </div>
 
         <div className="kpi-card green">
           <div className="kpi-icon green"><DollarSign size={20} /></div>
           <div className="kpi-label">Recebido este mês</div>
-          <div className="kpi-value" style={{ color: 'var(--success)' }}>{formatCurrency(data.financial.paid_this_month)}</div>
+          <div className="kpi-value" style={{ color: 'var(--success)' }}>{fmt(data.financial.paid_this_month)}</div>
           <div className="kpi-sub">{data.financial.paid_count} faturas pagas</div>
         </div>
 
         <div className="kpi-card orange">
           <div className="kpi-icon orange"><FileText size={20} /></div>
           <div className="kpi-label">A Receber</div>
-          <div className="kpi-value" style={{ color: 'var(--warning)' }}>{formatCurrency(data.financial.pending_amount)}</div>
+          <div className="kpi-value" style={{ color: 'var(--warning)' }}>{fmt(data.financial.pending_amount)}</div>
           <div className="kpi-sub">{data.financial.pending_count} faturas pendentes</div>
         </div>
 
         <div className="kpi-card red">
           <div className="kpi-icon red"><AlertTriangle size={20} /></div>
           <div className="kpi-label">Inadimplência</div>
-          <div className="kpi-value" style={{ color: 'var(--danger)' }}>{formatCurrency(data.financial.overdue_amount)}</div>
+          <div className="kpi-value" style={{ color: 'var(--danger)' }}>{fmt(data.financial.overdue_amount)}</div>
           <div className="kpi-sub">{data.financial.overdue_count} faturas vencidas</div>
         </div>
 
@@ -94,9 +99,9 @@ export default function DashboardPage() {
           <div className="kpi-icon blue"><Droplets size={20} /></div>
           <div className="kpi-label">Receita Líquida</div>
           <div className="kpi-value" style={{ color: netRevenue >= 0 ? 'var(--success)' : 'var(--danger)' }}>
-            {formatCurrency(netRevenue)}
+            {fmt(netRevenue)}
           </div>
-          <div className="kpi-sub">Após deduções de {formatCurrency(data.financial.deductions.total)}</div>
+          <div className="kpi-sub">Após deduções de {fmt(data.financial.deductions.total)}</div>
         </div>
       </div>
 
@@ -118,16 +123,26 @@ export default function DashboardPage() {
         <div className="card">
           <div className="card-header">
             <span className="card-title">Deduções Mensais</span>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Total: {formatCurrency(data.financial.deductions.total)}</span>
+            <Link href="/settings" className="btn btn-ghost btn-sm"><Settings size={13} /> Configurar</Link>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {data.financial.deductions.items.map((item, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{item.label}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)' }}>- {formatCurrency(item.amount)}</span>
+          {data.financial.deductions.items.length === 0 ? (
+            <div className="empty-state" style={{ padding: 32 }}>
+              <p>Nenhuma dedução cadastrada. <Link href="/settings">Configure nas configurações.</Link></p>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {data.financial.deductions.items.map((item, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{item.label}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--danger)' }}>- {fmt(item.amount)}</span>
+                </div>
+              ))}
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: 12, display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>Total</span>
+                <span style={{ fontSize: 14, fontWeight: 800, color: 'var(--danger)' }}>- {fmt(data.financial.deductions.total)}</span>
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -142,7 +157,7 @@ function FinRow({ label, value, color, icon, bold }: { label: string; value: num
         {label}
       </div>
       <span style={{ fontSize: bold ? 16 : 14, fontWeight: bold ? 800 : 600, color }}>
-        {formatCurrency(value)}
+        {fmt(value)}
       </span>
     </div>
   );

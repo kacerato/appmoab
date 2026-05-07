@@ -7,3 +7,4 @@ from app.schemas.reading import *  # noqa: F401, F403
 from app.schemas.invoice import *  # noqa: F401, F403
 from app.schemas.tariff import *  # noqa: F401, F403
 from app.schemas.auth import *  # noqa: F401, F403
+from app.schemas.deduction import *  # noqa: F401, F403

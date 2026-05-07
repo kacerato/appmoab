@@ -1,6 +1,4 @@
-"""
-Router do Dashboard — KPIs e métricas para o painel admin.
-"""
+"""Router do Dashboard — KPIs e métricas para o painel admin."""
 
 from datetime import datetime, timezone
 
@@ -12,6 +10,7 @@ from app.database import get_db
 from app.models.customer import Customer
 from app.models.reading import Reading
 from app.models.invoice import Invoice
+from app.models.deduction import Deduction
 from app.models.user import User
 from app.utils.security import get_current_user
 
@@ -68,6 +67,13 @@ async def get_dashboard(
     )
     month_readings = readings_month.scalar() or 0
 
+    # Deduções do banco de dados
+    deductions_result = await db.execute(
+        select(Deduction).where(Deduction.is_active == True).order_by(Deduction.sort_order)  # noqa: E712
+    )
+    deductions = deductions_result.scalars().all()
+    deductions_total = sum(d.amount for d in deductions)
+
     return {
         "customers": {
             "total": c[0] or 0,
@@ -83,13 +89,8 @@ async def get_dashboard(
             "overdue_count": int(inv[4] or 0),
             "paid_count": int(inv[5] or 0),
             "deductions": {
-                "total": 3100.0,
-                "items": [
-                    {"label": "Despesa operacional", "amount": 2000.0},
-                    {"label": "Manutenção", "amount": 350.0},
-                    {"label": "Energia", "amount": 600.0},
-                    {"label": "Outros", "amount": 150.0},
-                ],
+                "total": deductions_total,
+                "items": [{"label": d.label, "amount": d.amount} for d in deductions],
             },
         },
         "readings": {

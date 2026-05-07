@@ -28,11 +28,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadUser = useCallback(async () => {
     const token = localStorage.getItem('token');
     if (!token) { setLoading(false); return; }
+
+    // Tenta restaurar o user do localStorage primeiro (instantâneo)
+    const cached = localStorage.getItem('user');
+    if (cached) {
+      try { setUser(JSON.parse(cached)); } catch { /* ignore */ }
+    }
+
     try {
       const u = await api.get<User>('/auth/me');
       setUser(u);
+      localStorage.setItem('user', JSON.stringify(u));
     } catch {
       localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -45,11 +55,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       '/auth/login', { email, password }
     );
     localStorage.setItem('token', res.access_token);
-    setUser({ id: res.user_id, name: res.name, email, role: res.role, is_active: true });
+    const userData: User = { id: res.user_id, name: res.name, email, role: res.role, is_active: true };
+    localStorage.setItem('user', JSON.stringify(userData));
+    setUser(userData);
   };
 
   const logout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('user');
     setUser(null);
     window.location.href = '/login';
   };

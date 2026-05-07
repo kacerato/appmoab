@@ -47,6 +47,21 @@ async def main():
         # Tarifas padrão
         await seed_default_tariffs(db)
 
+        # Deduções padrão
+        from app.models.deduction import Deduction
+        deductions_result = await db.execute(select(Deduction))
+        if not deductions_result.scalars().first():
+            defaults = [
+                Deduction(label="Despesa operacional", amount=2000.0, sort_order=0),
+                Deduction(label="Manutenção", amount=350.0, sort_order=1),
+                Deduction(label="Energia", amount=600.0, sort_order=2),
+                Deduction(label="Outros", amount=150.0, sort_order=3),
+            ]
+            db.add_all(defaults)
+            logger.info("✅ Deduções padrão criadas")
+        else:
+            logger.info("ℹ️  Deduções já existem")
+
         await db.commit()
 
     logger.info("🎉 Seed completo!")

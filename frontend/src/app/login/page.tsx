@@ -3,7 +3,7 @@
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
-import { Droplets, Mail, Lock, Loader2 } from 'lucide-react';
+import { Droplets, Mail, Lock, Loader2, ArrowRight } from 'lucide-react';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -21,7 +21,7 @@ export default function LoginPage() {
       await login(email, password);
       router.push('/dashboard');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Erro ao fazer login');
+      setError(err instanceof Error ? err.message : 'Credenciais inválidas');
     } finally {
       setLoading(false);
     }
@@ -29,54 +29,81 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-card">
-        <div className="login-logo">
-          <div className="login-logo-icon">
-            <Droplets size={28} />
+      {/* Left side — visual with water effects */}
+      <div className="login-visual">
+        <div className="water-drop" />
+        <div className="water-drop" />
+        <div className="water-drop" />
+        <div className="water-drop" />
+        <div className="water-drop" />
+        <div className="water-ripple" />
+        <div className="water-ripple" />
+
+        <Droplets size={64} color="rgba(255,255,255,0.9)" style={{ zIndex: 1, marginBottom: 16 }} />
+        <h2>AquaMoab</h2>
+        <p>
+          Sistema inteligente de gestão e distribuição de água.
+          Controle de leituras, faturamento e cobranças em um só lugar.
+        </p>
+      </div>
+
+      {/* Right side — login form */}
+      <div className="login-form-side">
+        <div className="login-card">
+          <div className="login-logo">
+            <div className="login-logo-icon">
+              <Droplets size={28} />
+            </div>
+            <h1>Bem-vindo</h1>
+            <p>Faça login para continuar</p>
           </div>
-          <h1>AquaMoab</h1>
-          <p>Gestão de Distribuição de Água</p>
+
+          {error && <div className="login-error">{error}</div>}
+
+          <form className="login-form" onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label className="form-label">Email</label>
+              <div style={{ position: 'relative' }}>
+                <Mail size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <input
+                  className="form-input"
+                  type="email"
+                  placeholder="seu@email.com"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                  autoComplete="email"
+                  style={{ paddingLeft: 42 }}
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Senha</label>
+              <div style={{ position: 'relative' }}>
+                <Lock size={16} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                <input
+                  className="form-input"
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  autoComplete="current-password"
+                  style={{ paddingLeft: 42 }}
+                />
+              </div>
+            </div>
+
+            <button className="btn btn-primary" type="submit" disabled={loading}>
+              {loading ? (
+                <><Loader2 size={16} className="spinner" /> Entrando...</>
+              ) : (
+                <>Entrar <ArrowRight size={16} /></>
+              )}
+            </button>
+          </form>
         </div>
-
-        {error && <div className="login-error">{error}</div>}
-
-        <form className="login-form" onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="form-label">Email</label>
-            <div style={{ position: 'relative' }}>
-              <Mail size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                className="form-input"
-                type="email"
-                placeholder="seu@email.com"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-                style={{ paddingLeft: 38 }}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Senha</label>
-            <div style={{ position: 'relative' }}>
-              <Lock size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-              <input
-                className="form-input"
-                type="password"
-                placeholder="••••••••"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                style={{ paddingLeft: 38 }}
-              />
-            </div>
-          </div>
-
-          <button className="btn btn-primary" type="submit" disabled={loading}>
-            {loading ? <><Loader2 size={16} className="spinner" /> Entrando...</> : 'Entrar'}
-          </button>
-        </form>
       </div>
     </div>
   );
