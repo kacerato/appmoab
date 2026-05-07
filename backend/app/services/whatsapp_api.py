@@ -115,6 +115,87 @@ class WhatsAppService:
             logger.error(f"Erro WhatsApp: {e.response.text}")
             return {"message_id": None, "status": "failed", "error": e.response.text}
 
+    async def send_invoice_document(
+        self,
+        phone: str,
+        pdf_data: bytes,
+        filename: str,
+        caption: str = ""
+    ) -> dict | None:
+        """
+        Envia a fatura em PDF diretamente para o WhatsApp do cliente.
+        Fluxo: Faz upload do Media (PDF) para a API do WhatsApp, e em seguida
+        envia a mensagem do tipo 'document' contendo o media_id.
+        """
+        if not self.is_enabled:
+            logger.info(f"WhatsApp desabilitado — PDF da fatura não enviado para {phone}")
+            return None
+
+        digits = "".join(c for c in phone if c.isdigit())
+        if not digits.startswith("55"):
+            digits = f"55{digits}"
+
+        client = await self._get_client()
+
+        try:
+            # 1. Upload do Media (PDF)
+            # Para WhatsApp Cloud API o upload é feito como multipart/form-data
+            media_payload = {
+                "messaging_product": "whatsapp"
+            }
+            files = {
+                "file": (filename, pdf_data, "application/pdf")
+            }
+            
+            # Precisamos recriar o client para usar FormData corretamente sem header Content-Type hardcoded
+            upload_client = httpx.AsyncClient(
+                base_url=settings.whatsapp_base_url,
+                timeout=30.0,
+                headers={"Authorization": f"Bearer {settings.whatsapp_token}"}
+            )
+            
+            upload_resp = await upload_client.post(
+                f"/{settings.whatsapp_phone_id}/media",
+                data=media_payload,
+                files=files
+            )
+            upload_resp.raise_for_status()
+            media_id = upload_resp.json().get("id")
+            await upload_client.aclose()
+
+            if not media_id:
+                raise ValueError("Falha ao obter media_id do WhatsApp")
+
+            # 2. Enviar a Mensagem (Document) com o media_id
+            msg_payload = {
+                "messaging_product": "whatsapp",
+                "recipient_type": "individual",
+                "to": digits,
+                "type": "document",
+                "document": {
+                    "id": media_id,
+                    "caption": caption,
+                    "filename": filename
+                }
+            }
+
+            msg_resp = await client.post(
+                f"/{settings.whatsapp_phone_id}/messages",
+                json=msg_payload,
+            )
+            msg_resp.raise_for_status()
+            message_id = msg_resp.json().get("messages", [{}])[0].get("id")
+            
+            logger.info(f"Fatura PDF enviada via WhatsApp para {digits} (Msg ID: {message_id})")
+            return {"message_id": message_id, "status": "sent"}
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Erro WhatsApp Document: {e.response.text}")
+            return {"message_id": None, "status": "failed", "error": e.response.text}
+        except Exception as e:
+            logger.error(f"Erro geral WhatsApp Document: {e}")
+            return {"message_id": None, "status": "failed", "error": str(e)}
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()

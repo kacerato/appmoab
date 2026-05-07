@@ -3,10 +3,11 @@ Router de Faturas — Lista, detalhe, PDF e dashboard financeiro.
 """
 
 import uuid
+import asyncio
 from datetime import date, datetime, timezone
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,7 @@ from app.schemas.invoice import (
     InvoiceCreateManual, InvoiceSummary,
 )
 from app.services.inter_api import inter_service
+from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
 
 router = APIRouter(prefix="/invoices", tags=["Faturas"])
@@ -239,6 +241,7 @@ async def cancel_invoice(
 @router.post("/{invoice_id}/emit-boleto", response_model=InvoiceResponse)
 async def force_emit_boleto(
     invoice_id: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -276,6 +279,16 @@ async def force_emit_boleto(
         invoice.inter_pix_copia_cola = inter_result.get("pixCopiaECola")
         await db.flush()
         await db.refresh(invoice)
+
+        # Agenda a busca do PDF e envio por WhatsApp em background
+        if invoice.customer.phone and invoice.inter_codigo_solicitacao:
+            background_tasks.add_task(
+                process_pdf_and_whatsapp,
+                invoice.inter_codigo_solicitacao,
+                invoice.customer.phone,
+                f"boleto_{str(invoice.id)[:8]}.pdf",
+                f"Sua fatura do mês {invoice.reference_month} já está disponível."
+            )
         
         resp = InvoiceResponse.model_validate(invoice)
         resp.has_pdf = invoice.pdf_data is not None
@@ -287,3 +300,31 @@ async def force_emit_boleto(
         logger = logging.getLogger(__name__)
         logger.error(f"Erro ao emitir boleto forçado: {e}")
         raise HTTPException(status_code=500, detail=f"Falha ao emitir boleto: {str(e)}")
+
+
+async def process_pdf_and_whatsapp(codigo_solicitacao: str, phone: str, filename: str, caption: str):
+    """Espera o Banco Inter gerar o PDF e depois envia pelo WhatsApp."""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Faz tentativas (polling) para buscar o PDF do boleto (geralmente pode demorar alguns segundos)
+    pdf_data = None
+    for attempt in range(6):
+        await asyncio.sleep(5)  # Espera 5 segundos entre as tentativas
+        try:
+            pdf_data = await inter_service.buscar_pdf(codigo_solicitacao)
+            if pdf_data:
+                break
+        except Exception:
+            pass
+
+    if pdf_data:
+        logger.info(f"PDF obtido para solicitação {codigo_solicitacao}. Enviando via WhatsApp...")
+        await whatsapp_service.send_invoice_document(
+            phone=phone,
+            pdf_data=pdf_data,
+            filename=filename,
+            caption=caption
+        )
+    else:
+        logger.warning(f"Não foi possível obter o PDF do boleto {codigo_solicitacao} para envio via WhatsApp.")
