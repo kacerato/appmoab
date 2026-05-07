@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Env
+.env
+.env.local
+.env*.local
+
+# Build
+.next/
+out/
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certs (nunca commitar!)
+backend/certs/*.crt
+backend/certs/*.key
+backend/certs/*.pem
+backend/certs/*.p12
+
+# Uploads
+backend/uploads/
+
+# Expo
+mobile/.expo/
+mobile/ios/
+mobile/android/
+
+# Misc
+*.log
+coverage/
+.pytest_cache/
