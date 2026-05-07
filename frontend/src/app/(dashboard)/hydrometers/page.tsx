@@ -27,7 +27,7 @@ export default function HydrometersPage() {
   const [search, setSearch] = useState('');
 
   const [form, setForm] = useState({
-    customer_id: '', brand: '', model: '', location_description: '', initial_reading: 0
+    customer_id: '', code: '', brand: '', model: '', location_description: '', initial_reading: 0
   });
 
   const load = () => {
@@ -55,13 +55,14 @@ export default function HydrometersPage() {
     try {
       await api.post('/hydrometers', {
         customer_id: form.customer_id,
+        code: form.code.toUpperCase() || null,
         brand: form.brand || null,
         model: form.model || null,
         location_description: form.location_description || null,
         initial_reading: form.initial_reading,
       });
       setShowAdd(false);
-      setForm({ customer_id: '', brand: '', model: '', location_description: '', initial_reading: 0 });
+      setForm({ customer_id: '', code: '', brand: '', model: '', location_description: '', initial_reading: 0 });
       load();
     } catch (err: any) {
       alert(err.message || 'Erro ao criar hidrômetro');
@@ -147,7 +148,7 @@ export default function HydrometersPage() {
             </div>
             <form onSubmit={handleAdd}>
               <div className="form-group" style={{ marginBottom: 16 }}>
-                <label className="form-label">Cliente (Um código de 6 dígitos será gerado automaticamente)</label>
+                <label className="form-label">Cliente Responsável</label>
                 <select
                   className="form-select"
                   value={form.customer_id}
@@ -159,6 +160,17 @@ export default function HydrometersPage() {
                     <option key={c.id} value={c.id}>{c.name} (CPF/CNPJ: {c.cpf_cnpj})</option>
                   ))}
                 </select>
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Código do Hidrômetro (Letras)</label>
+                <input 
+                  className="form-input" 
+                  placeholder="Ex: ZXCTRA (Deixe em branco para gerar aleatório)" 
+                  value={form.code} 
+                  onChange={e => setForm({ ...form, code: e.target.value.replace(/[^a-zA-Z]/g, '').toUpperCase() })} 
+                  maxLength={10}
+                />
               </div>
 
               <div className="form-grid" style={{ marginBottom: 16 }}>

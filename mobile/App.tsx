@@ -17,8 +17,8 @@ function AppNavigator() {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#060e1a' }}>
-        <ActivityIndicator size="large" color="#3b82f6" />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
+        <ActivityIndicator size="large" color="#0077C8" />
       </View>
     );
   }
@@ -42,7 +42,7 @@ export default function App() {
   return (
     <AuthProvider>
       <NavigationContainer>
-        <StatusBar style="light" />
+        <StatusBar style="dark" />
         <AppNavigator />
       </NavigationContainer>
     </AuthProvider>

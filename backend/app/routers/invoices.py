@@ -184,9 +184,26 @@ async def create_manual_invoice(
 
     # Opcional: já emitir o boleto no Inter
     try:
-        from app.services.billing_engine import BillingEngine
-        engine = BillingEngine(db)
-        await engine._emit_inter_boleto(invoice, customer)
+        result = await inter_service.emitir_cobranca(
+            valor=invoice.amount,
+            cpf_cnpj=customer.cpf_cnpj,
+            nome=customer.name,
+            email=customer.email or "",
+            endereco=customer.address,
+            numero=customer.number or "S/N",
+            bairro=customer.neighborhood,
+            cidade=customer.city,
+            uf=customer.state,
+            cep=customer.zip_code,
+            data_vencimento=invoice.due_date,
+            seu_numero=str(invoice.id)[:15],
+            mensagem=f"Fatura avulsa {invoice.reference_month}"
+        )
+        invoice.inter_codigo_solicitacao = result.get("codigoSolicitacao")
+        invoice.inter_nosso_numero = result.get("nossoNumero")
+        invoice.inter_linha_digitavel = result.get("linhaDigitavel")
+        invoice.inter_codigo_barras = result.get("codigoBarras")
+        invoice.inter_pix_copia_cola = result.get("pixCopiaECola")
         await db.flush()
     except Exception as e:
         import logging

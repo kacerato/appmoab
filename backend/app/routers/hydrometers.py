@@ -64,11 +64,10 @@ async def create_hydrometer(
     if not customer:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
-    # O código do hidrômetro recebe o informado ou um aleatório de 6 dígitos
+    # O código do hidrômetro recebe o informado ou um aleatório de 6 letras
     target_code = data.code
     if not target_code:
-        chars = string.ascii_uppercase + string.digits
-        target_code = ''.join(random.choice(chars) for _ in range(6))
+        target_code = ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
 
     existing = await db.execute(select(Hydrometer).where(Hydrometer.code == target_code))
     if existing.scalar_one_or_none():

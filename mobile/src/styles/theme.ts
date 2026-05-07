@@ -1,21 +1,21 @@
 import { StyleSheet } from 'react-native';
 
 export const colors = {
-  navy950: '#060e1a',
-  navy900: '#0a1628',
-  navy800: '#111d35',
-  navy700: '#1a2744',
-  navy600: '#243356',
-  accent: '#3b82f6',
-  accentHover: '#2563eb',
-  cyan: '#06b6d4',
+  navy950: '#F8FAFC',    // Background Principal
+  navy900: '#FFFFFF',    // Headers/Cards
+  navy800: '#FFFFFF',    // Cards
+  navy700: '#F1F5F9',    // Secundário Hover
+  navy600: '#E2E8F0',    // Bordas Hover
+  accent: '#0077C8',     // Water Blue Vibrante
+  accentHover: '#0062a3',
+  cyan: '#00b4d8',
   success: '#10b981',
   warning: '#f59e0b',
   danger: '#ef4444',
-  textPrimary: '#f1f5f9',
-  textSecondary: '#94a3b8',
-  textMuted: '#64748b',
-  border: 'rgba(255,255,255,0.08)',
+  textPrimary: '#0F172A',
+  textSecondary: '#334155',
+  textMuted: '#64748B',
+  border: '#E2E8F0',
 };
 
 export const shared = StyleSheet.create({

@@ -119,10 +119,9 @@ async def create_customer(
     if customer.has_hydrometer:
         from app.models.hydrometer import Hydrometer
         
-        # Gera código aleatório de 6 caracteres para identificação mais fácil (ex: 7B3A9C)
+        # Gera código aleatório de 6 letras para identificação mais fácil (ex: ABXCJY)
         def generate_short_code():
-            chars = string.ascii_uppercase + string.digits
-            return ''.join(random.choice(chars) for _ in range(6))
+            return ''.join(random.choice(string.ascii_uppercase) for _ in range(6))
             
         hydrometer = Hydrometer(
             customer_id=customer.id,
