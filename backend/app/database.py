@@ -5,6 +5,7 @@ Usa asyncpg como driver e managed sessions com context manager.
 """
 
 import ssl
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -19,18 +20,29 @@ settings = get_settings()
 
 
 def _normalize_neon_url(url: str) -> str:
-    """Normaliza a URL do Neon para funcionar com asyncpg."""
-    # asyncpg usa 'ssl' não 'sslmode'
-    url = url.replace("sslmode=require", "ssl=require")
+    """
+    Normaliza a URL do Neon para funcionar com asyncpg.
+    Remove parâmetros SSL da query string (serão passados via connect_args).
+    """
     # Garante driver asyncpg
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    return url
+
+    # Remove TODOS os parâmetros SSL da URL para evitar channel_binding
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    # Remove ssl, sslmode, channel_binding e variantes
+    for key in list(params.keys()):
+        if key.lower() in ("ssl", "sslmode", "channel_binding", "sslrootcert", "sslcert", "sslkey"):
+            del params[key]
+    clean_query = urlencode(params, doseq=True)
+    clean_url = urlunparse(parsed._replace(query=clean_query))
+    return clean_url
 
 
 db_url = _normalize_neon_url(settings.database_url)
 
-# SSL context para Neon (exige TLS)
+# SSL context para Neon (exige TLS) — passado APENAS via connect_args
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
@@ -39,8 +51,8 @@ engine = create_async_engine(
     db_url,
     echo=settings.debug,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=10,
     connect_args={"ssl": ssl_context},
 )
 

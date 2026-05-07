@@ -9,14 +9,14 @@ from pathlib import Path
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+
 
 class Settings(BaseSettings):
     """Configurações do sistema AquaMoab."""
 
-    _env_path: Path = Path(__file__).resolve().parent.parent / ".env"
-
     model_config = SettingsConfigDict(
-        env_file=_env_path if _env_path.exists() else None,
+        env_file=str(_env_file) if _env_file.exists() else None,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
