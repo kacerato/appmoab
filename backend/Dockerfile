@@ -13,13 +13,6 @@ COPY . .
 
 RUN mkdir -p /app/uploads /app/certs
 
-# Railway usa PORT dinâmico via env var
 ENV PORT=8000
 
-EXPOSE ${PORT}
-
-# Script de startup que cria certs a partir de env vars se necessário
-COPY start.sh .
-RUN chmod +x start.sh
-
-CMD ["./start.sh"]
+CMD ["python", "startup.py"]
