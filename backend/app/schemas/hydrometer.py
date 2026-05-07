@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 class HydrometerBase(BaseModel):
-    code: str
+    code: str | None = None
     brand: str | None = None
     model: str | None = None
     location_description: str | None = None
@@ -30,13 +30,20 @@ class HydrometerUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class HydrometerCustomer(BaseModel):
+    name: str
+    cpf_cnpj: str
+    model_config = {"from_attributes": True}
+
 class HydrometerResponse(HydrometerBase):
     id: UUID
     customer_id: UUID
+    code: str
     last_reading_value: float
     last_reading_date: datetime | None
     is_active: bool
     installed_at: datetime
+    customer: HydrometerCustomer | None = None
 
     model_config = {"from_attributes": True}
 

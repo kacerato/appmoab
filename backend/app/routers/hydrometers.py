@@ -3,9 +3,11 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.models.customer import Customer
 from app.models.hydrometer import Hydrometer
 from app.models.user import User
 from app.schemas.hydrometer import (
@@ -22,7 +24,7 @@ async def list_hydrometers(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = select(Hydrometer)
+    query = select(Hydrometer).options(selectinload(Hydrometer.customer))
     if customer_id:
         query = query.where(Hydrometer.customer_id == uuid.UUID(customer_id))
     query = query.order_by(Hydrometer.code)
@@ -38,7 +40,9 @@ async def get_hydrometer(
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(Hydrometer).where(Hydrometer.id == uuid.UUID(hydrometer_id))
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == uuid.UUID(hydrometer_id))
     )
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
@@ -52,13 +56,22 @@ async def create_hydrometer(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    existing = await db.execute(select(Hydrometer).where(Hydrometer.code == data.code))
+    # Verifica cliente
+    customer_result = await db.execute(select(Customer).where(Customer.id == data.customer_id))
+    customer = customer_result.scalar_one_or_none()
+    if not customer:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+
+    # O código do hidrômetro passa a ser o Documento do Cliente (se não informado manualmente)
+    target_code = data.code or customer.cpf_cnpj
+
+    existing = await db.execute(select(Hydrometer).where(Hydrometer.code == target_code))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Código de hidrômetro já cadastrado")
+        raise HTTPException(status_code=400, detail="Este código de hidrômetro/cliente já está em uso")
 
     hydrometer = Hydrometer(
         customer_id=data.customer_id,
-        code=data.code,
+        code=target_code,
         brand=data.brand,
         model=data.model,
         location_description=data.location_description,
