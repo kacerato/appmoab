@@ -27,24 +27,18 @@ interface Customer {
   name: string;
   address: string;
   city: string;
-  status: string;
   hydrometers: Hydrometer[];
 }
 
 interface ReadingItem {
-  id: string;
   hydrometer_id: string;
   collaborator_id: string;
-  current_value: number;
-  consumption: number;
   captured_at: string;
   status: string;
-  customer_name: string | null;
-  hydrometer_code: string | null;
 }
 
-function normalizeMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Nao foi possivel atualizar sua rota.';
+function getMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
 }
 
 export default function RouteScreen() {
@@ -56,61 +50,66 @@ export default function RouteScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const openManualScan = useCallback(() => {
+    navigation.navigate('Camera', { stage: 'code' });
+  }, [navigation]);
+
   const load = useCallback(async () => {
-    try {
-      const [customersRes, readingsRes] = await Promise.all([
-        api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=100'),
-        api.get<{ items: ReadingItem[] }>('/readings?per_page=200'),
-      ]);
+    setLoading(prev => (refreshing ? prev : true));
 
-      const todayKey = new Date().toISOString().slice(0, 10);
-      const ownToday = readingsRes.items.filter(
-        item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey,
-      );
+    const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=100');
+    const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
 
-      setCustomers((customersRes.items || []).filter(customer => customer.hydrometers?.length));
-      setTodayReadings(ownToday);
-    } catch (error) {
-      console.error(error);
-      showToast('Falha ao carregar rota', normalizeMessage(error), 'error');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);
+
+    if (customersResult.status === 'fulfilled') {
+      setCustomers((customersResult.value.items || []).filter(customer => customer.hydrometers?.length));
+    } else {
+      showToast('Falha ao carregar clientes', getMessage(customersResult.reason, 'Nao foi possivel buscar sua rota.'), 'error');
     }
-  }, [showToast, user?.id]);
+
+    if (readingsResult.status === 'fulfilled') {
+      const todayKey = new Date().toISOString().slice(0, 10);
+      setTodayReadings(
+        (readingsResult.value.items || []).filter(
+          item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey,
+        ),
+      );
+    } else {
+      setTodayReadings([]);
+      showToast('Historico parcial', getMessage(readingsResult.reason, 'Nao foi possivel carregar as leituras de hoje.'), 'warning');
+    }
+
+    setLoading(false);
+    setRefreshing(false);
+  }, [refreshing, showToast, user?.id]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    void load();
-  };
-
-  const statusByHydrometer = useMemo(() => {
-    const map = new Map<string, ReadingItem>();
-    for (const reading of todayReadings) {
-      map.set(reading.hydrometer_id, reading);
-    }
-    return map;
-  }, [todayReadings]);
-
   const routeItems = useMemo(() => {
-    return customers
-      .filter(customer => customer.hydrometers?.[0])
-      .map(customer => {
-        const hydrometer = customer.hydrometers[0];
-        const todayStatus = statusByHydrometer.get(hydrometer.id);
-        return { customer, hydrometer, todayStatus };
-      });
-  }, [customers, statusByHydrometer]);
+    const byHydrometer = new Map<string, ReadingItem>();
+    for (const reading of todayReadings) byHydrometer.set(reading.hydrometer_id, reading);
+
+    return customers.map(customer => {
+      const hydrometer = customer.hydrometers[0];
+      return {
+        customer,
+        hydrometer,
+        todayStatus: hydrometer ? byHydrometer.get(hydrometer.id) : undefined,
+      };
+    }).filter(item => item.hydrometer);
+  }, [customers, todayReadings]);
 
   const stats = useMemo(() => {
     const total = routeItems.length;
-    const done = routeItems.filter(item => item.todayStatus && item.todayStatus.status !== 'rejected').length;
-    const rejected = routeItems.filter(item => item.todayStatus?.status === 'rejected').length;
-    return { total, done, pending: Math.max(0, total - done), rejected };
+    const completed = routeItems.filter(item => item.todayStatus && item.todayStatus.status !== 'rejected').length;
+    return {
+      total,
+      pending: Math.max(total - completed, 0),
+      completed,
+    };
   }, [routeItems]);
 
   const startCapture = useCallback((item: { customer: Customer; hydrometer: Hydrometer }) => {
@@ -125,116 +124,97 @@ export default function RouteScreen() {
     });
   }, [navigation]);
 
-  if (loading) {
-    return (
-      <SafeAreaView style={[shared.container, styles.centered]}>
-        <ActivityIndicator size="large" color={colors.accent} />
-        <Text style={styles.loadingText}>Montando sua rota de hoje...</Text>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={shared.safeArea} edges={['top', 'left', 'right']}>
       <View style={styles.screen}>
-        <FlatList
-          data={routeItems}
-          keyExtractor={item => item.customer.id}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
-          contentContainerStyle={styles.listContent}
-          ListHeaderComponent={
-            <>
-              <View style={styles.heroCard}>
-                <View style={styles.heroTopRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.heroEyebrow}>Operacao de campo</Text>
-                    <Text style={styles.heroTitle}>Rota do dia</Text>
-                    <Text style={styles.heroSubtitle}>
-                      {user?.name || 'Colaborador'} • capture primeiro o codigo e depois a medicao.
-                    </Text>
+        {loading ? (
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={styles.loadingText}>Carregando rota...</Text>
+          </View>
+        ) : (
+          <>
+            <FlatList
+              data={routeItems}
+              keyExtractor={item => item.customer.id}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} tintColor={colors.accent} />}
+              contentContainerStyle={styles.listContent}
+              ListHeaderComponent={
+                <>
+                  <View style={styles.heroCard}>
+                    <View style={styles.heroTopRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.heroEyebrow}>Operacao de campo</Text>
+                        <Text style={styles.heroTitle}>Rota do dia</Text>
+                        <Text style={styles.heroSubtitle}>{user?.name || 'Colaborador'}</Text>
+                      </View>
+                      <TouchableOpacity style={styles.logoutPill} onPress={logout}>
+                        <Text style={styles.logoutText}>Sair</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.summaryRow}>
+                      <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
+                      <SummaryCard label="Concluidas" value={stats.completed} tone="success" />
+                      <SummaryCard label="Rota" value={stats.total} tone="info" />
+                    </View>
+
+                    <TouchableOpacity style={styles.historyButton} onPress={() => navigation.navigate('DayHistory')}>
+                      <Text style={styles.historyButtonText}>Ver historico do dia</Text>
+                    </TouchableOpacity>
                   </View>
-                  <TouchableOpacity style={styles.logoutPill} onPress={logout}>
-                    <Text style={styles.logoutText}>Sair</Text>
+
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Pontos da rota</Text>
+                  </View>
+                </>
+              }
+              renderItem={({ item }) => (
+                <View style={styles.customerCard}>
+                  <View style={styles.cardTopRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.customerName}>{item.customer.name}</Text>
+                      <Text style={styles.customerCode}>Codigo {item.hydrometer.code}</Text>
+                    </View>
+                    <StatusBadge status={item.todayStatus?.status || 'pending'} />
+                  </View>
+
+                  {!!item.hydrometer.location_description && (
+                    <Text style={styles.locationText}>{item.hydrometer.location_description}</Text>
+                  )}
+
+                  <TouchableOpacity style={styles.rowActionButton} onPress={() => startCapture(item)}>
+                    <Text style={styles.rowActionButtonText}>Escanear este hidrometro</Text>
                   </TouchableOpacity>
                 </View>
-
-                <View style={styles.summaryRow}>
-                  <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
-                  <SummaryCard label="Concluidos" value={stats.done} tone="success" />
-                  <SummaryCard label="Rejeitados" value={stats.rejected} tone="danger" />
-                </View>
-
-                <View style={styles.flowCard}>
-                  <Text style={shared.sectionTitle}>Fluxo da leitura</Text>
-                  <Text style={styles.flowText}>
-                    1. Escanear codigo. 2. Validar cliente e local. 3. Fotografar mostrador. 4. Revisar. 5. Enviar para aprovacao.
-                  </Text>
-                  <TouchableOpacity
-                    style={[shared.btnSecondary, styles.historyButton]}
-                    onPress={() => navigation.navigate('DayHistory')}
-                  >
-                    <Text style={shared.btnSecondaryText}>Abrir historico do dia</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Pontos da rota</Text>
-                <Text style={styles.sectionCaption}>{stats.total} hidrômetro(s) ativos</Text>
-              </View>
-            </>
-          }
-          renderItem={({ item, index }) => {
-            const status = item.todayStatus?.status || 'pending';
-            return (
-              <View style={styles.customerCard}>
-                <View style={styles.cardTopRow}>
-                  <View style={styles.indexPill}>
-                    <Text style={styles.indexText}>{String(index + 1).padStart(2, '0')}</Text>
-                  </View>
-                  <StatusBadge status={status} />
-                </View>
-
-                <Text style={styles.customerName}>{item.customer.name}</Text>
-                <Text style={styles.customerAddr}>{item.customer.address}, {item.customer.city}</Text>
-
-                <View style={styles.metaGrid}>
-                  <MetaBlock label="Codigo" value={item.hydrometer.code} />
-                  <MetaBlock label="Ultima leitura" value={`${item.hydrometer.last_reading_value.toFixed(2)} m³`} />
-                </View>
-
-                <View style={styles.locationBox}>
-                  <Text style={styles.locationLabel}>Referencia do local</Text>
-                  <Text style={styles.locationText}>
-                    {item.hydrometer.location_description || 'Sem observacao adicional no cadastro.'}
+              )}
+              ListEmptyComponent={
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyTitle}>Nenhum ponto carregado</Text>
+                  <Text style={styles.emptyText}>
+                    Se os hidrômetros existem no painel, toque em atualizar ou use o scan manual abaixo.
                   </Text>
                 </View>
+              }
+            />
 
-                <TouchableOpacity style={styles.captureButton} onPress={() => startCapture(item)}>
-                  <Text style={styles.captureButtonText}>Abrir camera e escanear codigo</Text>
-                </TouchableOpacity>
-              </View>
-            );
-          }}
-          ListEmptyComponent={
-            <View style={shared.card}>
-              <Text style={styles.emptyTitle}>Nenhuma rota disponivel agora</Text>
-              <Text style={styles.emptyText}>
-                Verifique se existem clientes ativos com hidrômetro cadastrado e se sua API mobile está apontando para o backend certo.
-              </Text>
+            <View style={styles.floatingActionWrap}>
+              <TouchableOpacity style={styles.floatingAction} onPress={openManualScan}>
+                <Text style={styles.floatingActionText}>Abrir camera</Text>
+              </TouchableOpacity>
             </View>
-          }
-        />
+          </>
+        )}
       </View>
     </SafeAreaView>
   );
 }
 
-function SummaryCard({ label, value, tone }: { label: string; value: number; tone: 'warning' | 'success' | 'danger' }) {
+function SummaryCard({ label, value, tone }: { label: string; value: number; tone: 'warning' | 'success' | 'info' }) {
   const palette = {
     warning: { bg: colors.warningSoft, text: colors.warning },
     success: { bg: colors.successSoft, text: colors.success },
-    danger: { bg: colors.dangerSoft, text: colors.danger },
+    info: { bg: colors.accentSoft, text: colors.accent },
   }[tone];
 
   return (
@@ -247,24 +227,12 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
 
 function StatusBadge({ status }: { status: string }) {
   let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Pendente' };
-  if (status === 'approved') {
-    palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Aprovado' };
-  } else if (status === 'rejected') {
-    palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Rejeitado' };
-  }
+  if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
+  if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };
 
   return (
     <View style={[shared.badge, { backgroundColor: palette.backgroundColor }]}>
       <Text style={[shared.badgeText, { color: palette.color }]}>{palette.label}</Text>
-    </View>
-  );
-}
-
-function MetaBlock({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.metaBlock}>
-      <Text style={styles.metaLabel}>{label}</Text>
-      <Text style={styles.metaValue}>{value}</Text>
     </View>
   );
 }
@@ -274,7 +242,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.navy950,
   },
-  centered: {
+  loadingWrap: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -284,49 +253,48 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   listContent: {
-    paddingHorizontal: 18,
-    paddingBottom: 32,
+    paddingHorizontal: 16,
+    paddingBottom: 120,
   },
   heroCard: {
     marginTop: 10,
-    marginBottom: 18,
-    padding: 20,
-    borderRadius: 28,
+    marginBottom: 16,
+    padding: 18,
+    borderRadius: 24,
     backgroundColor: colors.sidebarNavy,
     borderWidth: 1,
     borderColor: colors.border,
   },
   heroTopRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
+    alignItems: 'center',
+    gap: 10,
   },
   heroEyebrow: {
     color: colors.cyan,
     fontSize: 11,
     fontWeight: '800',
     textTransform: 'uppercase',
-    letterSpacing: 0.9,
+    letterSpacing: 0.8,
   },
   heroTitle: {
     color: colors.textPrimary,
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: '900',
-    marginTop: 6,
+    marginTop: 4,
   },
   heroSubtitle: {
-    color: colors.textSecondary,
+    color: colors.textMuted,
     fontSize: 13,
-    lineHeight: 20,
-    marginTop: 8,
+    marginTop: 6,
   },
   logoutPill: {
     borderWidth: 1,
-    borderColor: colors.borderHover,
-    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderColor: colors.border,
+    backgroundColor: 'rgba(255,255,255,0.04)',
     borderRadius: 999,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
   },
   logoutText: {
     color: colors.textPrimary,
@@ -336,145 +304,95 @@ const styles = StyleSheet.create({
   summaryRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 18,
-    marginBottom: 18,
+    marginTop: 16,
   },
   summaryCard: {
     flex: 1,
     borderRadius: 16,
-    padding: 14,
-    minHeight: 84,
-    justifyContent: 'space-between',
+    padding: 12,
   },
   summaryLabel: {
     color: colors.textMuted,
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     textTransform: 'uppercase',
   },
   summaryValue: {
-    fontSize: 26,
+    fontSize: 24,
     fontWeight: '900',
-  },
-  flowCard: {
-    borderRadius: 20,
-    padding: 18,
-    backgroundColor: 'rgba(7, 17, 31, 0.54)',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  flowText: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    lineHeight: 20,
+    marginTop: 6,
   },
   historyButton: {
     marginTop: 14,
+    backgroundColor: colors.navy700,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  historyButtonText: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
   },
   sectionHeader: {
-    marginBottom: 12,
+    marginBottom: 10,
   },
   sectionTitle: {
     color: colors.textPrimary,
-    fontSize: 18,
+    fontSize: 19,
     fontWeight: '800',
-  },
-  sectionCaption: {
-    color: colors.textMuted,
-    fontSize: 12,
-    marginTop: 4,
   },
   customerCard: {
     backgroundColor: colors.navy800,
-    borderRadius: 22,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 18,
-    marginBottom: 14,
+    padding: 16,
+    marginBottom: 12,
   },
   cardTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  indexPill: {
-    backgroundColor: colors.accentSoft,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 999,
-  },
-  indexText: {
-    color: colors.accent,
-    fontWeight: '800',
-    fontSize: 12,
+    alignItems: 'flex-start',
+    gap: 10,
   },
   customerName: {
     color: colors.textPrimary,
     fontWeight: '900',
     fontSize: 17,
   },
-  customerAddr: {
-    color: colors.textMuted,
-    fontSize: 13,
-    marginTop: 6,
-    lineHeight: 19,
-  },
-  metaGrid: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 16,
-  },
-  metaBlock: {
-    flex: 1,
-    borderRadius: 16,
-    padding: 14,
-    backgroundColor: colors.navy900,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  metaLabel: {
-    color: colors.textMuted,
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
-  metaValue: {
-    color: colors.textPrimary,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  locationBox: {
-    marginTop: 14,
-    borderRadius: 16,
-    padding: 14,
-    backgroundColor: 'rgba(83, 211, 247, 0.08)',
-  },
-  locationLabel: {
+  customerCode: {
     color: colors.cyan,
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    marginBottom: 6,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 6,
   },
   locationText: {
     color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 19,
+    marginTop: 12,
   },
-  captureButton: {
-    marginTop: 16,
-    backgroundColor: colors.accent,
-    borderRadius: 16,
-    paddingVertical: 16,
+  rowActionButton: {
+    marginTop: 14,
+    backgroundColor: colors.accentSoft,
+    borderRadius: 14,
+    paddingVertical: 13,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  captureButtonText: {
-    color: '#fff',
+  rowActionButtonText: {
+    color: colors.accent,
     fontSize: 14,
     fontWeight: '900',
+  },
+  emptyCard: {
+    backgroundColor: colors.navy800,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 18,
   },
   emptyTitle: {
     color: colors.textPrimary,
@@ -486,5 +404,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     marginTop: 8,
+  },
+  floatingActionWrap: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 18,
+  },
+  floatingAction: {
+    backgroundColor: colors.accent,
+    borderRadius: 18,
+    paddingVertical: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    elevation: 10,
+  },
+  floatingActionText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
 });

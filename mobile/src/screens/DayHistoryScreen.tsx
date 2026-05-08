@@ -19,6 +19,10 @@ interface ReadingItem {
   hydrometer_code: string | null;
 }
 
+function getMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export default function DayHistoryScreen() {
   const navigation = useNavigation<any>();
   const { user } = useAuth();
@@ -29,18 +33,13 @@ export default function DayHistoryScreen() {
 
   const load = useCallback(async () => {
     try {
-      const res = await api.get<{ items: ReadingItem[] }>('/readings?per_page=200');
+      const res = await api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
       const todayKey = new Date().toISOString().slice(0, 10);
       setReadings(
         (res.items || []).filter(item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey),
       );
     } catch (error) {
-      console.error(error);
-      showToast(
-        'Falha ao carregar historico',
-        error instanceof Error ? error.message : 'Nao foi possivel carregar o historico do dia.',
-        'error',
-      );
+      showToast('Falha ao carregar historico', getMessage(error, 'Nao foi possivel carregar o historico do dia.'), 'error');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -54,7 +53,6 @@ export default function DayHistoryScreen() {
   const counts = useMemo(() => ({
     approved: readings.filter(item => item.status === 'approved').length,
     pending: readings.filter(item => item.status === 'pending').length,
-    rejected: readings.filter(item => item.status === 'rejected').length,
   }), [readings]);
 
   return (
@@ -63,7 +61,7 @@ export default function DayHistoryScreen() {
         {loading ? (
           <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color={colors.accent} />
-            <Text style={styles.loadingText}>Carregando historico do dia...</Text>
+            <Text style={styles.loadingText}>Carregando historico...</Text>
           </View>
         ) : (
           <FlatList
@@ -78,25 +76,20 @@ export default function DayHistoryScreen() {
                     <Text style={styles.backLink}>Voltar para rota</Text>
                   </TouchableOpacity>
                   <Text style={styles.title}>Historico do dia</Text>
-                  <Text style={styles.subtitle}>Tudo que voce ja capturou hoje fica consolidado aqui.</Text>
+                  <Text style={styles.subtitle}>Resumo simples das leituras registradas hoje.</Text>
 
                   <View style={styles.summaryRow}>
                     <MetricCard label="Aprovadas" value={counts.approved} tone="success" />
                     <MetricCard label="Pendentes" value={counts.pending} tone="warning" />
-                    <MetricCard label="Rejeitadas" value={counts.rejected} tone="danger" />
+                    <MetricCard label="Total" value={readings.length} tone="info" />
                   </View>
-                </View>
-
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>Leituras registradas</Text>
-                  <Text style={styles.sectionCaption}>{readings.length} item(ns) hoje</Text>
                 </View>
               </>
             }
             renderItem={({ item }) => (
               <View style={styles.readingCard}>
                 <View style={styles.readingTopRow}>
-                  <View>
+                  <View style={{ flex: 1 }}>
                     <Text style={styles.customerName}>{item.customer_name || 'Cliente sem nome'}</Text>
                     <Text style={styles.metaLine}>
                       {item.hydrometer_code || 'Sem codigo'} • {new Date(item.captured_at).toLocaleTimeString('pt-BR')}
@@ -105,18 +98,15 @@ export default function DayHistoryScreen() {
                   <StatusBadge status={item.status} />
                 </View>
 
-                <View style={styles.metricsRow}>
-                  <MetricMini label="Leitura" value={`${item.current_value.toFixed(2)} m³`} />
-                  <MetricMini label="Consumo" value={`${item.consumption.toFixed(2)} m³`} />
-                </View>
+                <Text style={styles.valueLine}>
+                  Leitura {item.current_value.toFixed(2)} m³ • Consumo {item.consumption.toFixed(2)} m³
+                </Text>
               </View>
             )}
             ListEmptyComponent={
-              <View style={shared.card}>
+              <View style={styles.emptyCard}>
                 <Text style={styles.emptyTitle}>Nenhuma leitura hoje</Text>
-                <Text style={styles.emptyText}>
-                  Assim que voce concluir uma captura na rota, ela aparece aqui com status e horario.
-                </Text>
+                <Text style={styles.emptyText}>Quando voce concluir uma captura, ela aparece aqui.</Text>
               </View>
             }
           />
@@ -126,11 +116,11 @@ export default function DayHistoryScreen() {
   );
 }
 
-function MetricCard({ label, value, tone }: { label: string; value: number; tone: 'success' | 'warning' | 'danger' }) {
+function MetricCard({ label, value, tone }: { label: string; value: number; tone: 'success' | 'warning' | 'info' }) {
   const palette = {
     success: { bg: colors.successSoft, text: colors.success },
     warning: { bg: colors.warningSoft, text: colors.warning },
-    danger: { bg: colors.dangerSoft, text: colors.danger },
+    info: { bg: colors.accentSoft, text: colors.accent },
   }[tone];
 
   return (
@@ -141,19 +131,10 @@ function MetricCard({ label, value, tone }: { label: string; value: number; tone
   );
 }
 
-function MetricMini({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={styles.metricMini}>
-      <Text style={styles.metricMiniLabel}>{label}</Text>
-      <Text style={styles.metricMiniValue}>{value}</Text>
-    </View>
-  );
-}
-
 function StatusBadge({ status }: { status: string }) {
   let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Pendente' };
-  if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Aprovada' };
-  if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Rejeitada' };
+  if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
+  if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };
 
   return (
     <View style={[shared.badge, { backgroundColor: palette.backgroundColor }]}>
@@ -177,14 +158,14 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
   listContent: {
-    paddingHorizontal: 18,
+    paddingHorizontal: 16,
     paddingBottom: 32,
   },
   heroCard: {
     marginTop: 10,
-    marginBottom: 18,
-    padding: 20,
-    borderRadius: 28,
+    marginBottom: 16,
+    padding: 18,
+    borderRadius: 24,
     backgroundColor: colors.sidebarNavy,
     borderWidth: 1,
     borderColor: colors.border,
@@ -198,63 +179,49 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.textPrimary,
-    fontSize: 27,
+    fontSize: 28,
     fontWeight: '900',
     marginTop: 10,
   },
   subtitle: {
     color: colors.textSecondary,
     fontSize: 13,
-    lineHeight: 20,
     marginTop: 8,
   },
   summaryRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 18,
+    marginTop: 16,
   },
   metricCard: {
     flex: 1,
     borderRadius: 16,
-    padding: 14,
+    padding: 12,
   },
   metricLabel: {
     color: colors.textMuted,
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     textTransform: 'uppercase',
-    marginBottom: 8,
   },
   metricValue: {
     fontSize: 24,
     fontWeight: '900',
-  },
-  sectionHeader: {
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    color: colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  sectionCaption: {
-    color: colors.textMuted,
-    fontSize: 12,
-    marginTop: 4,
+    marginTop: 6,
   },
   readingCard: {
     backgroundColor: colors.navy800,
-    borderRadius: 22,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 18,
-    marginBottom: 14,
+    padding: 16,
+    marginBottom: 12,
   },
   readingTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    gap: 12,
+    gap: 10,
   },
   customerName: {
     color: colors.textPrimary,
@@ -266,30 +233,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 6,
   },
-  metricsRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 16,
+  valueLine: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 12,
   },
-  metricMini: {
-    flex: 1,
-    backgroundColor: colors.navy900,
-    borderRadius: 16,
-    padding: 14,
+  emptyCard: {
+    backgroundColor: colors.navy800,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  metricMiniLabel: {
-    color: colors.textMuted,
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
-  metricMiniValue: {
-    color: colors.textPrimary,
-    fontSize: 14,
-    fontWeight: '800',
+    padding: 18,
   },
   emptyTitle: {
     color: colors.textPrimary,
