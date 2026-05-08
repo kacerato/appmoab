@@ -34,7 +34,7 @@ async def list_customers(
     user: User = Depends(get_current_user),
 ):
     """Lista clientes com filtros e paginação."""
-    query = select(Customer)
+    query = select(Customer).options(selectinload(Customer.hydrometers))
 
     if search:
         query = query.where(

@@ -85,6 +85,7 @@ class CustomerResponse(CustomerBase):
     status: str
     created_at: datetime
     updated_at: datetime
+    hydrometers: list["HydrometerResponse"] = []
 
     model_config = {"from_attributes": True}
 

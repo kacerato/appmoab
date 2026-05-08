@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useFeedback } from '../lib/feedback';
 import { colors } from '../styles/theme';
@@ -32,20 +33,28 @@ export default function CameraScreen() {
   const activeCustomerName = customerName || expectedCustomerName;
 
   if (!permission) {
-    return <View style={styles.container}><ActivityIndicator color={colors.accent} /></View>;
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.centered}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
+      </SafeAreaView>
+    );
   }
 
   if (!permission.granted) {
     return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center', padding: 32 }]}>
-        <Text style={styles.permissionTitle}>Permissão de câmera necessária</Text>
-        <Text style={styles.permissionText}>
-          Para registrar o código e a leitura do hidrômetro, o app precisa usar a câmera.
-        </Text>
-        <TouchableOpacity style={styles.btnPrimary} onPress={requestPermission}>
-          <Text style={styles.btnPrimaryText}>Permitir câmera</Text>
-        </TouchableOpacity>
-      </View>
+      <SafeAreaView style={styles.container}>
+        <View style={[styles.centered, styles.permissionPanel]}>
+          <Text style={styles.permissionTitle}>Permissao de camera necessaria</Text>
+          <Text style={styles.permissionText}>
+            O colaborador precisa da camera para registrar o codigo do hidrometro e depois a medicao.
+          </Text>
+          <TouchableOpacity style={styles.btnPrimary} onPress={requestPermission}>
+            <Text style={styles.btnPrimaryText}>Permitir camera</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
     );
   }
 
@@ -82,7 +91,7 @@ export default function CameraScreen() {
           });
         }
       } catch (error) {
-        console.warn('GPS indisponível:', error);
+        console.warn('GPS indisponivel:', error);
       }
 
       navigation.navigate('OCRResult', {
@@ -98,25 +107,29 @@ export default function CameraScreen() {
         locationDescription,
       });
     } catch (error) {
-      showToast('Falha ao capturar foto', error instanceof Error ? error.message : 'Não foi possível capturar a imagem.', 'error');
+      showToast(
+        'Falha ao capturar foto',
+        error instanceof Error ? error.message : 'Nao foi possivel capturar a imagem.',
+        'error',
+      );
     } finally {
       setCapturing(false);
     }
   };
 
-  const stageTitle = stage === 'code' ? 'Etapa 1 · Código do hidrômetro' : 'Etapa 2 · Leitura do mostrador';
+  const stageTitle = stage === 'code' ? 'Etapa 1 • Codigo do hidrometro' : 'Etapa 2 • Leitura do mostrador';
   const guideText = stage === 'code'
-    ? 'Enquadre somente o código de identificação gravado no hidrômetro.'
-    : 'Enquadre somente a leitura do mostrador para reduzir confusão no OCR.';
+    ? 'Enquadre somente o codigo de identificacao gravado no hidrometro.'
+    : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
       <CameraView style={styles.camera} ref={cameraRef} facing="back">
         <View style={styles.overlayTop}>
           <TouchableOpacity onPress={() => navigation.goBack()}>
-            <Text style={styles.backText}>← Voltar</Text>
+            <Text style={styles.backText}>Voltar</Text>
           </TouchableOpacity>
-          <View style={{ flex: 1, marginLeft: 12 }}>
+          <View style={styles.stageHeaderText}>
             <Text style={styles.stageTitle}>{stageTitle}</Text>
             <Text style={styles.stageSubtitle}>{activeCustomerName}</Text>
           </View>
@@ -135,10 +148,10 @@ export default function CameraScreen() {
         <View style={styles.overlayBottom}>
           <View style={styles.infoCard}>
             <Text style={styles.infoLabel}>{stage === 'code' ? 'Esperado na rota' : 'Leitura anterior'}</Text>
-            <Text style={styles.infoValue}>{stage === 'code' ? activeHydrometerCode : `${lastReading.toFixed(2)} m³`}</Text>
-            {!!locationDescription && (
-              <Text style={styles.locationHint}>{locationDescription}</Text>
-            )}
+            <Text style={styles.infoValue}>
+              {stage === 'code' ? activeHydrometerCode : `${Number(lastReading || 0).toFixed(2)} m³`}
+            </Text>
+            {!!locationDescription && <Text style={styles.locationHint}>{locationDescription}</Text>}
           </View>
 
           <TouchableOpacity
@@ -148,27 +161,43 @@ export default function CameraScreen() {
           >
             {capturing ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
           </TouchableOpacity>
+
+          <Text style={styles.captureLabel}>
+            {stage === 'code' ? 'Toque para escanear o codigo' : 'Toque para fotografar a leitura'}
+          </Text>
         </View>
       </CameraView>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  permissionPanel: {
+    padding: 32,
+  },
   camera: { flex: 1 },
   overlayTop: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 56,
+    paddingTop: 20,
     paddingBottom: 14,
     backgroundColor: 'rgba(0,0,0,0.46)',
   },
   backText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  stageHeaderText: {
+    flex: 1,
+    marginLeft: 12,
   },
   stageTitle: {
     color: '#fff',
@@ -217,19 +246,19 @@ const styles = StyleSheet.create({
   },
   overlayBottom: {
     paddingHorizontal: 20,
-    paddingBottom: 40,
+    paddingBottom: 32,
     paddingTop: 16,
     backgroundColor: 'rgba(0,0,0,0.58)',
     alignItems: 'center',
-    gap: 16,
+    gap: 14,
   },
   infoCard: {
     backgroundColor: 'rgba(255,255,255,0.08)',
-    borderRadius: 14,
-    paddingVertical: 12,
+    borderRadius: 18,
+    paddingVertical: 14,
     paddingHorizontal: 16,
     alignItems: 'center',
-    minWidth: 230,
+    minWidth: 240,
   },
   infoLabel: {
     color: 'rgba(255,255,255,0.6)',
@@ -247,11 +276,12 @@ const styles = StyleSheet.create({
     color: colors.cyan,
     fontSize: 11,
     marginTop: 5,
+    textAlign: 'center',
   },
   btnCapture: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 84,
+    height: 84,
+    borderRadius: 42,
     backgroundColor: colors.accent,
     alignItems: 'center',
     justifyContent: 'center',
@@ -259,10 +289,17 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.28)',
   },
   captureInner: {
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     backgroundColor: '#fff',
+  },
+  captureLabel: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   permissionTitle: {
     color: colors.textPrimary,

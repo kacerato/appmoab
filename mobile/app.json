@@ -24,7 +24,7 @@
       "predictiveBackGestureEnabled": false
     },
     "extra": {
-      "apiUrl": "https://aquamoab.up.railway.app/"
+      "apiUrl": "https://aquamoab.up.railway.app/api"
     },
     "web": {
       "favicon": "./assets/favicon.png"

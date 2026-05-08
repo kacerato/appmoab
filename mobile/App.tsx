@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as NavigationBar from 'expo-navigation-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { AuthProvider, useAuth } from './src/lib/auth';
@@ -45,11 +46,18 @@ function AppNavigator() {
 }
 
 export default function App() {
+  useEffect(() => {
+    void NavigationBar.setBehaviorAsync('overlay-swipe');
+    void NavigationBar.setVisibilityAsync('hidden');
+    void NavigationBar.setBackgroundColorAsync(colors.navy950);
+    void NavigationBar.setButtonStyleAsync('light');
+  }, []);
+
   return (
     <AuthProvider>
       <FeedbackProvider>
         <NavigationContainer>
-          <StatusBar style="dark" />
+          <StatusBar hidden style="light" translucent />
           <AppNavigator />
         </NavigationContainer>
       </FeedbackProvider>

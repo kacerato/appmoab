@@ -1,18 +1,26 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  FlatList,
-  TouchableOpacity,
-  StyleSheet,
-  RefreshControl,
   ActivityIndicator,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { colors, shared } from '../styles/theme';
+
+interface Hydrometer {
+  id: string;
+  code: string;
+  last_reading_value: number;
+  location_description?: string | null;
+}
 
 interface Customer {
   id: string;
@@ -20,7 +28,7 @@ interface Customer {
   address: string;
   city: string;
   status: string;
-  hydrometers: { id: string; code: string; last_reading_value: number; location_description?: string }[];
+  hydrometers: Hydrometer[];
 }
 
 interface ReadingItem {
@@ -33,6 +41,10 @@ interface ReadingItem {
   status: string;
   customer_name: string | null;
   hydrometer_code: string | null;
+}
+
+function normalizeMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Nao foi possivel atualizar sua rota.';
 }
 
 export default function RouteScreen() {
@@ -52,16 +64,15 @@ export default function RouteScreen() {
       ]);
 
       const todayKey = new Date().toISOString().slice(0, 10);
-      const ownToday = readingsRes.items.filter(item =>
-        item.collaborator_id === user?.id &&
-        item.captured_at.slice(0, 10) === todayKey
+      const ownToday = readingsRes.items.filter(
+        item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey,
       );
 
-      setCustomers(customersRes.items);
+      setCustomers((customersRes.items || []).filter(customer => customer.hydrometers?.length));
       setTodayReadings(ownToday);
     } catch (error) {
       console.error(error);
-      showToast('Falha ao carregar rota', error instanceof Error ? error.message : 'Não foi possível atualizar sua rota.', 'error');
+      showToast('Falha ao carregar rota', normalizeMessage(error), 'error');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -91,107 +102,131 @@ export default function RouteScreen() {
       .map(customer => {
         const hydrometer = customer.hydrometers[0];
         const todayStatus = statusByHydrometer.get(hydrometer.id);
-        return {
-          customer,
-          hydrometer,
-          todayStatus,
-        };
+        return { customer, hydrometer, todayStatus };
       });
   }, [customers, statusByHydrometer]);
 
   const stats = useMemo(() => {
     const total = routeItems.length;
     const done = routeItems.filter(item => item.todayStatus && item.todayStatus.status !== 'rejected').length;
-    const pending = total - done;
     const rejected = routeItems.filter(item => item.todayStatus?.status === 'rejected').length;
-    return { total, done, pending, rejected };
+    return { total, done, pending: Math.max(0, total - done), rejected };
   }, [routeItems]);
+
+  const startCapture = useCallback((item: { customer: Customer; hydrometer: Hydrometer }) => {
+    navigation.navigate('Camera', {
+      stage: 'code',
+      expectedCustomerId: item.customer.id,
+      expectedCustomerName: item.customer.name,
+      expectedHydrometerId: item.hydrometer.id,
+      expectedHydrometerCode: item.hydrometer.code,
+      lastReading: item.hydrometer.last_reading_value || 0,
+      locationDescription: item.hydrometer.location_description || '',
+    });
+  }, [navigation]);
 
   if (loading) {
     return (
-      <View style={[shared.container, { justifyContent: 'center', alignItems: 'center' }]}>
+      <SafeAreaView style={[shared.container, styles.centered]}>
         <ActivityIndicator size="large" color={colors.accent} />
-      </View>
+        <Text style={styles.loadingText}>Montando sua rota de hoje...</Text>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={shared.container}>
-      <View style={shared.headerBar}>
-        <View>
-          <Text style={shared.title}>Rota do dia</Text>
-          <Text style={shared.subtitle}>{user?.name} · foco em hidrômetros pendentes</Text>
-        </View>
-        <TouchableOpacity onPress={logout}>
-          <Text style={{ color: colors.danger, fontWeight: '700', fontSize: 13 }}>Sair</Text>
-        </TouchableOpacity>
-      </View>
-
-      <FlatList
-        data={routeItems}
-        keyExtractor={item => item.customer.id}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
-        contentContainerStyle={{ padding: 16, paddingBottom: 32 }}
-        ListHeaderComponent={
-          <>
-            <View style={styles.summaryRow}>
-              <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
-              <SummaryCard label="Concluídos" value={stats.done} tone="success" />
-              <SummaryCard label="Rejeitados" value={stats.rejected} tone="danger" />
-            </View>
-
-            <View style={shared.card}>
-              <Text style={shared.sectionTitle}>Checklist operacional</Text>
-              <Text style={styles.helperText}>
-                1. Escaneie primeiro o código do hidrômetro. 2. Confirme a associação com cliente e local. 3. Capture a leitura. 4. Revise os dados antes de enviar.
-              </Text>
-              <TouchableOpacity
-                style={[shared.btnSecondary, { marginTop: 14 }]}
-                onPress={() => navigation.navigate('DayHistory')}
-              >
-                <Text style={shared.btnSecondaryText}>Ver histórico do dia</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        }
-        renderItem={({ item }) => {
-          const status = item.todayStatus?.status || 'pending';
-          return (
-            <TouchableOpacity
-              style={styles.customerCard}
-              onPress={() => navigation.navigate('Camera', {
-                stage: 'code',
-                expectedCustomerId: item.customer.id,
-                expectedCustomerName: item.customer.name,
-                expectedHydrometerId: item.hydrometer.id,
-                expectedHydrometerCode: item.hydrometer.code,
-                lastReading: item.hydrometer.last_reading_value || 0,
-                locationDescription: item.hydrometer.location_description || '',
-              })}
-            >
-              <View style={styles.customerRow}>
-                <View style={styles.avatar}>
-                  <Text style={styles.avatarText}>{item.customer.name.charAt(0)}</Text>
+    <SafeAreaView style={shared.safeArea} edges={['top', 'left', 'right']}>
+      <View style={styles.screen}>
+        <FlatList
+          data={routeItems}
+          keyExtractor={item => item.customer.id}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+          contentContainerStyle={styles.listContent}
+          ListHeaderComponent={
+            <>
+              <View style={styles.heroCard}>
+                <View style={styles.heroTopRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.heroEyebrow}>Operacao de campo</Text>
+                    <Text style={styles.heroTitle}>Rota do dia</Text>
+                    <Text style={styles.heroSubtitle}>
+                      {user?.name || 'Colaborador'} • capture primeiro o codigo e depois a medicao.
+                    </Text>
+                  </View>
+                  <TouchableOpacity style={styles.logoutPill} onPress={logout}>
+                    <Text style={styles.logoutText}>Sair</Text>
+                  </TouchableOpacity>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.customerName}>{item.customer.name}</Text>
-                  <Text style={styles.customerAddr}>{item.customer.address}, {item.customer.city}</Text>
-                  <Text style={styles.meterInfo}>
-                    {item.hydrometer.code} · última leitura {item.hydrometer.last_reading_value.toFixed(2)} m³
+
+                <View style={styles.summaryRow}>
+                  <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
+                  <SummaryCard label="Concluidos" value={stats.done} tone="success" />
+                  <SummaryCard label="Rejeitados" value={stats.rejected} tone="danger" />
+                </View>
+
+                <View style={styles.flowCard}>
+                  <Text style={shared.sectionTitle}>Fluxo da leitura</Text>
+                  <Text style={styles.flowText}>
+                    1. Escanear codigo. 2. Validar cliente e local. 3. Fotografar mostrador. 4. Revisar. 5. Enviar para aprovacao.
+                  </Text>
+                  <TouchableOpacity
+                    style={[shared.btnSecondary, styles.historyButton]}
+                    onPress={() => navigation.navigate('DayHistory')}
+                  >
+                    <Text style={shared.btnSecondaryText}>Abrir historico do dia</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Pontos da rota</Text>
+                <Text style={styles.sectionCaption}>{stats.total} hidrômetro(s) ativos</Text>
+              </View>
+            </>
+          }
+          renderItem={({ item, index }) => {
+            const status = item.todayStatus?.status || 'pending';
+            return (
+              <View style={styles.customerCard}>
+                <View style={styles.cardTopRow}>
+                  <View style={styles.indexPill}>
+                    <Text style={styles.indexText}>{String(index + 1).padStart(2, '0')}</Text>
+                  </View>
+                  <StatusBadge status={status} />
+                </View>
+
+                <Text style={styles.customerName}>{item.customer.name}</Text>
+                <Text style={styles.customerAddr}>{item.customer.address}, {item.customer.city}</Text>
+
+                <View style={styles.metaGrid}>
+                  <MetaBlock label="Codigo" value={item.hydrometer.code} />
+                  <MetaBlock label="Ultima leitura" value={`${item.hydrometer.last_reading_value.toFixed(2)} m³`} />
+                </View>
+
+                <View style={styles.locationBox}>
+                  <Text style={styles.locationLabel}>Referencia do local</Text>
+                  <Text style={styles.locationText}>
+                    {item.hydrometer.location_description || 'Sem observacao adicional no cadastro.'}
                   </Text>
                 </View>
-                <StatusBadge status={status} />
+
+                <TouchableOpacity style={styles.captureButton} onPress={() => startCapture(item)}>
+                  <Text style={styles.captureButtonText}>Abrir camera e escanear codigo</Text>
+                </TouchableOpacity>
               </View>
-            </TouchableOpacity>
-          );
-        }}
-        ListEmptyComponent={
-          <View style={{ alignItems: 'center', paddingTop: 60 }}>
-            <Text style={{ color: colors.textMuted, fontSize: 14 }}>Nenhum cliente pendente na rota</Text>
-          </View>
-        }
-      />
-    </View>
+            );
+          }}
+          ListEmptyComponent={
+            <View style={shared.card}>
+              <Text style={styles.emptyTitle}>Nenhuma rota disponivel agora</Text>
+              <Text style={styles.emptyText}>
+                Verifique se existem clientes ativos com hidrômetro cadastrado e se sua API mobile está apontando para o backend certo.
+              </Text>
+            </View>
+          }
+        />
+      </View>
+    </SafeAreaView>
   );
 }
 
@@ -225,73 +260,231 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+function MetaBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.metaBlock}>
+      <Text style={styles.metaLabel}>{label}</Text>
+      <Text style={styles.metaValue}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: colors.navy950,
+  },
+  centered: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 14,
+    color: colors.textMuted,
+    fontSize: 13,
+  },
+  listContent: {
+    paddingHorizontal: 18,
+    paddingBottom: 32,
+  },
+  heroCard: {
+    marginTop: 10,
+    marginBottom: 18,
+    padding: 20,
+    borderRadius: 28,
+    backgroundColor: colors.sidebarNavy,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  heroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  heroEyebrow: {
+    color: colors.cyan,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.9,
+  },
+  heroTitle: {
+    color: colors.textPrimary,
+    fontSize: 28,
+    fontWeight: '900',
+    marginTop: 6,
+  },
+  heroSubtitle: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 8,
+  },
+  logoutPill: {
+    borderWidth: 1,
+    borderColor: colors.borderHover,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  logoutText: {
+    color: colors.textPrimary,
+    fontWeight: '800',
+    fontSize: 12,
+  },
   summaryRow: {
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 14,
+    marginTop: 18,
+    marginBottom: 18,
   },
   summaryCard: {
     flex: 1,
     borderRadius: 16,
     padding: 14,
+    minHeight: 84,
+    justifyContent: 'space-between',
   },
   summaryLabel: {
     color: colors.textMuted,
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '800',
     textTransform: 'uppercase',
-    marginBottom: 6,
   },
   summaryValue: {
-    fontSize: 24,
-    fontWeight: '800',
+    fontSize: 26,
+    fontWeight: '900',
   },
-  helperText: {
+  flowCard: {
+    borderRadius: 20,
+    padding: 18,
+    backgroundColor: 'rgba(7, 17, 31, 0.54)',
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  flowText: {
     color: colors.textSecondary,
     fontSize: 13,
     lineHeight: 20,
   },
+  historyButton: {
+    marginTop: 14,
+  },
+  sectionHeader: {
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  sectionCaption: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: 4,
+  },
   customerCard: {
     backgroundColor: colors.navy800,
-    borderRadius: 16,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 16,
-    marginBottom: 10,
+    padding: 18,
+    marginBottom: 14,
   },
-  customerRow: {
+  cardTopRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 14,
+    marginBottom: 12,
   },
-  avatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+  indexPill: {
     backgroundColor: colors.accentSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
   },
-  avatarText: {
+  indexText: {
     color: colors.accent,
     fontWeight: '800',
-    fontSize: 16,
+    fontSize: 12,
   },
   customerName: {
     color: colors.textPrimary,
-    fontWeight: '800',
-    fontSize: 15,
+    fontWeight: '900',
+    fontSize: 17,
   },
   customerAddr: {
     color: colors.textMuted,
-    fontSize: 12,
-    marginTop: 2,
+    fontSize: 13,
+    marginTop: 6,
+    lineHeight: 19,
   },
-  meterInfo: {
+  metaGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 16,
+  },
+  metaBlock: {
+    flex: 1,
+    borderRadius: 16,
+    padding: 14,
+    backgroundColor: colors.navy900,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  metaLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  metaValue: {
+    color: colors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  locationBox: {
+    marginTop: 14,
+    borderRadius: 16,
+    padding: 14,
+    backgroundColor: 'rgba(83, 211, 247, 0.08)',
+  },
+  locationLabel: {
     color: colors.cyan,
-    fontSize: 12,
-    marginTop: 5,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
+  locationText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  captureButton: {
+    marginTop: 16,
+    backgroundColor: colors.accent,
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  captureButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  emptyTitle: {
+    color: colors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  emptyText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 8,
   },
 });
