@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, use, FormEvent } from 'react';
+import { useEffect, useState, use, FormEvent, useMemo, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
-import { ArrowLeft, Droplets, FileText, MapPin, Calendar, Edit2, Trash2, Plus, X, Loader2 } from 'lucide-react';
+import { ArrowLeft, Droplets, MapPin, Calendar, Edit2, Trash2, Plus, X, Loader2 } from 'lucide-react';
 
 interface Customer {
   id: string; name: string; cpf_cnpj: string; phone: string; email: string;
@@ -32,9 +32,13 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     amount: '',
     reference_month: new Date().toISOString().slice(0, 7), // YYYY-MM
     due_date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
+    consumption_m3: '',
+    auto_amount: false,
   });
 
-  const load = () => {
+  const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
+
+  const load = useCallback(() => {
     Promise.all([
       api.get<Customer>(`/customers/${id}`),
       api.get<{ items: Invoice[] }>(`/invoices?customer_id=${id}&per_page=10`),
@@ -42,17 +46,17 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       setCustomer(c);
       setInvoices(inv.items);
     }).catch(console.error).finally(() => setLoading(false));
-  };
+  }, [id]);
 
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => { load(); }, [load]);
 
   const handleDelete = async () => {
     if (!confirm('Deseja realmente desligar/remover este cliente?')) return;
     try {
       await api.delete(`/customers/${id}`);
-      router.push('/customers');
-    } catch (err: any) {
-      alert(err.message || 'Erro ao excluir');
+      router.push('/clientes');
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Erro ao excluir');
     }
   };
 
@@ -65,15 +69,33 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         amount: parseFloat(invoiceForm.amount),
         reference_month: invoiceForm.reference_month,
         due_date: invoiceForm.due_date,
+        consumption_m3: consumptionValue || 0,
       });
       setShowInvoiceModal(false);
       load();
-    } catch (err: any) {
-      alert(err.message || 'Erro ao gerar fatura avulsa');
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Erro ao gerar fatura avulsa');
     } finally {
       setSavingInvoice(false);
     }
   };
+
+  useEffect(() => {
+    if (!invoiceForm.auto_amount || !consumptionValue || Number.isNaN(consumptionValue)) return;
+    let active = true;
+    api.get<{ final_amount: number }>(`/tariffs/simulate/${consumptionValue}`)
+      .then(res => {
+        if (active) {
+          setInvoiceForm(current => ({ ...current, amount: res.final_amount.toFixed(2) }));
+        }
+      })
+      .catch(() => {
+        // Keep manual value if simulation fails.
+      });
+    return () => {
+      active = false;
+    };
+  }, [invoiceForm.auto_amount, consumptionValue]);
 
   if (loading || !customer) return <div className="loading-page"><div className="spinner" style={{ width: 32, height: 32 }} /></div>;
 
@@ -81,7 +103,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     <>
       <Header title={customer.name} subtitle={`CPF/CNPJ: ${customer.cpf_cnpj}`} actions={
         <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => router.push(`/customers/${id}/edit`)}>
+          <button className="btn btn-secondary btn-sm" onClick={() => router.push(`/clientes/${id}/editar`)}>
             <Edit2 size={14} /> Editar
           </button>
           <button className="btn btn-danger btn-sm" onClick={handleDelete}>
@@ -90,7 +112,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         </div>
       } />
 
-      <button className="btn btn-ghost btn-sm" onClick={() => router.push('/customers')} style={{ marginBottom: 20 }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => router.push('/clientes')} style={{ marginBottom: 20 }}>
         <ArrowLeft size={14} /> Voltar
       </button>
 
@@ -164,7 +186,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
               {invoices.length === 0 ? (
                 <tr><td colSpan={5}><div className="empty-state" style={{ padding: 24 }}><p>Nenhuma fatura</p></div></td></tr>
               ) : invoices.map(inv => (
-                <tr key={inv.id} onClick={() => router.push(`/invoices/${inv.id}`)} style={{ cursor: 'pointer' }}>
+                <tr key={inv.id} onClick={() => router.push(`/faturas/${inv.id}`)} style={{ cursor: 'pointer' }}>
                   <td className="cell-primary">{inv.reference_month}</td>
                   <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : 'Fixo / Avulso'}</td>
                   <td style={{ fontWeight: 600 }}>{fmt(inv.amount)}</td>
@@ -196,6 +218,27 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                   onChange={e => setInvoiceForm({ ...invoiceForm, amount: e.target.value })}
                   required
                 />
+              </div>
+
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Consumo associado (m³)</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={invoiceForm.consumption_m3}
+                  onChange={e => setInvoiceForm({ ...invoiceForm, consumption_m3: e.target.value })}
+                  placeholder="Opcional"
+                />
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={invoiceForm.auto_amount}
+                    onChange={e => setInvoiceForm({ ...invoiceForm, auto_amount: e.target.checked })}
+                  />
+                  Calcular valor automaticamente pela tabela quando houver consumo
+                </label>
               </div>
 
               <div className="form-group" style={{ marginBottom: 16 }}>

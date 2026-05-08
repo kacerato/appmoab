@@ -51,6 +51,7 @@ a:hover { color: var(--accent-hover); }
 .sidebar-link svg { width: 18px; height: 18px; flex-shrink: 0; color: rgba(255,255,255,0.35); transition: color var(--transition); }
 .sidebar-link:hover svg { color: rgba(255,255,255,0.7); }
 .sidebar-badge { margin-left: auto; background: var(--danger); color: white; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 99px; min-width: 20px; text-align: center; }
+.sidebar-whisper { padding: 0 14px 10px; font-size: 10px; letter-spacing: 0.32em; text-transform: lowercase; color: rgba(255,255,255,0.08); user-select: none; }
 
 /* ── Header ─────────────────────────────── */
 .app-header { position: fixed; top: 0; left: var(--sidebar-width); right: 0; height: var(--header-height); background: rgba(255,255,255,0.85); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 32px; z-index: 90; }
@@ -63,6 +64,9 @@ a:hover { color: var(--accent-hover); }
 .card:hover { border-color: var(--border-hover); box-shadow: var(--shadow-md); }
 .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .card-title { font-size: 14px; font-weight: 600; color: var(--text-secondary); }
+.subtle-watermark { position: relative; overflow: hidden; }
+.subtle-watermark::after { content: 'kaceratw'; position: absolute; right: 16px; bottom: 12px; font-size: 12px; letter-spacing: 0.24em; color: rgba(15, 39, 68, 0.05); pointer-events: none; text-transform: lowercase; }
+.easter-egg-note { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 10px; letter-spacing: 0.18em; text-transform: lowercase; color: rgba(15, 39, 68, 0.16); user-select: none; }
 
 /* ── KPI Cards ──────────────────────────── */
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-bottom: 24px; }

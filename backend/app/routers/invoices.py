@@ -19,7 +19,7 @@ from app.models.customer import Customer
 from app.models.user import User
 from app.schemas.invoice import (
     InvoiceResponse, InvoiceListResponse,
-    InvoiceCreateManual, InvoiceSummary,
+    InvoiceCreateManual, InvoiceSummary, InvoiceWhatsAppDispatchResponse,
 )
 from app.services.inter_api import inter_service
 from app.services.whatsapp_api import whatsapp_service
@@ -300,6 +300,109 @@ async def force_emit_boleto(
         logger = logging.getLogger(__name__)
         logger.error(f"Erro ao emitir boleto forçado: {e}")
         raise HTTPException(status_code=500, detail=f"Falha ao emitir boleto: {str(e)}")
+
+
+@router.post("/{invoice_id}/send-whatsapp", response_model=InvoiceWhatsAppDispatchResponse)
+async def send_invoice_whatsapp(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Tenta enviar ou reenviar a fatura manualmente via WhatsApp com diagnóstico claro."""
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+
+    if not whatsapp_service.is_enabled:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="whatsapp_disabled",
+            detail="O envio por WhatsApp está desativado no backend.",
+        )
+
+    if not invoice.customer:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="customer_missing",
+            detail="A fatura não possui cliente associado.",
+        )
+
+    if not invoice.customer.phone:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="phone_missing",
+            detail="O cliente não possui telefone cadastrado.",
+        )
+
+    normalized_phone = whatsapp_service.normalize_phone(invoice.customer.phone)
+    if len(normalized_phone) < 12:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="phone_invalid",
+            detail="O telefone do cliente está incompleto ou inválido para WhatsApp.",
+        )
+
+    if not invoice.inter_codigo_solicitacao:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="boleto_missing",
+            detail="A fatura ainda não possui boleto emitido no Banco Inter.",
+        )
+
+    if not invoice.pdf_data:
+        try:
+            invoice.pdf_data = await inter_service.buscar_pdf(invoice.inter_codigo_solicitacao)
+            if invoice.pdf_data:
+                await db.flush()
+        except Exception as exc:
+            return InvoiceWhatsAppDispatchResponse(
+                invoice_id=invoice.id,
+                status="failed",
+                reason="pdf_fetch_error",
+                detail=f"Não foi possível obter o PDF do boleto: {exc}",
+            )
+
+    if not invoice.pdf_data:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="pdf_missing",
+            detail="O Banco Inter ainda não disponibilizou o PDF do boleto.",
+        )
+
+    wa_result = await whatsapp_service.send_invoice_document(
+        phone=invoice.customer.phone,
+        pdf_data=invoice.pdf_data,
+        filename=f"boleto_{str(invoice.id)[:8]}.pdf",
+        caption=f"Sua fatura do mês {invoice.reference_month} já está disponível.",
+    )
+
+    if not wa_result or wa_result.get("status") != "sent":
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="dispatch_failed",
+            detail=(wa_result or {}).get("error") or "A Evolution API não confirmou o envio.",
+        )
+
+    if invoice.status == "pending":
+        invoice.status = "sent"
+        await db.flush()
+
+    return InvoiceWhatsAppDispatchResponse(
+        invoice_id=invoice.id,
+        status="sent",
+        reason="ok",
+        detail=f"Fatura enviada com sucesso para {normalized_phone}.",
+    )
 
 
 async def process_pdf_and_whatsapp(codigo_solicitacao: str, phone: str, filename: str, caption: str):

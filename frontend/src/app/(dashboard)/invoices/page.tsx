@@ -4,17 +4,40 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
-import { Search, Download, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Download, ChevronLeft, ChevronRight, MessageCircleMore, Loader2 } from 'lucide-react';
 
 interface Invoice {
-  id: string; customer_name: string; customer_cpf_cnpj: string; amount: number;
-  consumption_m3: number; tariff_rate: number; due_date: string; paid_date: string;
-  status: string; reference_month: string; has_pdf: boolean; inter_linha_digitavel: string;
+  id: string;
+  customer_name: string;
+  customer_cpf_cnpj: string;
+  amount: number;
+  consumption_m3: number;
+  tariff_rate: number;
+  due_date: string;
+  paid_date: string;
+  status: string;
+  reference_month: string;
+  has_pdf: boolean;
+  inter_linha_digitavel: string;
 }
 
-interface ListRes { items: Invoice[]; total: number; page: number; per_page: number; }
+interface ListRes {
+  items: Invoice[];
+  total: number;
+  page: number;
+  per_page: number;
+}
 
-function fmt(v: number) { return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v); }
+interface WhatsAppDispatchResult {
+  invoice_id: string;
+  status: string;
+  reason: string;
+  detail: string | null;
+}
+
+function fmt(v: number) {
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+}
 
 export default function InvoicesPage() {
   const router = useRouter();
@@ -22,6 +45,8 @@ export default function InvoicesPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const [page, setPage] = useState(1);
+  const [sendingId, setSendingId] = useState<string | null>(null);
+  const [sendFeedback, setSendFeedback] = useState<Record<string, WhatsAppDispatchResult>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -29,11 +54,16 @@ export default function InvoicesPage() {
       let url = `/invoices?page=${page}&per_page=20`;
       if (filter) url += `&status=${filter}`;
       setData(await api.get<ListRes>(url));
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }, [page, filter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const downloadPdf = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -50,7 +80,33 @@ export default function InvoicesPage() {
       a.download = `boleto_${id.slice(0, 8)}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (err) { alert(err instanceof Error ? err.message : 'Erro'); }
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Erro');
+    }
+  };
+
+  const sendWhatsApp = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSendingId(id);
+    try {
+      const result = await api.post<WhatsAppDispatchResult>(`/invoices/${id}/send-whatsapp`);
+      setSendFeedback(current => ({ ...current, [id]: result }));
+      if (result.status === 'sent') {
+        await load();
+      }
+    } catch (err: unknown) {
+      setSendFeedback(current => ({
+        ...current,
+        [id]: {
+          invoice_id: id,
+          status: 'failed',
+          reason: 'request_failed',
+          detail: err instanceof Error ? err.message : 'Falha ao acionar o envio por WhatsApp.',
+        },
+      }));
+    } finally {
+      setSendingId(null);
+    }
   };
 
   const totalPages = data ? Math.ceil(data.total / data.per_page) : 0;
@@ -61,8 +117,11 @@ export default function InvoicesPage() {
 
       <div className="toolbar">
         {[
-          { v: '', l: 'Todas' }, { v: 'pending', l: 'Pendentes' }, { v: 'sent', l: 'Enviadas' },
-          { v: 'paid', l: 'Pagas' }, { v: 'overdue', l: 'Vencidas' },
+          { v: '', l: 'Todas' },
+          { v: 'pending', l: 'Pendentes' },
+          { v: 'sent', l: 'Enviadas' },
+          { v: 'paid', l: 'Pagas' },
+          { v: 'overdue', l: 'Vencidas' },
         ].map(f => (
           <button key={f.v} className={`btn ${filter === f.v ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => { setFilter(f.v); setPage(1); }}>
             {f.l}
@@ -73,30 +132,49 @@ export default function InvoicesPage() {
       <div className="table-wrapper">
         <table className="data-table">
           <thead>
-            <tr><th>Cliente</th><th>Ref</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>PDF</th></tr>
+            <tr><th>Cliente</th><th>Ref</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>Ações</th></tr>
           </thead>
           <tbody>
             {loading ? (
               <tr><td colSpan={7}><div className="loading-page" style={{ height: 200 }}><div className="spinner" /></div></td></tr>
             ) : !data?.items.length ? (
               <tr><td colSpan={7}><div className="empty-state"><p>Nenhuma fatura encontrada</p></div></td></tr>
-            ) : data.items.map(inv => (
-              <tr key={inv.id} onClick={() => router.push(`/invoices/${inv.id}`)} style={{ cursor: 'pointer' }}>
-                <td className="cell-primary">{inv.customer_name}</td>
-                <td>{inv.reference_month}</td>
-                <td>{inv.consumption_m3.toFixed(2)} m³</td>
-                <td style={{ fontWeight: 700 }}>{fmt(inv.amount)}</td>
-                <td>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</td>
-                <td><span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span></td>
-                <td>
-                  {inv.has_pdf && (
-                    <button className="btn btn-ghost btn-icon btn-sm" onClick={(e) => downloadPdf(inv.id, e)} title="Download PDF">
-                      <Download size={14} />
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+            ) : data.items.map(inv => {
+              const feedback = sendFeedback[inv.id];
+              const canSendWhatsApp = ['pending', 'sent', 'overdue'].includes(inv.status);
+
+              return (
+                <tr key={inv.id} onClick={() => router.push(`/faturas/${inv.id}`)} style={{ cursor: 'pointer' }}>
+                  <td className="cell-primary">
+                    {inv.customer_name}
+                    {feedback && (
+                      <div style={{ fontSize: 11, fontWeight: 500, color: feedback.status === 'sent' ? 'var(--success)' : 'var(--danger)', marginTop: 4 }}>
+                        {feedback.detail}
+                      </div>
+                    )}
+                  </td>
+                  <td>{inv.reference_month}</td>
+                  <td>{inv.consumption_m3.toFixed(2)} m³</td>
+                  <td style={{ fontWeight: 700 }}>{fmt(inv.amount)}</td>
+                  <td>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</td>
+                  <td><span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {canSendWhatsApp && (
+                        <button className="btn btn-ghost btn-icon btn-sm" onClick={(e) => sendWhatsApp(inv.id, e)} title="Encaminhar via WhatsApp">
+                          {sendingId === inv.id ? <Loader2 size={14} className="spinner" /> : <MessageCircleMore size={14} />}
+                        </button>
+                      )}
+                      {inv.has_pdf && (
+                        <button className="btn btn-ghost btn-icon btn-sm" onClick={(e) => downloadPdf(inv.id, e)} title="Download PDF">
+                          <Download size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

@@ -7,6 +7,7 @@ Todas as variáveis são carregadas do .env na raiz do backend/.
 
 from pathlib import Path
 from functools import lru_cache
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _env_file = Path(__file__).resolve().parent.parent / ".env"
@@ -35,7 +36,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # ── JWT Auth ───────────────────────────────────────────────
-    jwt_secret: str
+    jwt_secret: str = Field(validation_alias=AliasChoices("JWT_SECRET", "SECRET_KEY"))
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 43200  # 30 dias
 
@@ -49,7 +50,10 @@ class Settings(BaseSettings):
 
     # ── WhatsApp / Evolution API ───────────────────────────────
     whatsapp_enabled: bool = False
-    evolution_api_url: str = "http://evolution-api:8080"
+    evolution_api_url: str = Field(
+        default="http://evolution-api:8080",
+        validation_alias=AliasChoices("EVOLUTION_API_URL", "WHATSAPP_SERVICE_URL"),
+    )
     evolution_api_key: str = "appmoab-secret-key-123"
     evolution_instance_name: str = "appmoab"
     

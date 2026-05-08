@@ -23,6 +23,13 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
 
 
+class UserProfileUpdate(BaseModel):
+    name: str | None = None
+    email: EmailStr | None = None
+    current_password: str | None = None
+    new_password: str | None = None
+
+
 class UserResponse(UserBase):
     id: UUID
     is_active: bool

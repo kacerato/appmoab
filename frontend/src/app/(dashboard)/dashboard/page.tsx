@@ -123,11 +123,11 @@ export default function DashboardPage() {
         <div className="card">
           <div className="card-header">
             <span className="card-title">Deduções Mensais</span>
-            <Link href="/settings" className="btn btn-ghost btn-sm"><Settings size={13} /> Configurar</Link>
+            <Link href="/configuracoes" className="btn btn-ghost btn-sm"><Settings size={13} /> Configurar</Link>
           </div>
           {data.financial.deductions.items.length === 0 ? (
             <div className="empty-state" style={{ padding: 32 }}>
-              <p>Nenhuma dedução cadastrada. <Link href="/settings">Configure nas configurações.</Link></p>
+              <p>Nenhuma dedução cadastrada. <Link href="/configuracoes">Configure nas configurações.</Link></p>
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

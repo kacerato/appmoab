@@ -26,7 +26,7 @@ export default function NewCustomerPage() {
     setError('');
     try {
       await api.post('/customers', form);
-      router.push('/customers');
+      router.push('/clientes');
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Erro ao cadastrar');
     } finally { setLoading(false); }

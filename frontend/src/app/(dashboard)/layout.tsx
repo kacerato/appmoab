@@ -13,6 +13,20 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
     if (!loading && !user) router.replace('/login');
   }, [loading, user, router]);
 
+  useEffect(() => {
+    if (!loading && user) {
+      [
+        '/painel',
+        '/clientes',
+        '/hidrometros',
+        '/leituras',
+        '/faturas',
+        '/tarifas',
+        '/configuracoes',
+      ].forEach(route => router.prefetch(route));
+    }
+  }, [loading, user, router]);
+
   if (loading) {
     return (
       <div className="loading-page">

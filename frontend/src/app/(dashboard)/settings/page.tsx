@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState, FormEvent } from 'react';
+import { useEffect, useMemo, useState, FormEvent } from 'react';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
-import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2 } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { BACKEND_FRAMEWORK, BUILD_REVISION, DEPLOY_TARGET, FRONTEND_FRAMEWORK, FRONTEND_VERSION } from '@/lib/app-info';
+import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 
 interface Deduction {
   id: string;
@@ -13,27 +15,65 @@ interface Deduction {
   sort_order: number;
 }
 
+interface HealthData {
+  status: string;
+  app: string;
+  version: string;
+  revision: string;
+  whatsapp_enabled: boolean;
+  inter_sandbox: boolean;
+}
+
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 }
 
 export default function SettingsPage() {
+  const { user, setCurrentUser } = useAuth();
   const [deductions, setDeductions] = useState<Deduction[]>([]);
   const [total, setTotal] = useState(0);
+  const [health, setHealth] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState(true);
   const [editId, setEditId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ label: '', amount: '' });
   const [saving, setSaving] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profileForm, setProfileForm] = useState<{
+    name: string | null;
+    email: string | null;
+    current_password: string;
+    new_password: string;
+  }>({
+    name: null,
+    email: null,
+    current_password: '',
+    new_password: '',
+  });
+  const defaultProfileValues = useMemo(() => ({
+    name: user?.name || '',
+    email: user?.email || '',
+  }), [user?.email, user?.name]);
 
   const load = () => {
-    api.get<{ items: Deduction[]; total: number }>('/deductions')
-      .then(res => { setDeductions(res.items); setTotal(res.total); })
+    Promise.all([
+      api.get<{ items: Deduction[]; total: number }>('/deductions'),
+      api.get<HealthData>('/health'),
+    ])
+      .then(([deductionData, healthData]) => {
+        setDeductions(deductionData.items);
+        setTotal(deductionData.total);
+        setHealth(healthData);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
@@ -44,8 +84,11 @@ export default function SettingsPage() {
       setForm({ label: '', amount: '' });
       setShowAdd(false);
       load();
-    } catch (err) { console.error(err); }
-    finally { setSaving(false); }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleUpdate = async (id: string) => {
@@ -56,15 +99,74 @@ export default function SettingsPage() {
       setEditId(null);
       setForm({ label: '', amount: '' });
       load();
-    } catch (err) { console.error(err); }
-    finally { setSaving(false); }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async (id: string) => {
     if (!confirm('Remover esta dedução?')) return;
-    try { await api.delete(`/deductions/${id}`); load(); }
-    catch (err) { console.error(err); }
+    try {
+      await api.delete(`/deductions/${id}`);
+      load();
+    } catch (err) {
+      console.error(err);
+    }
   };
+
+  const handleProfileSave = async (e: FormEvent) => {
+    e.preventDefault();
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileMessage(null);
+    const activeProfile = {
+      name: (profileForm.name ?? defaultProfileValues.name).trim(),
+      email: (profileForm.email ?? defaultProfileValues.email).trim(),
+      current_password: profileForm.current_password,
+      new_password: profileForm.new_password,
+    };
+
+    try {
+      const payload: Record<string, string> = {
+        name: activeProfile.name,
+        email: activeProfile.email,
+      };
+      if (activeProfile.new_password) {
+        payload.current_password = activeProfile.current_password;
+        payload.new_password = activeProfile.new_password;
+      }
+
+      const updatedUser = await api.patch<{
+        id: string;
+        name: string;
+        email: string;
+        role: string;
+        is_active: boolean;
+      }>('/auth/me', payload);
+
+      setCurrentUser(updatedUser);
+      setProfileForm({
+        name: updatedUser.name,
+        email: updatedUser.email,
+        current_password: '',
+        new_password: '',
+      });
+      setProfileMessage('Perfil atualizado com sucesso.');
+    } catch (err: unknown) {
+      setProfileError(err instanceof Error ? err.message : 'Não foi possível atualizar seu perfil.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const systemVersion = useMemo(() => {
+    const backendVersion = health?.version || '1.0.0';
+    return backendVersion === FRONTEND_VERSION ? backendVersion : `${backendVersion} / web ${FRONTEND_VERSION}`;
+  }, [health]);
+
+  const revisionLabel = (health?.revision || BUILD_REVISION || '').slice(0, 7);
 
   const startEdit = (d: Deduction) => {
     setEditId(d.id);
@@ -74,21 +176,61 @@ export default function SettingsPage() {
 
   return (
     <>
-      <Header title="Configurações" subtitle="Parâmetros do sistema" />
+      <Header title="Configurações" subtitle="Sistema, perfil e automações financeiras" />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <SettingCard icon={<Database size={18} />} title="Banco de Dados" desc="Neon PostgreSQL Serverless" status="Conectado" statusColor="var(--success)" />
-        <SettingCard icon={<Key size={18} />} title="Banco Inter" desc="API Cobrança V3 — Sandbox" status="Configurado" statusColor="var(--success)" />
-        <SettingCard icon={<Globe size={18} />} title="WhatsApp" desc="Cloud API — Aguardando número" status="Desativado" statusColor="var(--warning)" />
-        <SettingCard icon={<Server size={18} />} title="Kimi K2.6 Vision" desc="OCR de hidrômetros — Moonshot AI" status="Configurado" statusColor="var(--success)" />
+      <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 0.9fr', gap: 16, alignItems: 'start' }}>
+        <div className="card subtle-watermark">
+          <div className="card-header">
+            <span className="card-title">Meu Perfil</span>
+            <span className="badge active"><ShieldCheck size={12} /> {user?.role === 'admin' ? 'Administrador' : 'Colaborador'}</span>
+          </div>
+          <form onSubmit={handleProfileSave} className="form-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
+            <div className="form-group">
+              <label className="form-label">Nome</label>
+              <input className="form-input" value={profileForm.name ?? defaultProfileValues.name} onChange={e => setProfileForm(f => ({ ...f, name: e.target.value }))} required />
+            </div>
+            <div className="form-group">
+              <label className="form-label">E-mail</label>
+              <input className="form-input" type="email" value={profileForm.email ?? defaultProfileValues.email} onChange={e => setProfileForm(f => ({ ...f, email: e.target.value }))} required />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Senha Atual</label>
+              <input className="form-input" type="password" value={profileForm.current_password} onChange={e => setProfileForm(f => ({ ...f, current_password: e.target.value }))} placeholder="Somente se quiser trocar" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Nova Senha</label>
+              <input className="form-input" type="password" value={profileForm.new_password} onChange={e => setProfileForm(f => ({ ...f, new_password: e.target.value }))} placeholder="Opcional" />
+            </div>
+            <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 6 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                {profileError ? <span style={{ color: 'var(--danger)' }}>{profileError}</span> : profileMessage || 'Seu perfil pode ser ajustado sem depender do administrador.'}
+              </div>
+              <button className="btn btn-primary btn-sm" type="submit" disabled={profileSaving}>
+                {profileSaving ? <Loader2 size={14} className="spinner" /> : <Save size={14} />} Salvar perfil
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div style={{ display: 'grid', gap: 16 }}>
+          <SettingCard icon={<Database size={18} />} title="Banco de Dados" desc="Neon PostgreSQL Serverless" status="Conectado" statusColor="var(--success)" />
+          <SettingCard icon={<Key size={18} />} title="Banco Inter" desc={health?.inter_sandbox ? 'Cobrança V3 em Sandbox' : 'Cobrança V3 em Produção'} status="Configurado" statusColor="var(--success)" />
+          <SettingCard
+            icon={<Globe size={18} />}
+            title="WhatsApp"
+            desc="Evolution API conectada ao backend"
+            status={health?.whatsapp_enabled ? 'Ativado' : 'Desativado'}
+            statusColor={health?.whatsapp_enabled ? 'var(--success)' : 'var(--warning)'}
+          />
+          <SettingCard icon={<Server size={18} />} title="Kimi K2.6 Vision" desc="OCR de hidrômetros e validação de consumo" status="Configurado" statusColor="var(--success)" />
+        </div>
       </div>
 
-      {/* Deduções Configuráveis */}
       <div className="card" style={{ marginTop: 24 }}>
         <div className="card-header">
           <span className="card-title">Deduções Mensais</span>
           <button className="btn btn-primary btn-sm" onClick={() => { setShowAdd(true); setEditId(null); setForm({ label: '', amount: '' }); }}>
-            <Plus size={14} /> Nova Dedução
+            <Plus size={14} /> Nova dedução
           </button>
         </div>
 
@@ -109,7 +251,7 @@ export default function SettingsPage() {
           </div>
         ) : deductions.length === 0 ? (
           <div className="empty-state" style={{ padding: 32 }}>
-            <p>Nenhuma dedução cadastrada. Clique em &quot;Nova Dedução&quot; para começar.</p>
+            <p>Nenhuma dedução cadastrada. Clique em &quot;Nova dedução&quot; para começar.</p>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -147,10 +289,16 @@ export default function SettingsPage() {
       <div className="card" style={{ marginTop: 24 }}>
         <div className="card-header"><span className="card-title">Informações do Sistema</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Versão</span><span style={{ fontWeight: 600 }}>1.0.0</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Backend</span><span style={{ fontWeight: 600 }}>FastAPI (Python)</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Frontend</span><span style={{ fontWeight: 600 }}>Next.js 16</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Deploy</span><span style={{ fontWeight: 600 }}>Vercel + Railway</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Versão</span><span style={{ fontWeight: 600 }}>{systemVersion}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Backend</span><span style={{ fontWeight: 600 }}>{BACKEND_FRAMEWORK}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Frontend</span><span style={{ fontWeight: 600 }}>{FRONTEND_FRAMEWORK}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Deploy</span><span style={{ fontWeight: 600 }}>{DEPLOY_TARGET}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Revisão</span><span style={{ fontWeight: 600 }}>{revisionLabel || 'local'}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Status</span><span style={{ fontWeight: 600 }}>{health?.status || 'carregando'}</span></div>
+        </div>
+        <div className="easter-egg-note">
+          <Sparkles size={12} />
+          <span>kaceratw</span>
         </div>
       </div>
     </>

@@ -4,24 +4,41 @@ import { useEffect, useState, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
-import { ArrowLeft, Download, Copy, FileText, Ban } from 'lucide-react';
+import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore } from 'lucide-react';
 
 interface Invoice {
-  id: string; customer_id: string; customer_name: string; customer_cpf_cnpj: string;
-  reading_id: string | null; consumption_m3: number; tariff_rate: number;
-  amount: number; reference_month: string; due_date: string; paid_date: string | null;
-  status: string; inter_codigo_solicitacao: string | null; inter_nosso_numero: string | null;
-  inter_linha_digitavel: string | null; inter_codigo_barras: string | null;
-  inter_pix_copia_cola: string | null; has_pdf: boolean; created_at: string;
+  id: string;
+  customer_id: string;
+  customer_name: string;
+  customer_cpf_cnpj: string;
+  reading_id: string | null;
+  consumption_m3: number;
+  tariff_rate: number;
+  amount: number;
+  reference_month: string;
+  due_date: string;
+  paid_date: string | null;
+  status: string;
+  inter_codigo_solicitacao: string | null;
+  inter_nosso_numero: string | null;
+  inter_linha_digitavel: string | null;
+  inter_codigo_barras: string | null;
+  inter_pix_copia_cola: string | null;
+  has_pdf: boolean;
+  created_at: string;
 }
 
-function fmt(v: number) { return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v); }
+function fmt(v: number) {
+  return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+}
 
 export default function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const [inv, setInv] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [whatsAppFeedback, setWhatsAppFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     api.get<Invoice>(`/invoices/${id}`)
@@ -36,16 +53,18 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/invoices/${id}/pdf`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) { 
-        alert('O Banco Inter ainda está processando o PDF deste boleto. Por favor, aguarde de 5 a 10 segundos e tente novamente.'); 
-        return; 
+      if (!res.ok) {
+        alert('O Banco Inter ainda está processando o PDF deste boleto. Aguarde alguns segundos e tente novamente.');
+        return;
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = `boleto_${id.slice(0, 8)}.pdf`; a.click();
+      a.href = url;
+      a.download = `boleto_${id.slice(0, 8)}.pdf`;
+      a.click();
       URL.revokeObjectURL(url);
-    } catch (e) {
+    } catch {
       alert('Erro de conexão ao tentar baixar o PDF.');
     }
   };
@@ -61,20 +80,39 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       await api.post(`/invoices/${id}/cancel`);
       const updated = await api.get<Invoice>(`/invoices/${id}`);
       setInv(updated);
-    } catch (e) { alert(e instanceof Error ? e.message : 'Erro'); }
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Erro');
+    }
   };
 
   const emitBoleto = async () => {
-    setLoading(true);
+    setActionLoading('boleto');
     try {
       await api.post(`/invoices/${id}/emit-boleto`);
       const updated = await api.get<Invoice>(`/invoices/${id}`);
       setInv(updated);
       alert('Boleto emitido com sucesso no Banco Inter!');
-    } catch (e: any) {
-      alert(e.message || 'Erro ao emitir boleto no Banco Inter');
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Erro ao emitir boleto no Banco Inter');
     } finally {
-      setLoading(false);
+      setActionLoading(null);
+    }
+  };
+
+  const sendWhatsApp = async () => {
+    setActionLoading('whatsapp');
+    setWhatsAppFeedback(null);
+    try {
+      const result = await api.post<{ detail: string; status: string }>(`/invoices/${id}/send-whatsapp`);
+      setWhatsAppFeedback(result.detail || (result.status === 'sent' ? 'Fatura enviada com sucesso.' : 'Falha ao enviar a fatura.'));
+      if (result.status === 'sent') {
+        const updated = await api.get<Invoice>(`/invoices/${id}`);
+        setInv(updated);
+      }
+    } catch (e: unknown) {
+      setWhatsAppFeedback(e instanceof Error ? e.message : 'Não foi possível encaminhar a fatura pelo WhatsApp.');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -85,7 +123,14 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       <Header title={`Fatura ${inv.reference_month}`} subtitle={inv.customer_name} actions={
         <div style={{ display: 'flex', gap: 8 }}>
           {!inv.inter_codigo_solicitacao && (
-            <button className="btn btn-primary btn-sm" onClick={emitBoleto}>Emitir Boleto Inter</button>
+            <button className="btn btn-primary btn-sm" onClick={emitBoleto} disabled={actionLoading === 'boleto'}>
+              {actionLoading === 'boleto' ? <Loader2 size={14} className="spinner" /> : 'Emitir Boleto Inter'}
+            </button>
+          )}
+          {['pending', 'sent', 'overdue'].includes(inv.status) && (
+            <button className="btn btn-secondary btn-sm" onClick={sendWhatsApp} disabled={actionLoading === 'whatsapp'}>
+              {actionLoading === 'whatsapp' ? <Loader2 size={14} className="spinner" /> : <MessageCircleMore size={14} />} WhatsApp
+            </button>
           )}
           {(inv.has_pdf || inv.inter_codigo_solicitacao) && (
             <button className="btn btn-secondary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>
@@ -94,9 +139,16 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         </div>
       } />
 
-      <button className="btn btn-ghost btn-sm" onClick={() => router.push('/invoices')} style={{ marginBottom: 20 }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => router.push('/faturas')} style={{ marginBottom: 20 }}>
         <ArrowLeft size={14} /> Voltar
       </button>
+
+      {whatsAppFeedback && (
+        <div className="card" style={{ marginBottom: 16, padding: 14, borderColor: 'var(--border-hover)' }}>
+          <strong style={{ display: 'block', marginBottom: 4 }}>WhatsApp</strong>
+          <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>{whatsAppFeedback}</span>
+        </div>
+      )}
 
       <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <div className="kpi-card green">

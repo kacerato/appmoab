@@ -3,6 +3,7 @@ AquaMoab — Aplicação principal FastAPI.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -92,6 +93,7 @@ async def health_check():
         "status": "healthy",
         "app": settings.app_name,
         "version": settings.app_version,
+        "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA") or "",
         "whatsapp_enabled": settings.whatsapp_enabled,
         "inter_sandbox": settings.inter_sandbox,
     }

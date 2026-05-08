@@ -15,16 +15,16 @@ type NavItem = NavSection | NavLink;
 
 const NAV_ITEMS: NavItem[] = [
   { section: 'Principal' },
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/customers', label: 'Clientes', icon: Users },
-  { href: '/hydrometers', label: 'Hidrômetros', icon: Droplets },
+  { href: '/painel', label: 'Painel', icon: LayoutDashboard },
+  { href: '/clientes', label: 'Clientes', icon: Users },
+  { href: '/hidrometros', label: 'Hidrômetros', icon: Droplets },
   { section: 'Operações' },
-  { href: '/readings', label: 'Leituras', icon: ClipboardCheck },
-  { href: '/invoices', label: 'Faturas', icon: FileText },
+  { href: '/leituras', label: 'Leituras', icon: ClipboardCheck },
+  { href: '/faturas', label: 'Faturas', icon: FileText },
   { section: 'Configurações' },
-  { href: '/tariffs', label: 'Tarifas', icon: DollarSign },
-  { href: '/notifications', label: 'Notificações', icon: Bell },
-  { href: '/settings', label: 'Configurações', icon: Settings },
+  { href: '/tarifas', label: 'Tarifas', icon: DollarSign },
+  { href: '/notificacoes', label: 'Notificações', icon: Bell },
+  { href: '/configuracoes', label: 'Configurações', icon: Settings },
 ];
 
 export default function Sidebar() {
@@ -79,6 +79,7 @@ export default function Sidebar() {
             </div>
           </div>
         </div>
+        <div className="sidebar-whisper" aria-hidden="true">kaceratw</div>
         <button className="sidebar-link" onClick={logout} style={{ color: 'var(--danger)' }}>
           <LogOut /> Sair
         </button>

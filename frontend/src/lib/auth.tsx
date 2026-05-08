@@ -1,5 +1,7 @@
 'use client';
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { api } from '@/lib/api';
 
@@ -16,6 +18,8 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
+  refreshUser: () => Promise<User | null>;
+  setCurrentUser: (user: User) => void;
   isAdmin: boolean;
 }
 
@@ -25,32 +29,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadUser = useCallback(async () => {
+  const loadUser = useCallback(async (): Promise<User | null> => {
     const token = localStorage.getItem('token');
-    if (!token) { setLoading(false); return; }
+    if (!token) {
+      setLoading(false);
+      return null;
+    }
 
-    // Tenta restaurar o user do localStorage primeiro (instantâneo)
     const cached = localStorage.getItem('user');
     if (cached) {
-      try { setUser(JSON.parse(cached)); } catch { /* ignore */ }
+      try {
+        setUser(JSON.parse(cached));
+      } catch {
+        // Ignore malformed cached user.
+      }
     }
 
     try {
-      const u = await api.get<User>('/auth/me');
-      setUser(u);
-      localStorage.setItem('user', JSON.stringify(u));
-    } catch (err: any) {
-      if (err.message === 'Não autorizado') {
+      const nextUser = await api.get<User>('/auth/me');
+      setUser(nextUser);
+      localStorage.setItem('user', JSON.stringify(nextUser));
+      return nextUser;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message === 'NÃ£o autorizado') {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         setUser(null);
       }
+      return null;
     } finally {
       setLoading(false);
     }
   }, []);
 
-  useEffect(() => { loadUser(); }, [loadUser]);
+  useEffect(() => {
+    void loadUser();
+  }, [loadUser]);
 
   const login = async (email: string, password: string) => {
     const res = await api.post<{ access_token: string; name: string; role: string; user_id: string }>(
@@ -69,8 +83,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = '/login';
   };
 
+  const setCurrentUser = (nextUser: User) => {
+    localStorage.setItem('user', JSON.stringify(nextUser));
+    setUser(nextUser);
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, isAdmin: user?.role === 'admin' }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        login,
+        logout,
+        refreshUser: loadUser,
+        setCurrentUser,
+        isAdmin: user?.role === 'admin',
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

@@ -40,7 +40,7 @@ export default function EditCustomerPage({ params }: { params: Promise<{ id: str
     setError('');
     try {
       await api.patch(`/customers/${id}`, form);
-      router.push(`/customers/${id}`);
+      router.push(`/clientes/${id}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Erro ao salvar');
     } finally { setSaving(false); }

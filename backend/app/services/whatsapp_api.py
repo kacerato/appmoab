@@ -20,6 +20,15 @@ class WhatsAppService:
     def is_enabled(self) -> bool:
         return settings.whatsapp_enabled
 
+    @staticmethod
+    def normalize_phone(phone: str) -> str:
+        digits = "".join(c for c in phone if c.isdigit())
+        if not digits:
+            return ""
+        if not digits.startswith("55"):
+            digits = f"55{digits}"
+        return digits
+
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
@@ -43,9 +52,7 @@ class WhatsAppService:
             return None
 
         # Formata número (BR: +55)
-        digits = "".join(c for c in phone if c.isdigit())
-        if not digits.startswith("55"):
-            digits = f"55{digits}"
+        digits = self.normalize_phone(phone)
 
         # Simula o texto dos templates
         text_message = ""
@@ -92,9 +99,7 @@ class WhatsAppService:
         if not self.is_enabled:
             return None
 
-        digits = "".join(c for c in phone if c.isdigit())
-        if not digits.startswith("55"):
-            digits = f"55{digits}"
+        digits = self.normalize_phone(phone)
 
         client = await self._get_client()
         base64_pdf = base64.b64encode(pdf_data).decode('utf-8')

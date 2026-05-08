@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.user import User
 from app.schemas.auth import LoginRequest, TokenResponse, RegisterRequest
-from app.schemas.user import UserResponse, UserUpdate, UserListResponse
+from app.schemas.user import UserResponse, UserUpdate, UserListResponse, UserProfileUpdate
 from app.utils.security import (
     hash_password, verify_password, create_access_token,
     get_current_user, require_admin,
@@ -66,6 +66,36 @@ async def register(
 @router.get("/me", response_model=UserResponse)
 async def get_me(current_user: User = Depends(get_current_user)):
     """Retorna dados do usuário autenticado."""
+    return current_user
+
+
+@router.patch("/me", response_model=UserResponse)
+async def update_me(
+    data: UserProfileUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Atualiza o próprio perfil do usuário autenticado."""
+    if data.email and data.email != current_user.email:
+        existing = await db.execute(select(User).where(User.email == data.email))
+        existing_user = existing.scalar_one_or_none()
+        if existing_user and existing_user.id != current_user.id:
+            raise HTTPException(status_code=400, detail="Email já cadastrado")
+
+    if data.new_password:
+        if not data.current_password:
+            raise HTTPException(status_code=400, detail="Informe a senha atual para definir uma nova senha")
+        if not verify_password(data.current_password, current_user.password_hash):
+            raise HTTPException(status_code=400, detail="Senha atual incorreta")
+        current_user.password_hash = hash_password(data.new_password)
+
+    if data.name is not None:
+        current_user.name = data.name
+    if data.email is not None:
+        current_user.email = str(data.email)
+
+    await db.flush()
+    await db.refresh(current_user)
     return current_user
 
 

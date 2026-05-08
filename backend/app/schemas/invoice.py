@@ -58,3 +58,10 @@ class InvoiceSummary(BaseModel):
     invoices_pending: int
     invoices_overdue: int
     invoices_paid: int
+
+
+class InvoiceWhatsAppDispatchResponse(BaseModel):
+    invoice_id: UUID
+    status: str
+    reason: str
+    detail: str | None = None
