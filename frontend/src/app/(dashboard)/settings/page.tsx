@@ -1,6 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState, FormEvent } from 'react';
+/* eslint-disable react-hooks/set-state-in-effect */
+
+import { useEffect, useMemo, useState, FormEvent, useCallback } from 'react';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
@@ -24,6 +26,14 @@ interface HealthData {
   inter_sandbox: boolean;
 }
 
+interface ManagedUser {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+}
+
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 }
@@ -41,6 +51,17 @@ export default function SettingsPage() {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [userSaving, setUserSaving] = useState(false);
+  const [userMessage, setUserMessage] = useState<string | null>(null);
+  const [userError, setUserError] = useState<string | null>(null);
+  const [newUserForm, setNewUserForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    role: 'collaborator',
+  });
   const [profileForm, setProfileForm] = useState<{
     name: string | null;
     email: string | null;
@@ -57,23 +78,34 @@ export default function SettingsPage() {
     email: user?.email || '',
   }), [user?.email, user?.name]);
 
-  const load = () => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setUsersLoading(user?.role === 'admin');
     Promise.all([
       api.get<{ items: Deduction[]; total: number }>('/deductions'),
       api.get<HealthData>('/health'),
+      user?.role === 'admin'
+        ? api.get<{ items: ManagedUser[]; total: number }>('/auth/users')
+        : Promise.resolve(null),
     ])
-      .then(([deductionData, healthData]) => {
+      .then(([deductionData, healthData, usersData]) => {
         setDeductions(deductionData.items);
         setTotal(deductionData.total);
         setHealth(healthData);
+        if (usersData) {
+          setUsers(usersData.items);
+        }
       })
       .catch(console.error)
-      .finally(() => setLoading(false));
-  };
+      .finally(() => {
+        setLoading(false);
+        setUsersLoading(false);
+      });
+  }, [user?.role]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
@@ -158,6 +190,52 @@ export default function SettingsPage() {
       setProfileError(err instanceof Error ? err.message : 'Não foi possível atualizar seu perfil.');
     } finally {
       setProfileSaving(false);
+    }
+  };
+
+  const handleCreateUser = async (e: FormEvent) => {
+    e.preventDefault();
+    setUserSaving(true);
+    setUserError(null);
+    setUserMessage(null);
+
+    try {
+      await api.post('/auth/register', {
+        name: newUserForm.name.trim(),
+        email: newUserForm.email.trim(),
+        password: newUserForm.password,
+        role: newUserForm.role,
+      });
+      setNewUserForm({
+        name: '',
+        email: '',
+        password: '',
+        role: 'collaborator',
+      });
+      setUserMessage('Usuário criado com sucesso.');
+      load();
+    } catch (err: unknown) {
+      setUserError(err instanceof Error ? err.message : 'Não foi possível criar o usuário.');
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const handleToggleUser = async (targetUser: ManagedUser) => {
+    setUserSaving(true);
+    setUserError(null);
+    setUserMessage(null);
+
+    try {
+      await api.patch(`/auth/users/${targetUser.id}`, {
+        is_active: !targetUser.is_active,
+      });
+      setUserMessage(`Usuário ${targetUser.is_active ? 'desativado' : 'reativado'} com sucesso.`);
+      load();
+    } catch (err: unknown) {
+      setUserError(err instanceof Error ? err.message : 'Não foi possível atualizar o usuário.');
+    } finally {
+      setUserSaving(false);
     }
   };
 
@@ -301,6 +379,94 @@ export default function SettingsPage() {
           <span>kaceratw</span>
         </div>
       </div>
+
+      {user?.role === 'admin' && (
+        <div className="card" style={{ marginTop: 24 }}>
+          <div className="card-header">
+            <span className="card-title">Usuários do Sistema</span>
+          </div>
+
+          <form onSubmit={handleCreateUser} className="form-grid" style={{ gridTemplateColumns: '1.2fr 1.2fr 1fr 0.8fr auto', marginBottom: 18 }}>
+            <input
+              className="form-input"
+              placeholder="Nome"
+              value={newUserForm.name}
+              onChange={e => setNewUserForm(current => ({ ...current, name: e.target.value }))}
+              required
+            />
+            <input
+              className="form-input"
+              type="email"
+              placeholder="E-mail"
+              value={newUserForm.email}
+              onChange={e => setNewUserForm(current => ({ ...current, email: e.target.value }))}
+              required
+            />
+            <input
+              className="form-input"
+              type="password"
+              placeholder="Senha inicial"
+              value={newUserForm.password}
+              onChange={e => setNewUserForm(current => ({ ...current, password: e.target.value }))}
+              required
+            />
+            <select
+              className="form-select"
+              value={newUserForm.role}
+              onChange={e => setNewUserForm(current => ({ ...current, role: e.target.value }))}
+            >
+              <option value="collaborator">Colaborador</option>
+              <option value="admin">Administrador</option>
+            </select>
+            <button className="btn btn-primary btn-sm" type="submit" disabled={userSaving}>
+              {userSaving ? <Loader2 size={14} className="spinner" /> : <Plus size={14} />} Criar
+            </button>
+          </form>
+
+          {(userMessage || userError) && (
+            <div style={{ marginBottom: 14, fontSize: 12, color: userError ? 'var(--danger)' : 'var(--success)' }}>
+              {userError || userMessage}
+            </div>
+          )}
+
+          {usersLoading ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {[...Array(3)].map((_, i) => <div key={i} className="skeleton" style={{ height: 40 }} />)}
+            </div>
+          ) : (
+            <div className="table-wrapper" style={{ border: 'none' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Nome</th>
+                    <th>E-mail</th>
+                    <th>Perfil</th>
+                    <th>Status</th>
+                    <th>Ação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {!users.length ? (
+                    <tr><td colSpan={5}><div className="empty-state" style={{ padding: 20 }}><p>Nenhum usuário cadastrado.</p></div></td></tr>
+                  ) : users.map(managedUser => (
+                    <tr key={managedUser.id}>
+                      <td className="cell-primary">{managedUser.name}</td>
+                      <td>{managedUser.email}</td>
+                      <td>{managedUser.role === 'admin' ? 'Administrador' : 'Colaborador'}</td>
+                      <td><span className={`badge ${managedUser.is_active ? 'active' : 'suspended'}`}>{managedUser.is_active ? 'Ativo' : 'Desativado'}</span></td>
+                      <td>
+                        <button className="btn btn-secondary btn-sm" type="button" disabled={userSaving || managedUser.id === user.id} onClick={() => handleToggleUser(managedUser)}>
+                          {managedUser.is_active ? 'Desativar' : 'Reativar'}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
