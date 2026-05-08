@@ -117,62 +117,72 @@ export default function CameraScreen() {
     }
   };
 
-  const stageTitle = stage === 'code' ? 'Etapa 1 • Codigo do hidrometro' : 'Etapa 2 • Leitura do mostrador';
+  const stageTitle = stage === 'code' ? 'Etapa 1 - Codigo do hidrometro' : 'Etapa 2 - Leitura do mostrador';
   const guideText = stage === 'code'
     ? 'Enquadre somente o codigo de identificacao gravado no hidrometro.'
     : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
-      <CameraView style={styles.camera} ref={cameraRef} facing="back">
-        <View style={styles.overlayTop}>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
-            <Text style={styles.backText}>Voltar</Text>
-          </TouchableOpacity>
-          <View style={styles.stageHeaderText}>
-            <Text style={styles.stageTitle}>{stageTitle}</Text>
-            <Text style={styles.stageSubtitle}>{activeCustomerName}</Text>
-          </View>
-        </View>
+      <View style={styles.cameraShell}>
+        <CameraView style={styles.camera} ref={cameraRef} facing="back" />
 
-        <View style={styles.guide}>
-          <View style={[styles.guideBox, stage === 'code' ? styles.guideCode : styles.guideReading]}>
-            <View style={[styles.corner, styles.cornerTL]} />
-            <View style={[styles.corner, styles.cornerTR]} />
-            <View style={[styles.corner, styles.cornerBL]} />
-            <View style={[styles.corner, styles.cornerBR]} />
+        <View pointerEvents="box-none" style={styles.overlay}>
+          <View style={styles.overlayTop}>
+            <TouchableOpacity onPress={() => navigation.goBack()}>
+              <Text style={styles.backText}>Voltar</Text>
+            </TouchableOpacity>
+            <View style={styles.stageHeaderText}>
+              <Text style={styles.stageTitle}>{stageTitle}</Text>
+              <Text style={styles.stageSubtitle}>{activeCustomerName}</Text>
+            </View>
           </View>
-          <Text style={styles.guideText}>{guideText}</Text>
-        </View>
 
-        <View style={styles.overlayBottom}>
-          <View style={styles.infoCard}>
-            <Text style={styles.infoLabel}>{stage === 'code' ? 'Esperado na rota' : 'Leitura anterior'}</Text>
-            <Text style={styles.infoValue}>
-              {stage === 'code' ? activeHydrometerCode : `${Number(lastReading || 0).toFixed(2)} m³`}
+          <View style={styles.guide}>
+            <View style={[styles.guideBox, stage === 'code' ? styles.guideCode : styles.guideReading]}>
+              <View style={[styles.corner, styles.cornerTL]} />
+              <View style={[styles.corner, styles.cornerTR]} />
+              <View style={[styles.corner, styles.cornerBL]} />
+              <View style={[styles.corner, styles.cornerBR]} />
+            </View>
+            <Text style={styles.guideText}>{guideText}</Text>
+          </View>
+
+          <View style={styles.overlayBottom}>
+            <View style={styles.infoCard}>
+              <Text style={styles.infoLabel}>{stage === 'code' ? 'Esperado na rota' : 'Leitura anterior'}</Text>
+              <Text style={styles.infoValue}>
+                {stage === 'code' ? activeHydrometerCode : `${Number(lastReading || 0).toFixed(2)} m3`}
+              </Text>
+              {!!locationDescription && <Text style={styles.locationHint}>{locationDescription}</Text>}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.btnCapture, capturing && { opacity: 0.5 }]}
+              onPress={capturePhoto}
+              disabled={capturing}
+            >
+              {capturing ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
+            </TouchableOpacity>
+
+            <Text style={styles.captureLabel}>
+              {stage === 'code' ? 'Toque para escanear o codigo' : 'Toque para fotografar a leitura'}
             </Text>
-            {!!locationDescription && <Text style={styles.locationHint}>{locationDescription}</Text>}
           </View>
-
-          <TouchableOpacity
-            style={[styles.btnCapture, capturing && { opacity: 0.5 }]}
-            onPress={capturePhoto}
-            disabled={capturing}
-          >
-            {capturing ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
-          </TouchableOpacity>
-
-          <Text style={styles.captureLabel}>
-            {stage === 'code' ? 'Toque para escanear o codigo' : 'Toque para fotografar a leitura'}
-          </Text>
         </View>
-      </CameraView>
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000' },
+  cameraShell: { flex: 1, position: 'relative' },
+  camera: { flex: 1 },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'space-between',
+  },
   centered: {
     flex: 1,
     justifyContent: 'center',
@@ -181,7 +191,6 @@ const styles = StyleSheet.create({
   permissionPanel: {
     padding: 32,
   },
-  camera: { flex: 1 },
   overlayTop: {
     flexDirection: 'row',
     alignItems: 'center',

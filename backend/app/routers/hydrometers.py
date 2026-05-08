@@ -21,7 +21,7 @@ from app.schemas.hydrometer import (
     HydrometerUpdate,
 )
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
-from app.services.kimi_vision import kimi_service
+from app.services.kimi_vision import KimiVisionError, kimi_service
 from app.utils.security import get_current_user, require_admin
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
@@ -66,7 +66,11 @@ async def identify_hydrometer_from_photo(
     user: User = Depends(get_current_user),
 ):
     """Extrai o codigo do hidrometro pela foto e tenta associar ao cadastro."""
-    ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
+    try:
+        ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
+    except KimiVisionError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     extracted_code = normalize_hydrometer_code(ocr_result.get("codigo"))
 
     if not extracted_code:

@@ -50,7 +50,6 @@ export default function App() {
     const applyImmersiveMode = () => {
       void NavigationBar.setBehaviorAsync('overlay-swipe');
       void NavigationBar.setVisibilityAsync('hidden');
-      void NavigationBar.setBackgroundColorAsync(colors.navy950);
       void NavigationBar.setButtonStyleAsync('light');
     };
 
