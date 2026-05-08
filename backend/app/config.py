@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # ── JWT Auth ───────────────────────────────────────────────
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    jwt_access_token_expire_minutes: int = 480  # 8 horas
+    jwt_access_token_expire_minutes: int = 43200  # 30 dias
 
     # ── Banco Inter (Cobrança V3) ──────────────────────────────
     inter_client_id: str = ""

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { api, getToken, setToken, clearToken } from './api';
+import * as SecureStore from 'expo-secure-store';
 
 interface User {
   id: string;
@@ -24,11 +25,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loadUser = useCallback(async () => {
     const token = await getToken();
     if (!token) { setLoading(false); return; }
+
+    const cachedUser = await SecureStore.getItemAsync('user');
+    if (cachedUser) {
+      try { setUser(JSON.parse(cachedUser)); } catch { /* ignore */ }
+    }
+
     try {
       const u = await api.get<User>('/auth/me');
       setUser(u);
-    } catch {
-      await clearToken();
+      await SecureStore.setItemAsync('user', JSON.stringify(u));
+    } catch (err: any) {
+      if (err.message === 'SESSION_EXPIRED') {
+        await clearToken();
+        await SecureStore.deleteItemAsync('user');
+        setUser(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -41,11 +53,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       '/auth/login', { email, password }
     );
     await setToken(res.access_token);
-    setUser({ id: res.user_id, name: res.name, email, role: res.role });
+    const userData: User = { id: res.user_id, name: res.name, email, role: res.role };
+    await SecureStore.setItemAsync('user', JSON.stringify(userData));
+    setUser(userData);
   };
 
   const logout = async () => {
     await clearToken();
+    await SecureStore.deleteItemAsync('user');
     setUser(null);
   };
 

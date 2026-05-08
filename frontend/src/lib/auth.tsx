@@ -39,10 +39,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const u = await api.get<User>('/auth/me');
       setUser(u);
       localStorage.setItem('user', JSON.stringify(u));
-    } catch {
-      localStorage.removeItem('token');
-      localStorage.removeItem('user');
-      setUser(null);
+    } catch (err: any) {
+      if (err.message === 'Não autorizado') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        setUser(null);
+      }
     } finally {
       setLoading(false);
     }
