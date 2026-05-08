@@ -1,6 +1,4 @@
-"""
-AquaMoab — Aplicação principal FastAPI.
-"""
+"""Aplicacao principal FastAPI do AquaMoab."""
 
 import logging
 import os
@@ -12,12 +10,22 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import async_session_factory
+from app.routers import (
+    auth,
+    customers,
+    dashboard,
+    deductions,
+    hydrometers,
+    invoices,
+    readings,
+    system_settings,
+    tariffs,
+    webhooks,
+)
 from app.services.billing import seed_default_tariffs
+from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
 from app.services.inter_api import inter_service
 from app.services.whatsapp_api import whatsapp_service
-
-# Routers
-from app.routers import auth, customers, hydrometers, readings, invoices, tariffs, dashboard, deductions, webhooks, system_settings
 
 settings = get_settings()
 
@@ -30,37 +38,37 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup e shutdown do app."""
-    logger.info(f"🚀 {settings.app_name} v{settings.app_version} iniciando...")
+    logger.info("%s v%s iniciando...", settings.app_name, settings.app_version)
 
-    # Seed das tarifas padrão
     async with async_session_factory() as session:
         try:
             await seed_default_tariffs(session)
-        except Exception as e:
-            logger.warning(f"Seed de tarifas falhou (OK se tabela não existe ainda): {e}")
+            updated_hydrometers = await ensure_numeric_hydrometer_codes(session)
+            if updated_hydrometers:
+                logger.info("Hidrometros migrados para codigo numerico: %s", updated_hydrometers)
+            await session.commit()
+        except Exception as exc:
+            logger.warning("Seed de startup falhou: %s", exc)
 
-    logger.info(f"📊 WhatsApp: {'ATIVADO' if settings.whatsapp_enabled else 'DESATIVADO (flag off)'}")
-    logger.info(f"🏦 Inter API: {'SANDBOX' if settings.inter_sandbox else 'PRODUÇÃO'}")
+    logger.info("WhatsApp: %s", "ATIVADO" if settings.whatsapp_enabled else "DESATIVADO")
+    logger.info("Inter API: %s", "SANDBOX" if settings.inter_sandbox else "PRODUCAO")
 
     yield
 
-    # Shutdown
     await inter_service.close()
     await whatsapp_service.close()
-    logger.info("👋 AquaMoab encerrado.")
+    logger.info("AquaMoab encerrado.")
 
 
 app = FastAPI(
     title=settings.app_name,
-    description="Sistema de Gestão de Distribuição de Água — Poço Artesiano Moab",
+    description="Sistema de gestao de distribuicao de agua - Poco Artesiano Moab",
     version=settings.app_version,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -69,12 +77,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static files (uploads)
-import os
 os.makedirs(settings.upload_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
 
-# Routers
 app.include_router(auth.router, prefix="/api")
 app.include_router(customers.router, prefix="/api")
 app.include_router(hydrometers.router, prefix="/api")
@@ -89,7 +94,6 @@ app.include_router(system_settings.router, prefix="/api")
 
 @app.get("/api/health")
 async def health_check():
-    """Endpoint de saúde para monitoring."""
     return {
         "status": "healthy",
         "app": settings.app_name,
@@ -97,4 +101,5 @@ async def health_check():
         "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA") or "",
         "whatsapp_enabled": settings.whatsapp_enabled,
         "inter_sandbox": settings.inter_sandbox,
+        "cors_origins": settings.cors_origin_list,
     }

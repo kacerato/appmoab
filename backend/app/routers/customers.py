@@ -1,5 +1,3 @@
-import random
-import string
 import uuid
 from datetime import date, timedelta
 
@@ -17,6 +15,7 @@ from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.schemas.customer import CustomerCreate, CustomerDetailResponse, CustomerListResponse, CustomerResponse, CustomerUpdate
 from app.schemas.customer_attachment import CustomerAttachmentCreate, CustomerAttachmentResponse
+from app.services.hydrometer_codes import get_next_hydrometer_code
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, delete_photo, save_binary_from_base64
 
@@ -166,7 +165,7 @@ async def create_customer(
     await db.flush()
 
     if customer.has_hydrometer:
-        target_code = "".join(random.choice(string.ascii_uppercase) for _ in range(6))
+        target_code = await get_next_hydrometer_code(db)
         hydrometer = Hydrometer(
             customer_id=customer.id,
             code=target_code,

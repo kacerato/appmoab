@@ -1,8 +1,5 @@
-"""Router de Hidrômetros - CRUD vinculado a clientes."""
+"""Router de hidrometros - CRUD vinculado a clientes."""
 
-import random
-import re
-import string
 import uuid
 from datetime import datetime, timezone
 
@@ -23,17 +20,11 @@ from app.schemas.hydrometer import (
     HydrometerResponse,
     HydrometerUpdate,
 )
+from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
 from app.services.kimi_vision import kimi_service
 from app.utils.security import get_current_user, require_admin
 
-router = APIRouter(prefix="/hydrometers", tags=["Hidrômetros"])
-
-
-def normalize_hydrometer_code(value: str | None) -> str | None:
-    if not value:
-        return None
-    normalized = re.sub(r"[^A-Z0-9]", "", value.upper())
-    return normalized or None
+router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
 
 
 @router.get("", response_model=HydrometerListResponse)
@@ -64,7 +55,7 @@ async def get_hydrometer(
     )
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
-        raise HTTPException(status_code=404, detail="Hidrômetro não encontrado")
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
     return hydrometer
 
 
@@ -74,7 +65,7 @@ async def identify_hydrometer_from_photo(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Extrai o código do hidrômetro pela foto e tenta associar ao cadastro."""
+    """Extrai o codigo do hidrometro pela foto e tenta associar ao cadastro."""
     ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
     extracted_code = normalize_hydrometer_code(ocr_result.get("codigo"))
 
@@ -121,15 +112,12 @@ async def create_hydrometer(
     customer_result = await db.execute(select(Customer).where(Customer.id == data.customer_id))
     customer = customer_result.scalar_one_or_none()
     if not customer:
-        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
 
-    target_code = normalize_hydrometer_code(data.code)
-    if not target_code:
-        target_code = "".join(random.choice(string.ascii_uppercase) for _ in range(6))
-
-    existing = await db.execute(select(Hydrometer).where(Hydrometer.code == target_code))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Este código já está em uso")
+    try:
+        target_code = await assign_numeric_code_if_needed(db, data.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     hydrometer = Hydrometer(
         customer_id=data.customer_id,
@@ -154,16 +142,21 @@ async def update_hydrometer(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    result = await db.execute(
-        select(Hydrometer).where(Hydrometer.id == uuid.UUID(hydrometer_id))
-    )
+    result = await db.execute(select(Hydrometer).where(Hydrometer.id == uuid.UUID(hydrometer_id)))
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
-        raise HTTPException(status_code=404, detail="Hidrômetro não encontrado")
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
 
     update_data = data.model_dump(exclude_unset=True)
     if "code" in update_data:
-        update_data["code"] = normalize_hydrometer_code(update_data["code"])
+        try:
+            update_data["code"] = await assign_numeric_code_if_needed(
+                db,
+                update_data["code"],
+                hydrometer.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if "last_reading_value" in update_data and update_data["last_reading_value"] is not None:
         hydrometer.last_reading_date = datetime.now(timezone.utc)
 

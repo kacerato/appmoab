@@ -3,8 +3,13 @@ import './globals.css';
 import { AppFeedbackProvider } from '@/components/AppFeedbackProvider';
 
 export const metadata: Metadata = {
-  title: 'AquaMoab — Gestão de Distribuição de Água',
-  description: 'Sistema de gestão de clientes, leitura de hidrômetros e faturamento para distribuição de água de poço artesiano.',
+  title: 'AquaMoab - Gestao de Distribuicao de Agua',
+  description: 'Sistema de gestao de clientes, leitura de hidrometros e faturamento para distribuicao de agua de poco artesiano.',
+  icons: {
+    icon: '/icon.svg',
+    shortcut: '/icon.svg',
+    apple: '/icon.svg',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
