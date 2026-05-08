@@ -1,9 +1,12 @@
 'use client';
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
-import { DollarSign, Plus, Edit2, Calculator, Save, X, Loader2 } from 'lucide-react';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
+import { Edit2, Calculator, Save, X } from 'lucide-react';
 
 interface Tier {
   id: string; label: string; min_m3: number; max_m3: number;
@@ -19,6 +22,7 @@ interface BillingCalc {
 function fmt(v: number) { return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v); }
 
 export default function TariffsPage() {
+  const { notify } = useAppFeedback();
   const [tiers, setTiers] = useState<Tier[]>([]);
   const [loading, setLoading] = useState(true);
   const [simValue, setSimValue] = useState('15');
@@ -48,7 +52,10 @@ export default function TariffsPage() {
       await api.patch(`/tariffs/${id}`, { rate_per_m3: parseFloat(editRate) });
       setEditing(null);
       load();
-    } catch (e) { alert(e instanceof Error ? e.message : 'Erro'); }
+      notify('Tarifa atualizada', 'A faixa de cobrança foi ajustada com sucesso.', 'success');
+    } catch (e) {
+      notify('Falha ao salvar tarifa', e instanceof Error ? e.message : 'Erro ao salvar tarifa.', 'error');
+    }
   };
 
   return (

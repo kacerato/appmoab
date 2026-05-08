@@ -1,21 +1,27 @@
 import { StyleSheet } from 'react-native';
 
 export const colors = {
-  navy950: '#F8FAFC',    // Background Principal
-  navy900: '#FFFFFF',    // Headers/Cards
-  navy800: '#FFFFFF',    // Cards
-  navy700: '#F1F5F9',    // Secundário Hover
-  navy600: '#E2E8F0',    // Bordas Hover
-  accent: '#0077C8',     // Water Blue Vibrante
-  accentHover: '#0062a3',
-  cyan: '#00b4d8',
-  success: '#10b981',
-  warning: '#f59e0b',
-  danger: '#ef4444',
+  navy950: '#F8FAFC',
+  navy900: '#FFFFFF',
+  navy800: '#FFFFFF',
+  navy700: '#F1F5F9',
+  navy600: '#E2E8F0',
+  sidebarNavy: '#0F2744',
+  accent: '#0077C8',
+  accentHover: '#005FA3',
+  accentSoft: 'rgba(0, 119, 200, 0.08)',
+  cyan: '#00B4D8',
+  success: '#059669',
+  successSoft: 'rgba(5, 150, 105, 0.08)',
+  warning: '#D97706',
+  warningSoft: 'rgba(217, 119, 6, 0.08)',
+  danger: '#DC2626',
+  dangerSoft: 'rgba(220, 38, 38, 0.08)',
   textPrimary: '#0F172A',
-  textSecondary: '#334155',
-  textMuted: '#64748B',
+  textSecondary: '#475569',
+  textMuted: '#94A3B8',
   border: '#E2E8F0',
+  borderHover: '#CBD5E1',
 };
 
 export const shared = StyleSheet.create({
@@ -27,27 +33,35 @@ export const shared = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.navy950,
   },
+  pagePadding: {
+    paddingHorizontal: 20,
+    paddingVertical: 18,
+  },
   card: {
     backgroundColor: colors.navy800,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 20,
+    marginBottom: 14,
+  },
+  sectionTitle: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: '800',
     marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
   input: {
     backgroundColor: colors.navy900,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
+    borderRadius: 12,
     color: colors.textPrimary,
     fontSize: 15,
     paddingHorizontal: 14,
     paddingVertical: 12,
-    fontFamily: 'System',
-  },
-  inputFocused: {
-    borderColor: colors.accent,
   },
   label: {
     fontSize: 11,
@@ -59,7 +73,7 @@ export const shared = StyleSheet.create({
   },
   btnPrimary: {
     backgroundColor: colors.accent,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 14,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
@@ -75,23 +89,15 @@ export const shared = StyleSheet.create({
     backgroundColor: colors.navy700,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingVertical: 12,
     alignItems: 'center' as const,
+    justifyContent: 'center' as const,
   },
   btnSecondaryText: {
     color: colors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
-  },
-  badge: {
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 99,
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '700',
   },
   title: {
     fontSize: 24,
@@ -105,13 +111,23 @@ export const shared = StyleSheet.create({
     marginTop: 2,
   },
   headerBar: {
-    flexDirection: 'row' as const,
-    alignItems: 'center' as const,
-    justifyContent: 'space-between' as const,
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingVertical: 18,
     backgroundColor: colors.navy900,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
+    justifyContent: 'space-between' as const,
+  },
+  badge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    alignSelf: 'flex-start' as const,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

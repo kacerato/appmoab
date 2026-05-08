@@ -4,6 +4,7 @@ import { useEffect, useState, use, FormEvent, useMemo, useCallback } from 'react
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { ArrowLeft, Droplets, MapPin, Calendar, Edit2, Trash2, Plus, X, Loader2 } from 'lucide-react';
 
 interface Customer {
@@ -22,6 +23,7 @@ function fmt(v: number) { return new Intl.NumberFormat('pt-BR', { style: 'curren
 export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const { confirm, notify } = useAppFeedback();
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,12 +53,16 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   useEffect(() => { load(); }, [load]);
 
   const handleDelete = async () => {
-    if (!confirm('Deseja realmente desligar/remover este cliente?')) return;
+    const confirmed = await confirm('Remover cliente', 'Deseja realmente desligar ou remover este cliente?', {
+      confirmLabel: 'Remover',
+    });
+    if (!confirmed) return;
     try {
       await api.delete(`/customers/${id}`);
+      notify('Cliente removido', 'O cadastro foi encerrado com sucesso.', 'success');
       router.push('/clientes');
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Erro ao excluir');
+      notify('Falha ao excluir cliente', err instanceof Error ? err.message : 'Erro ao excluir.', 'error');
     }
   };
 
@@ -73,8 +79,9 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       });
       setShowInvoiceModal(false);
       load();
+      notify('Cobrança avulsa criada', 'A nova fatura foi gerada para o cliente.', 'success');
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : 'Erro ao gerar fatura avulsa');
+      notify('Falha ao gerar cobrança', err instanceof Error ? err.message : 'Erro ao gerar fatura avulsa.', 'error');
     } finally {
       setSavingInvoice(false);
     }

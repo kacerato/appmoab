@@ -1,6 +1,12 @@
-const API_URL = 'http://localhost:8000/api'; // Mudar em produção
-
 import * as SecureStore from 'expo-secure-store';
+
+const appConfig = require('../../app.json');
+const apiUrlFromConfig =
+  process.env.EXPO_PUBLIC_API_URL ||
+  appConfig?.expo?.extra?.apiUrl ||
+  'http://localhost:8000/api';
+
+export const API_URL = apiUrlFromConfig.replace(/\/+$/, '');
 
 let cachedToken: string | null = null;
 
@@ -26,7 +32,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     'Content-Type': 'application/json',
     ...((options.headers as Record<string, string>) || {}),
   };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
+  if (token) headers.Authorization = `Bearer ${token}`;
 
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
 
@@ -50,4 +56,6 @@ export const api = {
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }),
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined }),
+  patch: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined }),
 };

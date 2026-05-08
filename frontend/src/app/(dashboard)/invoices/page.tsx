@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { Download, ChevronLeft, ChevronRight, MessageCircleMore, Loader2 } from 'lucide-react';
 
 interface Invoice {
@@ -41,6 +42,7 @@ function fmt(v: number) {
 
 export default function InvoicesPage() {
   const router = useRouter();
+  const { notify } = useAppFeedback();
   const [data, setData] = useState<ListRes | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -81,7 +83,7 @@ export default function InvoicesPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Erro');
+      notify('Falha ao baixar PDF', err instanceof Error ? err.message : 'Erro ao baixar o PDF.', 'error');
     }
   };
 

@@ -23,11 +23,16 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
+    "extra": {
+      "apiUrl": "http://localhost:8000/api"
+    },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-camera",
+      "expo-location"
     ]
   }
 }

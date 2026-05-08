@@ -1,21 +1,42 @@
 'use client';
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
-import { ClipboardCheck, Check, X, Eye, MapPin, Clock, Camera } from 'lucide-react';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
+import { ClipboardCheck, Check, X, Camera } from 'lucide-react';
 
 interface Reading {
-  id: string; current_value: number; previous_value: number; consumption: number;
-  photo_url: string; photo_extracted_code: string; photo_extracted_value: number;
-  ocr_confidence: number; latitude: number; longitude: number;
-  captured_at: string; status: string; rejection_reason: string;
-  collaborator_name: string; hydrometer_code: string; customer_name: string; customer_id: string;
+  id: string;
+  current_value: number;
+  previous_value: number;
+  consumption: number;
+  photo_url: string;
+  photo_extracted_code: string;
+  photo_extracted_value: number;
+  ocr_confidence: number;
+  latitude: number;
+  longitude: number;
+  captured_at: string;
+  status: string;
+  rejection_reason: string;
+  collaborator_name: string;
+  hydrometer_code: string;
+  customer_name: string;
+  customer_id: string;
 }
 
-interface ListRes { items: Reading[]; total: number; page: number; per_page: number; }
+interface ListRes {
+  items: Reading[];
+  total: number;
+  page: number;
+  per_page: number;
+}
 
 export default function ReadingsPage() {
+  const { notify, prompt } = useAppFeedback();
   const [data, setData] = useState<ListRes | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('pending');
@@ -26,30 +47,47 @@ export default function ReadingsPage() {
     try {
       const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`);
       setData(res);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }, [filter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const approve = async (id: string) => {
     setActionLoading(id);
     try {
       await api.post(`/readings/${id}/approve`);
+      notify('Leitura aprovada', 'A leitura foi enviada para o próximo fluxo de faturamento.', 'success');
       load();
-    } catch (e) { alert(e instanceof Error ? e.message : 'Erro'); }
-    finally { setActionLoading(null); }
+    } catch (e) {
+      notify('Falha ao aprovar leitura', e instanceof Error ? e.message : 'Erro ao aprovar leitura.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const reject = async (id: string) => {
-    const reason = prompt('Motivo da rejeição:');
+    const reason = await prompt('Rejeitar leitura', 'Informe o motivo da rejeição para registrar no histórico.', {
+      confirmLabel: 'Rejeitar',
+      placeholder: 'Ex: foto desfocada ou leitura inconsistente',
+    });
     if (!reason) return;
+
     setActionLoading(id);
     try {
       await api.post(`/readings/${id}/reject`, { reason });
+      notify('Leitura rejeitada', 'O motivo foi salvo para revisão posterior.', 'warning');
       load();
-    } catch (e) { alert(e instanceof Error ? e.message : 'Erro'); }
-    finally { setActionLoading(null); }
+    } catch (e) {
+      notify('Falha ao rejeitar leitura', e instanceof Error ? e.message : 'Erro ao rejeitar leitura.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   return (
@@ -102,9 +140,7 @@ export default function ReadingsPage() {
               </div>
 
               <div style={{ padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Clock size={12} /> {new Date(r.captured_at).toLocaleString('pt-BR')}
-                </div>
+                <div>{new Date(r.captured_at).toLocaleString('pt-BR')}</div>
                 <div>{r.collaborator_name}</div>
               </div>
 

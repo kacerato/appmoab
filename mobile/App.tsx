@@ -1,14 +1,18 @@
 import React from 'react';
+import { ActivityIndicator, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { AuthProvider, useAuth } from './src/lib/auth';
-import { ActivityIndicator, View } from 'react-native';
+import { FeedbackProvider } from './src/lib/feedback';
+import { colors } from './src/styles/theme';
 
 import LoginScreen from './src/screens/LoginScreen';
 import RouteScreen from './src/screens/RouteScreen';
 import CameraScreen from './src/screens/CameraScreen';
+import HydrometerMatchScreen from './src/screens/HydrometerMatchScreen';
 import OCRResultScreen from './src/screens/OCRResultScreen';
+import DayHistoryScreen from './src/screens/DayHistoryScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -17,8 +21,8 @@ function AppNavigator() {
 
   if (loading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F8FAFC' }}>
-        <ActivityIndicator size="large" color="#0077C8" />
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.navy950 }}>
+        <ActivityIndicator size="large" color={colors.accent} />
       </View>
     );
   }
@@ -31,7 +35,9 @@ function AppNavigator() {
         <>
           <Stack.Screen name="Route" component={RouteScreen} />
           <Stack.Screen name="Camera" component={CameraScreen} />
+          <Stack.Screen name="HydrometerMatch" component={HydrometerMatchScreen} />
           <Stack.Screen name="OCRResult" component={OCRResultScreen} />
+          <Stack.Screen name="DayHistory" component={DayHistoryScreen} />
         </>
       )}
     </Stack.Navigator>
@@ -41,10 +47,12 @@ function AppNavigator() {
 export default function App() {
   return (
     <AuthProvider>
-      <NavigationContainer>
-        <StatusBar style="dark" />
-        <AppNavigator />
-      </NavigationContainer>
+      <FeedbackProvider>
+        <NavigationContainer>
+          <StatusBar style="dark" />
+          <AppNavigator />
+        </NavigationContainer>
+      </FeedbackProvider>
     </AuthProvider>
   );
 }

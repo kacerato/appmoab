@@ -51,3 +51,19 @@ class HydrometerResponse(HydrometerBase):
 class HydrometerListResponse(BaseModel):
     items: list[HydrometerResponse]
     total: int
+
+
+class HydrometerIdentifyRequest(BaseModel):
+    photo_base64: str
+
+
+class HydrometerIdentifyResponse(BaseModel):
+    extracted_code: str | None
+    confidence: float | None
+    matched: bool
+    hydrometer_id: UUID | None = None
+    hydrometer_code: str | None = None
+    customer_id: UUID | None = None
+    customer_name: str | None = None
+    location_description: str | None = None
+    last_reading_value: float | None = None

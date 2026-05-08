@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState, FormEvent, useCallback } from 'react';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { BACKEND_FRAMEWORK, BUILD_REVISION, DEPLOY_TARGET, FRONTEND_FRAMEWORK, FRONTEND_VERSION } from '@/lib/app-info';
 import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 
@@ -40,6 +41,7 @@ function fmt(v: number) {
 
 export default function SettingsPage() {
   const { user, setCurrentUser } = useAuth();
+  const { confirm, notify } = useAppFeedback();
   const [deductions, setDeductions] = useState<Deduction[]>([]);
   const [total, setTotal] = useState(0);
   const [health, setHealth] = useState<HealthData | null>(null);
@@ -139,12 +141,17 @@ export default function SettingsPage() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Remover esta dedução?')) return;
+    const confirmed = await confirm('Remover dedução', 'Deseja realmente remover esta dedução mensal?', {
+      confirmLabel: 'Remover',
+    });
+    if (!confirmed) return;
     try {
       await api.delete(`/deductions/${id}`);
       load();
+      notify('Dedução removida', 'A dedução mensal foi excluída com sucesso.', 'success');
     } catch (err) {
       console.error(err);
+      notify('Falha ao remover dedução', err instanceof Error ? err.message : 'Não foi possível remover a dedução.', 'error');
     }
   };
 

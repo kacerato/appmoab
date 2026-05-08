@@ -4,6 +4,7 @@ import { useEffect, useState, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore } from 'lucide-react';
 
 interface Invoice {
@@ -35,6 +36,7 @@ function fmt(v: number) {
 export default function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const { confirm, notify } = useAppFeedback();
   const [inv, setInv] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -54,7 +56,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
-        alert('O Banco Inter ainda está processando o PDF deste boleto. Aguarde alguns segundos e tente novamente.');
+        notify('PDF ainda indisponível', 'O Banco Inter ainda está processando o PDF deste boleto. Aguarde alguns segundos e tente novamente.', 'warning');
         return;
       }
       const blob = await res.blob();
@@ -65,23 +67,28 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      alert('Erro de conexão ao tentar baixar o PDF.');
+      notify('Falha ao baixar PDF', 'Erro de conexão ao tentar baixar o PDF.', 'error');
     }
   };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    alert('Copiado!');
+    notify('Copiado', 'O conteúdo foi enviado para sua área de transferência.', 'success');
   };
 
   const cancelInvoice = async () => {
-    if (!confirm('Cancelar esta fatura?')) return;
+    const confirmed = await confirm('Cancelar fatura', 'Deseja realmente cancelar esta fatura?', {
+      confirmLabel: 'Cancelar fatura',
+    });
+    if (!confirmed) return;
+
     try {
       await api.post(`/invoices/${id}/cancel`);
       const updated = await api.get<Invoice>(`/invoices/${id}`);
       setInv(updated);
+      notify('Fatura cancelada', 'O status da fatura foi atualizado.', 'success');
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : 'Erro');
+      notify('Falha ao cancelar fatura', e instanceof Error ? e.message : 'Erro ao cancelar a fatura.', 'error');
     }
   };
 
@@ -91,9 +98,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       await api.post(`/invoices/${id}/emit-boleto`);
       const updated = await api.get<Invoice>(`/invoices/${id}`);
       setInv(updated);
-      alert('Boleto emitido com sucesso no Banco Inter!');
+      notify('Boleto emitido', 'O Banco Inter gerou a cobrança com sucesso.', 'success');
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : 'Erro ao emitir boleto no Banco Inter');
+      notify('Falha ao emitir boleto', e instanceof Error ? e.message : 'Erro ao emitir boleto no Banco Inter.', 'error');
     } finally {
       setActionLoading(null);
     }

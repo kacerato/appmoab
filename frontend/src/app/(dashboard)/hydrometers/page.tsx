@@ -1,8 +1,11 @@
 'use client';
 
+/* eslint-disable react-hooks/set-state-in-effect */
+
 import { useEffect, useState, FormEvent } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
+import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { Droplets, Plus, Search, Loader2, X } from 'lucide-react';
 
 interface Customer {
@@ -12,13 +15,21 @@ interface Customer {
 }
 
 interface Hydrometer {
-  id: string; code: string; customer_id: string; brand: string; model: string;
-  location_description: string; last_reading_value: number; last_reading_date: string;
-  is_active: boolean; installed_at: string;
+  id: string;
+  code: string;
+  customer_id: string;
+  brand: string;
+  model: string;
+  location_description: string;
+  last_reading_value: number;
+  last_reading_date: string;
+  is_active: boolean;
+  installed_at: string;
   customer?: Customer;
 }
 
 export default function HydrometersPage() {
+  const { notify } = useAppFeedback();
   const [items, setItems] = useState<Hydrometer[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +38,12 @@ export default function HydrometersPage() {
   const [search, setSearch] = useState('');
 
   const [form, setForm] = useState({
-    customer_id: '', code: '', brand: '', model: '', location_description: '', initial_reading: 0
+    customer_id: '',
+    code: '',
+    brand: '',
+    model: '',
+    location_description: '',
+    initial_reading: 0,
   });
 
   const load = () => {
@@ -39,8 +55,8 @@ export default function HydrometersPage() {
   };
 
   const loadCustomers = () => {
-    api.get<{ items: Customer[] }>('/customers?per_page=1000') // fetch all (or searchable dropdown)
-      .then(r => setCustomers(r.items.filter(c => (c as any).has_hydrometer)))
+    api.get<{ items: Customer[] }>('/customers?per_page=1000')
+      .then(r => setCustomers(r.items.filter(c => (c as Customer & { has_hydrometer?: boolean }).has_hydrometer)))
       .catch(console.error);
   };
 
@@ -64,8 +80,9 @@ export default function HydrometersPage() {
       setShowAdd(false);
       setForm({ customer_id: '', code: '', brand: '', model: '', location_description: '', initial_reading: 0 });
       load();
-    } catch (err: any) {
-      alert(err.message || 'Erro ao criar hidrômetro');
+      notify('Hidrômetro associado', 'O medidor foi vinculado com sucesso.', 'success');
+    } catch (err: unknown) {
+      notify('Falha ao associar hidrômetro', err instanceof Error ? err.message : 'Erro ao criar hidrômetro.', 'error');
     } finally {
       setSaving(false);
     }
@@ -164,11 +181,11 @@ export default function HydrometersPage() {
 
               <div className="form-group" style={{ marginBottom: 16 }}>
                 <label className="form-label">Código do Hidrômetro (Letras)</label>
-                <input 
-                  className="form-input" 
-                  placeholder="Ex: ZXCTRA (Deixe em branco para gerar aleatório)" 
-                  value={form.code} 
-                  onChange={e => setForm({ ...form, code: e.target.value.replace(/[^a-zA-Z]/g, '').toUpperCase() })} 
+                <input
+                  className="form-input"
+                  placeholder="Ex: ZXCTRA (Deixe em branco para gerar aleatório)"
+                  value={form.code}
+                  onChange={e => setForm({ ...form, code: e.target.value.replace(/[^a-zA-Z]/g, '').toUpperCase() })}
                   maxLength={10}
                 />
               </div>
