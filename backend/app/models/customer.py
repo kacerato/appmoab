@@ -67,6 +67,7 @@ class Customer(Base):
     hydrometers = relationship("Hydrometer", back_populates="customer", cascade="all, delete-orphan")
     invoices = relationship("Invoice", back_populates="customer", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="customer", cascade="all, delete-orphan")
+    attachments = relationship("CustomerAttachment", back_populates="customer", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         meter = "COM" if self.has_hydrometer else "SEM"

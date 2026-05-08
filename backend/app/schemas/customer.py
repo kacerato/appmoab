@@ -1,5 +1,3 @@
-"""Schemas de Cliente — Validação completa com CPF/CNPJ."""
-
 from datetime import datetime
 from uuid import UUID
 
@@ -24,31 +22,30 @@ class CustomerBase(BaseModel):
 
     @field_validator("due_day")
     @classmethod
-    def validate_due_day(cls, v: int) -> int:
-        if not 1 <= v <= 28:
+    def validate_due_day(cls, value: int) -> int:
+        if not 1 <= value <= 28:
             raise ValueError("Dia de vencimento deve ser entre 1 e 28")
-        return v
+        return value
 
     @field_validator("state")
     @classmethod
-    def validate_state(cls, v: str) -> str:
-        v = v.upper().strip()
+    def validate_state(cls, value: str) -> str:
+        value = value.upper().strip()
         valid_states = {
             "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO",
             "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI",
             "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO",
         }
-        if v not in valid_states:
-            raise ValueError(f"UF inválida: {v}")
-        return v
+        if value not in valid_states:
+            raise ValueError(f"UF invalida: {value}")
+        return value
 
     @field_validator("cpf_cnpj")
     @classmethod
-    def validate_cpf_cnpj(cls, v: str) -> str:
-        # Remove formatação, mantém apenas dígitos
-        digits = "".join(c for c in v if c.isdigit())
+    def validate_cpf_cnpj(cls, value: str) -> str:
+        digits = "".join(char for char in value if char.isdigit())
         if len(digits) not in (11, 14):
-            raise ValueError("CPF deve ter 11 dígitos ou CNPJ 14 dígitos")
+            raise ValueError("CPF deve ter 11 digitos ou CNPJ 14 digitos")
         return digits
 
 
@@ -74,10 +71,10 @@ class CustomerUpdate(BaseModel):
 
     @field_validator("due_day")
     @classmethod
-    def validate_due_day(cls, v: int | None) -> int | None:
-        if v is not None and not 1 <= v <= 28:
+    def validate_due_day(cls, value: int | None) -> int | None:
+        if value is not None and not 1 <= value <= 28:
             raise ValueError("Dia de vencimento deve ser entre 1 e 28")
-        return v
+        return value
 
 
 class CustomerResponse(CustomerBase):
@@ -91,8 +88,8 @@ class CustomerResponse(CustomerBase):
 
 
 class CustomerDetailResponse(CustomerResponse):
-    """Response completo incluindo hidrômetros e resumo de faturas."""
     hydrometers: list["HydrometerResponse"] = []
+    attachments: list["CustomerAttachmentResponse"] = []
     total_invoices: int = 0
     total_pending: float = 0.0
     total_overdue: float = 0.0
@@ -106,7 +103,7 @@ class CustomerListResponse(BaseModel):
     per_page: int
 
 
-# Import circular guard
+from app.schemas.customer_attachment import CustomerAttachmentResponse  # noqa: E402
 from app.schemas.hydrometer import HydrometerResponse  # noqa: E402
 
 CustomerDetailResponse.model_rebuild()

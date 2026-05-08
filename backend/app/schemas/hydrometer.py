@@ -28,6 +28,7 @@ class HydrometerUpdate(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     is_active: bool | None = None
+    last_reading_value: float | None = None
 
 
 class HydrometerCustomer(BaseModel):

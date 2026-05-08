@@ -12,6 +12,7 @@ from app.database import async_session_factory, engine, Base
 from app.models import *  # noqa: F401, F403
 from app.models.user import User
 from app.services.billing import seed_default_tariffs
+from app.models.system_setting import SystemSetting
 from app.utils.security import hash_password
 
 from sqlalchemy import select
@@ -61,6 +62,11 @@ async def main():
             logger.info("✅ Deduções padrão criadas")
         else:
             logger.info("ℹ️  Deduções já existem")
+
+        settings_result = await db.execute(select(SystemSetting).where(SystemSetting.id == 1))
+        if not settings_result.scalar_one_or_none():
+            db.add(SystemSetting(id=1))
+            logger.info("✅ Configurações do sistema criadas")
 
         await db.commit()
 

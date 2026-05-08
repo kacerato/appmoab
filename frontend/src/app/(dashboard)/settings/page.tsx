@@ -35,6 +35,12 @@ interface ManagedUser {
   is_active: boolean;
 }
 
+interface SystemSetting {
+  route_window_enabled: boolean;
+  route_window_days_before_due: number;
+  route_window_days_after_due: number;
+}
+
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 }
@@ -64,6 +70,12 @@ export default function SettingsPage() {
     password: '',
     role: 'collaborator',
   });
+  const [systemSettings, setSystemSettings] = useState<SystemSetting>({
+    route_window_enabled: false,
+    route_window_days_before_due: 5,
+    route_window_days_after_due: 0,
+  });
+  const [systemSaving, setSystemSaving] = useState(false);
   const [profileForm, setProfileForm] = useState<{
     name: string | null;
     email: string | null;
@@ -86,14 +98,16 @@ export default function SettingsPage() {
     Promise.all([
       api.get<{ items: Deduction[]; total: number }>('/deductions'),
       api.get<HealthData>('/health'),
+      api.get<SystemSetting>('/system-settings'),
       user?.role === 'admin'
         ? api.get<{ items: ManagedUser[]; total: number }>('/auth/users')
         : Promise.resolve(null),
     ])
-      .then(([deductionData, healthData, usersData]) => {
+      .then(([deductionData, healthData, systemData, usersData]) => {
         setDeductions(deductionData.items);
         setTotal(deductionData.total);
         setHealth(healthData);
+        setSystemSettings(systemData);
         if (usersData) {
           setUsers(usersData.items);
         }
@@ -259,6 +273,20 @@ export default function SettingsPage() {
     setShowAdd(false);
   };
 
+  const handleSystemSave = async (e: FormEvent) => {
+    e.preventDefault();
+    setSystemSaving(true);
+    try {
+      const updated = await api.patch<SystemSetting>('/system-settings', systemSettings);
+      setSystemSettings(updated);
+      notify('Janela da rota atualizada', 'A regra mensal do mobile foi salva com sucesso.', 'success');
+    } catch (err: unknown) {
+      notify('Falha ao salvar janela da rota', err instanceof Error ? err.message : 'Nao foi possivel salvar as configuracoes.', 'error');
+    } finally {
+      setSystemSaving(false);
+    }
+  };
+
   return (
     <>
       <Header title="Configurações" subtitle="Sistema, perfil e automações financeiras" />
@@ -385,6 +413,75 @@ export default function SettingsPage() {
           <Sparkles size={12} />
           <span>kaceratw</span>
         </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 24 }}>
+        <div className="card-header"><span className="card-title">Janela Mensal da Rota</span></div>
+        {user?.role === 'admin' ? (
+          <>
+            <form onSubmit={handleSystemSave} className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr auto' }}>
+              <div className="form-group">
+                <label className="form-label">Regra da janela</label>
+                <select
+                  className="form-select"
+                  value={systemSettings.route_window_enabled ? 'enabled' : 'disabled'}
+                  onChange={e => setSystemSettings(current => ({ ...current, route_window_enabled: e.target.value === 'enabled' }))}
+                >
+                  <option value="disabled">Desativada</option>
+                  <option value="enabled">Ativada</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Abrir dias antes do vencimento</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  max={28}
+                  value={systemSettings.route_window_days_before_due}
+                  onChange={e => setSystemSettings(current => ({ ...current, route_window_days_before_due: parseInt(e.target.value, 10) || 0 }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Manter dias depois do vencimento</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  max={28}
+                  value={systemSettings.route_window_days_after_due}
+                  onChange={e => setSystemSettings(current => ({ ...current, route_window_days_after_due: parseInt(e.target.value, 10) || 0 }))}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'end' }}>
+                <button className="btn btn-primary btn-sm" type="submit" disabled={systemSaving}>
+                  {systemSaving ? <Loader2 size={14} className="spinner" /> : <Save size={14} />} Salvar janela
+                </button>
+              </div>
+            </form>
+            <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
+              Quando ativada, a rota do mobile mostra clientes dentro da janela relativa ao dia de vencimento.
+            </p>
+          </>
+        ) : (
+          <div style={{ display: 'grid', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Status</span>
+              <strong>{systemSettings.route_window_enabled ? 'Ativada' : 'Desativada'}</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Abertura</span>
+              <strong>{systemSettings.route_window_days_before_due} dia(s) antes</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Encerramento</span>
+              <strong>{systemSettings.route_window_days_after_due} dia(s) depois</strong>
+            </div>
+            <p style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+              Somente administradores podem ajustar essa regra.
+            </p>
+          </div>
+        )}
       </div>
 
       {user?.role === 'admin' && (

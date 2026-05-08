@@ -8,6 +8,8 @@ from app.models.invoice import Invoice
 from app.models.tariff import TariffTier
 from app.models.notification import Notification
 from app.models.deduction import Deduction
+from app.models.customer_attachment import CustomerAttachment
+from app.models.system_setting import SystemSetting
 
 __all__ = [
     "User",
@@ -18,4 +20,6 @@ __all__ = [
     "TariffTier",
     "Notification",
     "Deduction",
+    "CustomerAttachment",
+    "SystemSetting",
 ]

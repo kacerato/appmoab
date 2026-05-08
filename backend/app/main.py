@@ -17,7 +17,7 @@ from app.services.inter_api import inter_service
 from app.services.whatsapp_api import whatsapp_service
 
 # Routers
-from app.routers import auth, customers, hydrometers, readings, invoices, tariffs, dashboard, deductions, webhooks
+from app.routers import auth, customers, hydrometers, readings, invoices, tariffs, dashboard, deductions, webhooks, system_settings
 
 settings = get_settings()
 
@@ -84,6 +84,7 @@ app.include_router(tariffs.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(deductions.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
+app.include_router(system_settings.router, prefix="/api")
 
 
 @app.get("/api/health")

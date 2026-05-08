@@ -57,7 +57,7 @@ export default function RouteScreen() {
   const load = useCallback(async () => {
     setLoading(prev => (refreshing ? prev : true));
 
-    const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=100');
+    const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=100&route_scope=true');
     const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
 
     const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);

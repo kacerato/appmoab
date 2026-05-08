@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, AppState, AppStateStatus, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as NavigationBar from 'expo-navigation-bar';
 import { NavigationContainer } from '@react-navigation/native';
@@ -47,10 +47,29 @@ function AppNavigator() {
 
 export default function App() {
   useEffect(() => {
-    void NavigationBar.setBehaviorAsync('overlay-swipe');
-    void NavigationBar.setVisibilityAsync('hidden');
-    void NavigationBar.setBackgroundColorAsync(colors.navy950);
-    void NavigationBar.setButtonStyleAsync('light');
+    const applyImmersiveMode = () => {
+      void NavigationBar.setBehaviorAsync('overlay-swipe');
+      void NavigationBar.setVisibilityAsync('hidden');
+      void NavigationBar.setBackgroundColorAsync(colors.navy950);
+      void NavigationBar.setButtonStyleAsync('light');
+    };
+
+    applyImmersiveMode();
+
+    const subscription = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active') {
+        applyImmersiveMode();
+        setTimeout(applyImmersiveMode, 120);
+        setTimeout(applyImmersiveMode, 600);
+      }
+    });
+
+    const interval = setInterval(applyImmersiveMode, 2500);
+
+    return () => {
+      subscription.remove();
+      clearInterval(interval);
+    };
   }, []);
 
   return (

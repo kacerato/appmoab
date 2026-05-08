@@ -4,6 +4,7 @@ import random
 import re
 import string
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -163,6 +164,8 @@ async def update_hydrometer(
     update_data = data.model_dump(exclude_unset=True)
     if "code" in update_data:
         update_data["code"] = normalize_hydrometer_code(update_data["code"])
+    if "last_reading_value" in update_data and update_data["last_reading_value"] is not None:
+        hydrometer.last_reading_date = datetime.now(timezone.utc)
 
     for field, value in update_data.items():
         setattr(hydrometer, field, value)
