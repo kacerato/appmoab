@@ -9,11 +9,6 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# URL interna do Docker Compose
-EVOLUTION_API_URL = "http://evolution-api:8080"
-API_KEY = "appmoab-secret-key-123"
-INSTANCE_NAME = "appmoab"
-
 
 class WhatsAppService:
     """Cliente WhatsApp que se comunica com a Evolution API."""
@@ -28,11 +23,11 @@ class WhatsAppService:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                base_url=EVOLUTION_API_URL,
+                base_url=settings.evolution_api_url,
                 timeout=30.0,
                 headers={
                     "Content-Type": "application/json",
-                    "apikey": API_KEY
+                    "apikey": settings.evolution_api_key
                 },
             )
         return self._client
@@ -69,7 +64,7 @@ class WhatsAppService:
 
         try:
             response = await client.post(
-                f"/message/sendText/{INSTANCE_NAME}",
+                f"/message/sendText/{settings.evolution_instance_name}",
                 json={"number": digits, "text": text_message},
             )
             response.raise_for_status()
@@ -106,7 +101,7 @@ class WhatsAppService:
 
         try:
             response = await client.post(
-                f"/message/sendMedia/{INSTANCE_NAME}",
+                f"/message/sendMedia/{settings.evolution_instance_name}",
                 json={
                     "number": digits,
                     "mediatype": "document",

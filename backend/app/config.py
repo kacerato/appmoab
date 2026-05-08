@@ -47,8 +47,13 @@ class Settings(BaseSettings):
     inter_sandbox: bool = True
     inter_conta_corrente: str = ""
 
-    # ── WhatsApp Cloud API ─────────────────────────────────────
+    # ── WhatsApp / Evolution API ───────────────────────────────
     whatsapp_enabled: bool = False
+    evolution_api_url: str = "http://evolution-api:8080"
+    evolution_api_key: str = "appmoab-secret-key-123"
+    evolution_instance_name: str = "appmoab"
+    
+    # ── Legacy WhatsApp Cloud API (ignorado se usar Evolution) ─
     whatsapp_token: str = ""
     whatsapp_phone_id: str = ""
     whatsapp_api_version: str = "v17.0"
