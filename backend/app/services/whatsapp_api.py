@@ -1,5 +1,5 @@
 """
-AquaMoab — Serviço WhatsApp Cloud API (preparado, ativação via flag).
+AquaMoab — Serviço WhatsApp Local (via Evolution API).
 """
 
 import logging
@@ -9,48 +9,30 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# URL interna do Docker Compose
+EVOLUTION_API_URL = "http://evolution-api:8080"
+API_KEY = "appmoab-secret-key-123"
+INSTANCE_NAME = "appmoab"
+
 
 class WhatsAppService:
-    """Cliente WhatsApp Cloud API — ativado via WHATSAPP_ENABLED."""
-
-    TEMPLATES = {
-        "reminder_5d": {
-            "name": "fatura_vencimento_proximo",
-            "language": "pt_BR",
-            "params": ["nome", "valor", "data_vencimento"],
-        },
-        "due_today": {
-            "name": "fatura_vence_hoje",
-            "language": "pt_BR",
-            "params": ["nome", "valor"],
-        },
-        "overdue_1d": {
-            "name": "fatura_atrasada",
-            "language": "pt_BR",
-            "params": ["nome", "valor"],
-        },
-        "payment_confirmed": {
-            "name": "pagamento_confirmado",
-            "language": "pt_BR",
-            "params": ["nome", "valor"],
-        },
-    }
+    """Cliente WhatsApp que se comunica com a Evolution API."""
 
     def __init__(self):
         self._client: httpx.AsyncClient | None = None
 
     @property
     def is_enabled(self) -> bool:
-        return settings.whatsapp_enabled and bool(settings.whatsapp_token)
+        return settings.whatsapp_enabled
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                base_url=settings.whatsapp_base_url,
+                base_url=EVOLUTION_API_URL,
                 timeout=30.0,
                 headers={
-                    "Authorization": f"Bearer {settings.whatsapp_token}",
                     "Content-Type": "application/json",
+                    "apikey": API_KEY
                 },
             )
         return self._client
@@ -61,59 +43,44 @@ class WhatsAppService:
         template_key: str,
         params: dict,
     ) -> dict | None:
-        """
-        Envia template de mensagem via WhatsApp.
-        Retorna None se WhatsApp estiver desabilitado.
-        """
         if not self.is_enabled:
             logger.info(f"WhatsApp desabilitado — template '{template_key}' não enviado para {phone}")
             return None
-
-        template_config = self.TEMPLATES.get(template_key)
-        if not template_config:
-            raise ValueError(f"Template desconhecido: {template_key}")
 
         # Formata número (BR: +55)
         digits = "".join(c for c in phone if c.isdigit())
         if not digits.startswith("55"):
             digits = f"55{digits}"
 
-        # Monta componentes do template
-        components = [{
-            "type": "body",
-            "parameters": [
-                {"type": "text", "text": str(params.get(p, ""))}
-                for p in template_config["params"]
-            ],
-        }]
-
-        payload = {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": digits,
-            "type": "template",
-            "template": {
-                "name": template_config["name"],
-                "language": {"code": template_config["language"]},
-                "components": components,
-            },
-        }
+        # Simula o texto dos templates
+        text_message = ""
+        if template_key == "reminder_5d":
+            text_message = f"Olá {params.get('nome')}, passando para lembrar que a fatura no valor de R$ {params.get('valor')} vence no dia {params.get('data_vencimento')}."
+        elif template_key == "due_today":
+            text_message = f"Olá {params.get('nome')}, sua fatura no valor de R$ {params.get('valor')} vence HOJE."
+        elif template_key == "overdue_1d":
+            text_message = f"Olá {params.get('nome')}, não identificamos o pagamento da fatura de R$ {params.get('valor')}. Por favor desconsidere se já pagou."
+        elif template_key == "payment_confirmed":
+            text_message = f"Olá {params.get('nome')}, confirmamos o recebimento do pagamento de R$ {params.get('valor')}. Obrigado!"
+        else:
+            text_message = f"Mensagem automática: {template_key} - {params}"
 
         client = await self._get_client()
 
         try:
             response = await client.post(
-                f"/{settings.whatsapp_phone_id}/messages",
-                json=payload,
+                f"/message/sendText/{INSTANCE_NAME}",
+                json={"number": digits, "text": text_message},
             )
             response.raise_for_status()
-            data = response.json()
-            message_id = data.get("messages", [{}])[0].get("id")
-            logger.info(f"WhatsApp enviado: {message_id} → {digits}")
-            return {"message_id": message_id, "status": "sent"}
+            logger.info(f"WhatsApp (Evolution API) enviado para {digits}")
+            return {"status": "sent"}
         except httpx.HTTPStatusError as e:
-            logger.error(f"Erro WhatsApp: {e.response.text}")
-            return {"message_id": None, "status": "failed", "error": e.response.text}
+            logger.error(f"Erro Evolution API: {e.response.text}")
+            return {"status": "failed", "error": e.response.text}
+        except Exception as e:
+            logger.error(f"Erro ao conectar com Evolution API: {e}")
+            return {"status": "failed", "error": str(e)}
 
     async def send_invoice_document(
         self,
@@ -123,12 +90,11 @@ class WhatsAppService:
         caption: str = ""
     ) -> dict | None:
         """
-        Envia a fatura em PDF diretamente para o WhatsApp do cliente.
-        Fluxo: Faz upload do Media (PDF) para a API do WhatsApp, e em seguida
-        envia a mensagem do tipo 'document' contendo o media_id.
+        Envia PDF em formato Base64 para a Evolution API.
         """
+        import base64
+        
         if not self.is_enabled:
-            logger.info(f"WhatsApp desabilitado — PDF da fatura não enviado para {phone}")
             return None
 
         digits = "".join(c for c in phone if c.isdigit())
@@ -136,65 +102,28 @@ class WhatsAppService:
             digits = f"55{digits}"
 
         client = await self._get_client()
+        base64_pdf = base64.b64encode(pdf_data).decode('utf-8')
 
         try:
-            # 1. Upload do Media (PDF)
-            # Para WhatsApp Cloud API o upload é feito como multipart/form-data
-            media_payload = {
-                "messaging_product": "whatsapp"
-            }
-            files = {
-                "file": (filename, pdf_data, "application/pdf")
-            }
-            
-            # Precisamos recriar o client para usar FormData corretamente sem header Content-Type hardcoded
-            upload_client = httpx.AsyncClient(
-                base_url=settings.whatsapp_base_url,
-                timeout=30.0,
-                headers={"Authorization": f"Bearer {settings.whatsapp_token}"}
+            response = await client.post(
+                f"/message/sendMedia/{INSTANCE_NAME}",
+                json={
+                    "number": digits,
+                    "mediatype": "document",
+                    "media": base64_pdf,
+                    "fileName": filename,
+                    "caption": caption
+                },
             )
-            
-            upload_resp = await upload_client.post(
-                f"/{settings.whatsapp_phone_id}/media",
-                data=media_payload,
-                files=files
-            )
-            upload_resp.raise_for_status()
-            media_id = upload_resp.json().get("id")
-            await upload_client.aclose()
-
-            if not media_id:
-                raise ValueError("Falha ao obter media_id do WhatsApp")
-
-            # 2. Enviar a Mensagem (Document) com o media_id
-            msg_payload = {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": digits,
-                "type": "document",
-                "document": {
-                    "id": media_id,
-                    "caption": caption,
-                    "filename": filename
-                }
-            }
-
-            msg_resp = await client.post(
-                f"/{settings.whatsapp_phone_id}/messages",
-                json=msg_payload,
-            )
-            msg_resp.raise_for_status()
-            message_id = msg_resp.json().get("messages", [{}])[0].get("id")
-            
-            logger.info(f"Fatura PDF enviada via WhatsApp para {digits} (Msg ID: {message_id})")
-            return {"message_id": message_id, "status": "sent"}
-
+            response.raise_for_status()
+            logger.info(f"Fatura PDF (Evolution API) enviada para {digits}")
+            return {"status": "sent"}
         except httpx.HTTPStatusError as e:
-            logger.error(f"Erro WhatsApp Document: {e.response.text}")
-            return {"message_id": None, "status": "failed", "error": e.response.text}
+            logger.error(f"Erro ao enviar doc Evolution API: {e.response.text}")
+            return {"status": "failed", "error": e.response.text}
         except Exception as e:
-            logger.error(f"Erro geral WhatsApp Document: {e}")
-            return {"message_id": None, "status": "failed", "error": str(e)}
+            logger.error(f"Erro geral ao enviar doc: {e}")
+            return {"status": "failed", "error": str(e)}
 
     async def close(self):
         if self._client and not self._client.is_closed:
