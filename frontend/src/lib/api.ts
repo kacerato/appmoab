@@ -1,6 +1,18 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+const getCache = new Map<string, { expiresAt: number; value: unknown }>();
+
+function clearGetCache() {
+  getCache.clear();
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const method = options.method || 'GET';
+  const cacheKey = `${API_URL}${path}`;
+  if (method === 'GET') {
+    const cached = getCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+  }
+
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -23,8 +35,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error(err.detail || `Erro ${res.status}`);
   }
 
-  if (res.status === 204) return {} as T;
-  return res.json();
+  if (res.status === 204) {
+    if (method !== 'GET') clearGetCache();
+    return {} as T;
+  }
+
+  const data = await res.json();
+  if (method === 'GET') {
+    getCache.set(cacheKey, { value: data, expiresAt: Date.now() + 45000 });
+  } else {
+    clearGetCache();
+  }
+  return data;
 }
 
 export const api = {

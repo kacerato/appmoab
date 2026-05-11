@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
-from app.database import async_session_factory
+from sqlalchemy import text
+
+from app.database import Base, async_session_factory, engine
 from app.routers import (
     auth,
     customers,
@@ -39,6 +41,15 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s v%s iniciando...", settings.app_name, settings.app_version)
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS red_digits INTEGER NOT NULL DEFAULT 3"))
+        await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS black_digits INTEGER"))
+        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS red_digits INTEGER"))
+        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS black_digits INTEGER"))
+        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS hydrometer_brand VARCHAR(100)"))
+        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS hydrometer_model VARCHAR(100)"))
 
     async with async_session_factory() as session:
         try:

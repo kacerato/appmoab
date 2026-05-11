@@ -17,6 +17,8 @@ HYDROMETER_OCR_PROMPT = """Analise a imagem e extraia, com foco operacional:
 1. CODIGO DE IDENTIFICACAO do hidrometro
 2. LEITURA ATUAL em m3
 3. CONFIANCA de 0 a 1
+4. QUANTIDADE de digitos vermelhos no mostrador, se visivel
+5. QUANTIDADE aproximada de digitos pretos no mostrador, se visivel
 
 Regras importantes:
 - Se houver um hidrometro real visivel, priorize o codigo gravado nele.
@@ -26,7 +28,7 @@ Regras importantes:
 - Se nao houver leitura legivel, use null.
 
 Responda exclusivamente em JSON, neste formato:
-{"codigo": "000001", "leitura_m3": 12345.678, "confianca": 0.95}
+{"codigo": "000001", "leitura_m3": 12345.678, "confianca": 0.95, "digitos_vermelhos": 3, "digitos_pretos": 5}
 """
 
 
@@ -90,6 +92,8 @@ class KimiVisionService:
             "codigo": self._safe_code(data.get("codigo")),
             "leitura_m3": self._safe_float(data.get("leitura_m3")),
             "confianca": self._safe_float(data.get("confianca"), 0.0),
+            "digitos_vermelhos": self._safe_int(data.get("digitos_vermelhos")),
+            "digitos_pretos": self._safe_int(data.get("digitos_pretos")),
         }
 
     def _extract_json_payload(self, text: str) -> dict:
@@ -126,6 +130,15 @@ class KimiVisionService:
     @staticmethod
     def _safe_float(value, default=None):
         if value is None:
+            return default
+
+    @staticmethod
+    def _safe_int(value, default=None):
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (ValueError, TypeError):
             return default
         try:
             return float(value)

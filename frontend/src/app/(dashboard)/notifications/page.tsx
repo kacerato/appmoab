@@ -22,6 +22,10 @@ interface KimiMemorySummary {
     confirmed_code: string | null;
     predicted_value: number | null;
     confirmed_value: number | null;
+    red_digits: number | null;
+    black_digits: number | null;
+    hydrometer_brand: string | null;
+    hydrometer_model: string | null;
     was_correct: boolean | null;
     lesson: string | null;
   }>;
@@ -162,6 +166,9 @@ export default function NotificationsPage() {
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
                   Kimi: {item.predicted_code || item.predicted_value || 'sem leitura'} · Humano: {item.confirmed_code || item.confirmed_value || 'sem confirmacao'}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                  Formato: {item.red_digits || 'n/i'} vermelhos{item.black_digits ? ` · ${item.black_digits} pretos` : ''}{item.hydrometer_brand ? ` · ${[item.hydrometer_brand, item.hydrometer_model].filter(Boolean).join(' ')}` : ''}
                 </div>
                 {item.lesson && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{item.lesson}</div>}
               </div>

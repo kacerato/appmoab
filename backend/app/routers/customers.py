@@ -160,7 +160,15 @@ async def create_customer(
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="CPF/CNPJ ja cadastrado")
 
-    customer = Customer(**data.model_dump())
+    payload = data.model_dump()
+    hydrometer_initial_reading = payload.pop("hydrometer_initial_reading", 0.0)
+    hydrometer_red_digits = payload.pop("hydrometer_red_digits", 3)
+    hydrometer_black_digits = payload.pop("hydrometer_black_digits", None)
+    hydrometer_brand = payload.pop("hydrometer_brand", None)
+    hydrometer_model = payload.pop("hydrometer_model", None)
+    hydrometer_location_description = payload.pop("hydrometer_location_description", None)
+
+    customer = Customer(**payload)
     db.add(customer)
     await db.flush()
 
@@ -169,8 +177,12 @@ async def create_customer(
         hydrometer = Hydrometer(
             customer_id=customer.id,
             code=target_code,
-            location_description="Instalacao padrao",
-            last_reading_value=0.0,
+            brand=hydrometer_brand,
+            model=hydrometer_model,
+            red_digits=hydrometer_red_digits,
+            black_digits=hydrometer_black_digits,
+            location_description=hydrometer_location_description or "Instalacao padrao",
+            last_reading_value=hydrometer_initial_reading,
         )
         db.add(hydrometer)
         await db.flush()

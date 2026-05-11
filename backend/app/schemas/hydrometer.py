@@ -10,6 +10,8 @@ class HydrometerBase(BaseModel):
     code: str | None = None
     brand: str | None = None
     model: str | None = None
+    red_digits: int = 3
+    black_digits: int | None = None
     location_description: str | None = None
     latitude: float | None = None
     longitude: float | None = None
@@ -24,6 +26,8 @@ class HydrometerUpdate(BaseModel):
     code: str | None = None
     brand: str | None = None
     model: str | None = None
+    red_digits: int | None = None
+    black_digits: int | None = None
     location_description: str | None = None
     latitude: float | None = None
     longitude: float | None = None
@@ -71,6 +75,10 @@ class KimiVisionFeedbackRequest(BaseModel):
     hydrometer_id: UUID | None = None
     stage: str = "code"
     confidence: float | None = None
+    red_digits: int | None = None
+    black_digits: int | None = None
+    hydrometer_brand: str | None = None
+    hydrometer_model: str | None = None
 
 
 class HydrometerIdentifyResponse(BaseModel):
@@ -83,3 +91,7 @@ class HydrometerIdentifyResponse(BaseModel):
     customer_name: str | None = None
     location_description: str | None = None
     last_reading_value: float | None = None
+    red_digits: int | None = None
+    black_digits: int | None = None
+    brand: str | None = None
+    model: str | None = None

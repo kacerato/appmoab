@@ -90,6 +90,10 @@ async def identify_hydrometer_from_photo(
         customer_name=hydrometer.customer.name if hydrometer.customer else None,
         location_description=hydrometer.location_description,
         last_reading_value=hydrometer.last_reading_value,
+        red_digits=hydrometer.red_digits,
+        black_digits=hydrometer.black_digits,
+        brand=hydrometer.brand,
+        model=hydrometer.model,
     )
 
 
@@ -123,6 +127,10 @@ async def resolve_hydrometer_code(
         customer_name=hydrometer.customer.name if hydrometer.customer else None,
         location_description=hydrometer.location_description,
         last_reading_value=hydrometer.last_reading_value,
+        red_digits=hydrometer.red_digits,
+        black_digits=hydrometer.black_digits,
+        brand=hydrometer.brand,
+        model=hydrometer.model,
     )
 
 
@@ -158,6 +166,10 @@ async def store_kimi_vision_feedback(
         predicted_value=data.predicted_value,
         confirmed_code=confirmed_code,
         confirmed_value=data.confirmed_value,
+        red_digits=data.red_digits,
+        black_digits=data.black_digits,
+        hydrometer_brand=data.hydrometer_brand,
+        hydrometer_model=data.hydrometer_model,
         confidence=data.confidence,
         was_correct=was_correct,
         lesson=lesson,
@@ -180,6 +192,8 @@ async def kimi_vision_verdict(
             "predicted_code": normalize_hydrometer_code(ocr_result.get("codigo")),
             "predicted_value": ocr_result.get("leitura_m3"),
             "confidence": ocr_result.get("confianca"),
+            "red_digits": ocr_result.get("digitos_vermelhos"),
+            "black_digits": ocr_result.get("digitos_pretos"),
         }
     except KimiVisionError as exc:
         return {"predicted_code": None, "predicted_value": None, "confidence": 0.0, "error": str(exc)}
@@ -219,6 +233,10 @@ async def kimi_memory_summary(
                 "confirmed_code": item.confirmed_code,
                 "predicted_value": item.predicted_value,
                 "confirmed_value": item.confirmed_value,
+                "red_digits": item.red_digits,
+                "black_digits": item.black_digits,
+                "hydrometer_brand": item.hydrometer_brand,
+                "hydrometer_model": item.hydrometer_model,
                 "was_correct": item.was_correct,
                 "lesson": item.lesson,
                 "created_at": item.created_at,
@@ -260,6 +278,10 @@ async def create_hydrometer(
         target_code = await assign_numeric_code_if_needed(db, data.code)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if data.red_digits not in (2, 3):
+        raise HTTPException(status_code=400, detail="Digitos vermelhos devem ser 2 ou 3")
+    if data.black_digits is not None and data.black_digits < 1:
+        raise HTTPException(status_code=400, detail="Digitos pretos deve ser maior que zero")
 
     hydrometer = Hydrometer(
         customer_id=data.customer_id,
@@ -299,6 +321,10 @@ async def update_hydrometer(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if "red_digits" in update_data and update_data["red_digits"] not in (2, 3):
+        raise HTTPException(status_code=400, detail="Digitos vermelhos devem ser 2 ou 3")
+    if "black_digits" in update_data and update_data["black_digits"] is not None and update_data["black_digits"] < 1:
+        raise HTTPException(status_code=400, detail="Digitos pretos deve ser maior que zero")
     if "last_reading_value" in update_data and update_data["last_reading_value"] is not None:
         hydrometer.last_reading_date = datetime.now(timezone.utc)
 

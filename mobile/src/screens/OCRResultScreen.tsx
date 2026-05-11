@@ -26,6 +26,8 @@ interface VisionVerdict {
   predicted_code: string | null;
   predicted_value: number | null;
   confidence: number | null;
+  red_digits: number | null;
+  black_digits: number | null;
 }
 
 export default function OCRResultScreen() {
@@ -42,6 +44,10 @@ export default function OCRResultScreen() {
     hydrometerCode,
     customerName,
     lastReading,
+    redDigits = 3,
+    blackDigits = null,
+    hydrometerBrand = '',
+    hydrometerModel = '',
     locationDescription,
   } = route.params;
 
@@ -49,6 +55,7 @@ export default function OCRResultScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [ocrData, setOcrData] = useState<OCRData | null>(null);
   const [currentValue, setCurrentValue] = useState('');
+  const [selectedRedDigits, setSelectedRedDigits] = useState<number>(redDigits || 3);
   const [readingId, setReadingId] = useState('');
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
 
@@ -83,6 +90,10 @@ export default function OCRResultScreen() {
         confirmed_code: hydrometerCode || null,
         confirmed_value: parseFloat(currentValue),
         hydrometer_id: hydrometerId,
+        red_digits: selectedRedDigits,
+        black_digits: blackDigits || verdict?.black_digits || null,
+        hydrometer_brand: hydrometerBrand || null,
+        hydrometer_model: hydrometerModel || null,
       }).catch(() => null);
       showToast('Leitura enviada', 'A leitura foi registrada e aguarda aprovação no painel.', 'success');
       navigation.navigate('Route');
@@ -124,6 +135,8 @@ export default function OCRResultScreen() {
             <Text style={shared.sectionTitle}>Revisão da associação</Text>
             <Field label="Cliente" value={customerName} />
             <Field label="Código esperado" value={hydrometerCode} />
+            <Field label="Formato cadastrado" value={`${selectedRedDigits} digitos vermelhos${blackDigits ? `, ${blackDigits} pretos` : ''}`} />
+            {!!hydrometerBrand && <Field label="Marca/modelo" value={[hydrometerBrand, hydrometerModel].filter(Boolean).join(' ')} />}
             <Field label="Local do hidrômetro" value={locationDescription || 'Não informado'} />
             <Field label="Localização da coleta" value={locationLabel} />
             <Field label="Capturado em" value={new Date(capturedAt).toLocaleString('pt-BR')} />
@@ -139,6 +152,11 @@ export default function OCRResultScreen() {
 
           <View style={shared.card}>
             <Text style={shared.sectionTitle}>Confirmar a leitura final</Text>
+            <Text style={shared.label}>Dígitos vermelhos do hidrômetro</Text>
+            <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
+              <RedDigitOption value={2} selected={selectedRedDigits === 2} onPress={() => setSelectedRedDigits(2)} />
+              <RedDigitOption value={3} selected={selectedRedDigits === 3} onPress={() => setSelectedRedDigits(3)} />
+            </View>
             <Text style={shared.label}>Leitura atual (m³)</Text>
             <TextInput
               style={[shared.input, { fontSize: 24, fontWeight: '800', textAlign: 'center', marginBottom: 16 }]}
@@ -167,6 +185,25 @@ export default function OCRResultScreen() {
         </>
       )}
     </ScrollView>
+  );
+}
+
+function RedDigitOption({ value, selected, onPress }: { value: number; selected: boolean; onPress: () => void }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      style={{
+        flex: 1,
+        borderRadius: 14,
+        paddingVertical: 12,
+        alignItems: 'center',
+        backgroundColor: selected ? colors.dangerSoft : colors.navy700,
+        borderWidth: 1,
+        borderColor: selected ? colors.danger : colors.border,
+      }}
+    >
+      <Text style={{ color: selected ? colors.danger : colors.textSecondary, fontWeight: '900' }}>{value} vermelhos</Text>
+    </TouchableOpacity>
   );
 }
 

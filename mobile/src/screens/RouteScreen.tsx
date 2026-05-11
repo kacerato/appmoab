@@ -24,6 +24,10 @@ interface Hydrometer {
   id: string;
   code: string;
   last_reading_value: number;
+  red_digits?: number | null;
+  black_digits?: number | null;
+  brand?: string | null;
+  model?: string | null;
   location_description?: string | null;
 }
 
@@ -158,6 +162,10 @@ export default function RouteScreen() {
       expectedHydrometerId: item.hydrometer.id,
       expectedHydrometerCode: item.hydrometer.code,
       lastReading: item.hydrometer.last_reading_value || 0,
+      redDigits: item.hydrometer.red_digits || 3,
+      blackDigits: item.hydrometer.black_digits || null,
+      hydrometerBrand: item.hydrometer.brand || '',
+      hydrometerModel: item.hydrometer.model || '',
       locationDescription: item.hydrometer.location_description || '',
     });
   }, [navigation]);
@@ -322,6 +330,10 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
         <StatusBadge status={item.todayStatus?.status || 'pending'} />
       </View>
       {!!item.hydrometer.location_description && <Text style={styles.locationText}>{item.hydrometer.location_description}</Text>}
+      <Text style={styles.metaLine}>
+        Mostrador: {item.hydrometer.red_digits || 3} digitos vermelhos
+        {item.hydrometer.black_digits ? ` - ${item.hydrometer.black_digits} pretos` : ''}
+      </Text>
       <TouchableOpacity style={styles.rowActionButton} onPress={onPress}>
         <Text style={styles.rowActionButtonText}>Fotografar codigo</Text>
       </TouchableOpacity>

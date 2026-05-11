@@ -9,6 +9,8 @@ interface VisionVerdict {
   predicted_code: string | null;
   predicted_value: number | null;
   confidence: number | null;
+  red_digits: number | null;
+  black_digits: number | null;
 }
 
 export default function ManualCodeScreen() {
@@ -23,6 +25,10 @@ export default function ManualCodeScreen() {
     expectedHydrometerId,
     expectedHydrometerCode,
     lastReading,
+    redDigits = 3,
+    blackDigits = null,
+    hydrometerBrand = '',
+    hydrometerModel = '',
     locationDescription,
   } = route.params;
   const [code, setCode] = useState(expectedHydrometerCode || '');
@@ -47,6 +53,10 @@ export default function ManualCodeScreen() {
         confidence: verdict?.confidence || null,
         confirmed_code: code,
         hydrometer_id: result.hydrometer_id || expectedHydrometerId || null,
+        red_digits: result.red_digits || redDigits,
+        black_digits: result.black_digits || blackDigits,
+        hydrometer_brand: result.brand || hydrometerBrand || null,
+        hydrometer_model: result.model || hydrometerModel || null,
       }).catch(() => null);
 
       if (!result.matched) {
@@ -65,6 +75,10 @@ export default function ManualCodeScreen() {
         hydrometerCode: result.hydrometer_code,
         customerName: result.customer_name || expectedCustomerName || 'Leitura manual',
         lastReading: result.last_reading_value ?? lastReading,
+        redDigits: result.red_digits || redDigits,
+        blackDigits: result.black_digits || blackDigits,
+        hydrometerBrand: result.brand || hydrometerBrand,
+        hydrometerModel: result.model || hydrometerModel,
         locationDescription: result.location_description || locationDescription,
       });
     } catch (error) {

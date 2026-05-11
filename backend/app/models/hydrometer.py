@@ -29,6 +29,8 @@ class Hydrometer(Base):
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
     brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    red_digits: Mapped[int] = mapped_column(default=3, nullable=False)
+    black_digits: Mapped[int | None] = mapped_column(default=None, nullable=True)
 
     # ── Localização ────────────────────────────────────────────
     location_description: Mapped[str | None] = mapped_column(Text, nullable=True)

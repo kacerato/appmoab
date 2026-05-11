@@ -29,6 +29,12 @@ export default function NewCustomerPage() {
     address: '', number: 'S/N', complement: '', neighborhood: '',
     city: 'Moab', state: 'PA', zip_code: '',
     due_day: 10, has_hydrometer: true, notes: '',
+    hydrometer_initial_reading: 0,
+    hydrometer_red_digits: 3,
+    hydrometer_black_digits: '',
+    hydrometer_brand: '',
+    hydrometer_model: '',
+    hydrometer_location_description: '',
   });
 
   const set = (field: string, value: string | number | boolean) =>
@@ -61,7 +67,10 @@ export default function NewCustomerPage() {
     setLoading(true);
     setError('');
     try {
-      const customer = await api.post<{ id: string }>('/customers', form);
+      const customer = await api.post<{ id: string }>('/customers', {
+        ...form,
+        hydrometer_black_digits: form.hydrometer_black_digits === '' ? null : Number(form.hydrometer_black_digits),
+      });
 
       for (const attachment of pendingAttachments) {
         const fileBase64 = await fileToDataUrl(attachment.file);
@@ -168,6 +177,41 @@ export default function NewCustomerPage() {
             <textarea className="form-textarea" value={form.notes} onChange={e => set('notes', e.target.value)} />
           </div>
         </div>
+
+        {form.has_hydrometer && (
+          <div className="card" style={{ marginBottom: 20 }}>
+            <div className="card-header"><span className="card-title">Hidrômetro inicial</span></div>
+            <div className="form-grid">
+              <div className="form-group">
+                <label className="form-label">Última leitura cadastrada</label>
+                <input className="form-input" type="number" step="0.01" min="0" value={form.hydrometer_initial_reading} onChange={e => set('hydrometer_initial_reading', parseFloat(e.target.value) || 0)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Dígitos vermelhos</label>
+                <select className="form-select" value={form.hydrometer_red_digits} onChange={e => set('hydrometer_red_digits', Number(e.target.value))}>
+                  <option value={2}>2 dígitos vermelhos</option>
+                  <option value={3}>3 dígitos vermelhos</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Dígitos pretos</label>
+                <input className="form-input" type="number" min={1} value={form.hydrometer_black_digits} onChange={e => set('hydrometer_black_digits', e.target.value)} placeholder="Opcional" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Marca</label>
+                <input className="form-input" value={form.hydrometer_brand} onChange={e => set('hydrometer_brand', e.target.value)} placeholder="Ex: LAO, Elster" />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Modelo</label>
+                <input className="form-input" value={form.hydrometer_model} onChange={e => set('hydrometer_model', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Local do hidrômetro</label>
+                <input className="form-input" value={form.hydrometer_location_description} onChange={e => set('hydrometer_location_description', e.target.value)} placeholder="Ex: Muro frontal esquerdo" />
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header"><span className="card-title">Boletos Antigos</span></div>

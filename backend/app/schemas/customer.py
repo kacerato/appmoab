@@ -50,7 +50,12 @@ class CustomerBase(BaseModel):
 
 
 class CustomerCreate(CustomerBase):
-    pass
+    hydrometer_initial_reading: float = 0.0
+    hydrometer_red_digits: int = 3
+    hydrometer_black_digits: int | None = None
+    hydrometer_brand: str | None = None
+    hydrometer_model: str | None = None
+    hydrometer_location_description: str | None = None
 
 
 class CustomerUpdate(BaseModel):

@@ -18,6 +18,10 @@ export default function CameraScreen() {
     expectedHydrometerId,
     expectedHydrometerCode,
     lastReading = 0,
+    redDigits = 3,
+    blackDigits = null,
+    hydrometerBrand = '',
+    hydrometerModel = '',
     locationDescription = '',
     hydrometerId,
     hydrometerCode,
@@ -77,6 +81,10 @@ export default function CameraScreen() {
           expectedHydrometerId,
           expectedHydrometerCode,
           lastReading,
+          redDigits,
+          blackDigits,
+          hydrometerBrand,
+          hydrometerModel,
           locationDescription,
         });
         return;
@@ -104,6 +112,10 @@ export default function CameraScreen() {
         hydrometerCode: activeHydrometerCode,
         customerName: activeCustomerName,
         lastReading,
+        redDigits,
+        blackDigits,
+        hydrometerBrand,
+        hydrometerModel,
         locationDescription,
       });
     } catch (error) {
@@ -150,9 +162,9 @@ export default function CameraScreen() {
 
           <View style={styles.overlayBottom}>
             <View style={styles.infoCard}>
-              <Text style={styles.infoLabel}>{stage === 'code' ? 'Esperado na rota' : 'Leitura anterior'}</Text>
+              <Text style={styles.infoLabel}>{stage === 'code' ? 'Esperado na rota' : 'Formato do mostrador'}</Text>
               <Text style={styles.infoValue}>
-                {stage === 'code' ? activeHydrometerCode : `${Number(lastReading || 0).toFixed(2)} m3`}
+                {stage === 'code' ? activeHydrometerCode : `${redDigits} vermelhos - base ${Number(lastReading || 0).toFixed(2)} m3`}
               </Text>
               {!!locationDescription && <Text style={styles.locationHint}>{locationDescription}</Text>}
             </View>
