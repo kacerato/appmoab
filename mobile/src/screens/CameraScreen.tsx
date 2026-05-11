@@ -69,7 +69,7 @@ export default function CameraScreen() {
       });
 
       if (stage === 'code') {
-        navigation.navigate('HydrometerMatch', {
+        navigation.navigate('ManualCode', {
           photoBase64: photo.base64,
           photoUri: photo.uri,
           expectedCustomerId,

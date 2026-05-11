@@ -22,6 +22,12 @@ interface OCRData {
   matched_hydrometer_code: string | null;
 }
 
+interface VisionVerdict {
+  predicted_code: string | null;
+  predicted_value: number | null;
+  confidence: number | null;
+}
+
 export default function OCRResultScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -44,36 +50,40 @@ export default function OCRResultScreen() {
   const [ocrData, setOcrData] = useState<OCRData | null>(null);
   const [currentValue, setCurrentValue] = useState('');
   const [readingId, setReadingId] = useState('');
+  const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
 
   useEffect(() => {
-    api.post<OCRData>('/readings', {
-      hydrometer_id: hydrometerId,
-      photo_base64: photoBase64,
-      latitude,
-      longitude,
-      captured_at: capturedAt,
-    })
-      .then(result => {
-        setOcrData(result);
-        setReadingId(result.reading_id);
-        if (result.extracted_value !== null && result.extracted_value !== undefined) {
-          setCurrentValue(result.extracted_value.toString());
-        }
-      })
-      .catch(error => {
-        showToast('Falha no OCR', error instanceof Error ? error.message : 'Não foi possível processar a leitura.', 'error');
-      })
-      .finally(() => setLoading(false));
-  }, [capturedAt, hydrometerId, latitude, longitude, photoBase64, showToast]);
+    setLoading(false);
+    api.post<VisionVerdict>('/hydrometers/vision-verdict', { photo_base64: photoBase64 })
+      .then(setVerdict)
+      .catch(() => setVerdict(null));
+  }, [photoBase64]);
 
   const confirmReading = async () => {
-    if (!currentValue || !readingId) return;
+    if (!currentValue) return;
     setSubmitting(true);
     try {
-      await api.put(`/readings/${readingId}/confirm`, {
+      const result = await api.post<OCRData>('/readings', {
+        hydrometer_id: hydrometerId,
+        photo_base64: photoBase64,
+        latitude,
+        longitude,
+        captured_at: capturedAt,
         current_value: parseFloat(currentValue),
-        confirmed_code: ocrData?.extracted_code || hydrometerCode || null,
+        confirmed_code: hydrometerCode || null,
       });
+      setOcrData(result);
+      setReadingId(result.reading_id);
+      await api.post('/hydrometers/vision-feedback', {
+        photo_base64: photoBase64,
+        stage: 'reading',
+        predicted_code: verdict?.predicted_code || null,
+        predicted_value: verdict?.predicted_value || null,
+        confidence: verdict?.confidence || null,
+        confirmed_code: hydrometerCode || null,
+        confirmed_value: parseFloat(currentValue),
+        hydrometer_id: hydrometerId,
+      }).catch(() => null);
       showToast('Leitura enviada', 'A leitura foi registrada e aguarda aprovação no painel.', 'success');
       navigation.navigate('Route');
     } catch (error) {
@@ -84,9 +94,6 @@ export default function OCRResultScreen() {
   };
 
   const consumption = currentValue ? Math.max(0, parseFloat(currentValue) - lastReading) : 0;
-  const confidence = ocrData?.confidence ? Math.round(ocrData.confidence * 100) : 0;
-  const codeMatches = !ocrData?.extracted_code || !hydrometerCode || ocrData.extracted_code === hydrometerCode;
-
   const locationLabel = useMemo(() => {
     if (latitude && longitude) {
       return `${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
@@ -108,7 +115,7 @@ export default function OCRResultScreen() {
         <View style={shared.card}>
           <ActivityIndicator size="large" color={colors.accent} />
           <Text style={{ marginTop: 14, color: colors.textMuted, textAlign: 'center' }}>
-            Processando a leitura com IA...
+            Preparando conferência...
           </Text>
         </View>
       ) : (
@@ -117,22 +124,16 @@ export default function OCRResultScreen() {
             <Text style={shared.sectionTitle}>Revisão da associação</Text>
             <Field label="Cliente" value={customerName} />
             <Field label="Código esperado" value={hydrometerCode} />
-            <Field label="Código reconhecido" value={ocrData?.extracted_code || 'Não reconhecido'} />
             <Field label="Local do hidrômetro" value={locationDescription || 'Não informado'} />
             <Field label="Localização da coleta" value={locationLabel} />
             <Field label="Capturado em" value={new Date(capturedAt).toLocaleString('pt-BR')} />
-            {!codeMatches && (
-              <Text style={{ color: colors.danger, fontSize: 12, fontWeight: '700', marginTop: 4 }}>
-                O código lido na foto diverge do hidrômetro confirmado na etapa anterior. Revise antes de enviar.
-              </Text>
-            )}
           </View>
 
           <View style={shared.card}>
-            <Text style={shared.sectionTitle}>Resultado do OCR</Text>
+            <Text style={shared.sectionTitle}>Leitura digitada</Text>
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Metric label="Leitura extraída" value={ocrData?.extracted_value !== null && ocrData?.extracted_value !== undefined ? `${ocrData.extracted_value.toFixed(2)} m³` : '—'} accent />
-              <Metric label="Confiança" value={`${confidence}%`} tone={confidence >= 80 ? 'success' : confidence >= 50 ? 'warning' : 'danger'} />
+              <Metric label="Anterior" value={`${lastReading.toFixed(2)} m³`} />
+              <Metric label="Consumo" value={`${consumption.toFixed(2)} m³`} accent />
             </View>
           </View>
 
@@ -147,17 +148,12 @@ export default function OCRResultScreen() {
               placeholder="0.00"
               placeholderTextColor={colors.textMuted}
             />
-
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <Metric label="Anterior" value={`${lastReading.toFixed(2)} m³`} />
-              <Metric label="Consumo" value={`${consumption.toFixed(2)} m³`} accent />
-            </View>
           </View>
 
           <TouchableOpacity
-            style={[shared.btnPrimary, submitting && { opacity: 0.5 }, (!currentValue || !codeMatches) && { opacity: 0.45 }]}
+            style={[shared.btnPrimary, submitting && { opacity: 0.5 }, !currentValue && { opacity: 0.45 }]}
             onPress={confirmReading}
-            disabled={submitting || !currentValue || !codeMatches}
+            disabled={submitting || !currentValue}
           >
             {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>Confirmar e enviar</Text>}
           </TouchableOpacity>

@@ -121,6 +121,9 @@ async def _send_reminders_async(
                 notification.sent_at = datetime.now(timezone.utc)
                 if wa_result.get("error"):
                     notification.error_message = wa_result["error"][:500]
+            else:
+                notification.status = "failed"
+                notification.error_message = "WhatsApp desabilitado ou sem canal ativo"
 
             db.add(notification)
 

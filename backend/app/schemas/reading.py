@@ -10,6 +10,8 @@ class ReadingCreate(BaseModel):
     """Enviado pelo app mobile ao capturar foto."""
     hydrometer_id: UUID
     photo_base64: str
+    current_value: float | None = None
+    confirmed_code: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     captured_at: datetime

@@ -93,24 +93,30 @@ async def create_reading(
     # Salva foto
     photo_url = save_photo_from_base64(data.photo_base64, prefix="reading")
 
-    # OCR via Kimi K2.6
+    # OCR via Kimi K2.6 fica como veredito interno. Quando o colaborador digitou
+    # a leitura, a resposta nao depende mais do OCR para seguir o fluxo.
     ocr_result = {"codigo": None, "leitura_m3": None, "confianca": 0.0}
-    try:
-        ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
-    except Exception as e:
-        # OCR falhou, mas a leitura ainda pode ser registrada manualmente
-        import logging
-        logging.getLogger(__name__).warning(f"OCR falhou: {e}")
+    if data.current_value is None:
+        try:
+            ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
+        except Exception as e:
+            # OCR falhou, mas a leitura ainda pode ser registrada manualmente
+            import logging
+            logging.getLogger(__name__).warning(f"OCR falhou: {e}")
+
+    current_value = data.current_value
+    if current_value is None:
+        current_value = ocr_result.get("leitura_m3") or 0.0
 
     # Cria leitura (status=pending, aguarda confirmação do colaborador)
     reading = Reading(
         hydrometer_id=data.hydrometer_id,
         collaborator_id=user.id,
-        current_value=ocr_result.get("leitura_m3") or 0.0,
+        current_value=current_value,
         previous_value=hydrometer.last_reading_value,
-        consumption=max(0, (ocr_result.get("leitura_m3") or 0.0) - hydrometer.last_reading_value),
+        consumption=max(0, current_value - hydrometer.last_reading_value),
         photo_url=photo_url,
-        photo_extracted_code=ocr_result.get("codigo"),
+        photo_extracted_code=data.confirmed_code or ocr_result.get("codigo"),
         photo_extracted_value=ocr_result.get("leitura_m3"),
         ocr_confidence=ocr_result.get("confianca"),
         latitude=data.latitude,

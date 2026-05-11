@@ -58,6 +58,21 @@ class HydrometerIdentifyRequest(BaseModel):
     photo_base64: str
 
 
+class HydrometerResolveCodeRequest(BaseModel):
+    code: str
+
+
+class KimiVisionFeedbackRequest(BaseModel):
+    photo_base64: str | None = None
+    predicted_code: str | None = None
+    predicted_value: float | None = None
+    confirmed_code: str | None = None
+    confirmed_value: float | None = None
+    hydrometer_id: UUID | None = None
+    stage: str = "code"
+    confidence: float | None = None
+
+
 class HydrometerIdentifyResponse(BaseModel):
     extracted_code: str | None
     confidence: float | None

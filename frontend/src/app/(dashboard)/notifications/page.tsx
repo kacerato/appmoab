@@ -10,6 +10,23 @@ interface HealthData {
   whatsapp_enabled: boolean;
 }
 
+interface KimiMemorySummary {
+  total: number;
+  correct: number;
+  wrong: number;
+  accuracy: number;
+  recent: Array<{
+    id: string;
+    stage: string;
+    predicted_code: string | null;
+    confirmed_code: string | null;
+    predicted_value: number | null;
+    confirmed_value: number | null;
+    was_correct: boolean | null;
+    lesson: string | null;
+  }>;
+}
+
 const FLOW_DEFINITIONS = [
   {
     key: 'invoice_generated',
@@ -45,6 +62,8 @@ const FLOW_DEFINITIONS = [
 
 export default function NotificationsPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
+  const [kimiMemory, setKimiMemory] = useState<KimiMemorySummary | null>(null);
+  const [showKimiMemory, setShowKimiMemory] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -52,6 +71,9 @@ export default function NotificationsPage() {
       .then(setHealth)
       .catch(console.error)
       .finally(() => setLoading(false));
+    api.get<KimiMemorySummary>('/hydrometers/kimi-memory/summary')
+      .then(setKimiMemory)
+      .catch(console.error);
   }, []);
 
   const statusTone = useMemo(() => {
@@ -97,6 +119,56 @@ export default function NotificationsPage() {
           </div>
         )}
       </div>
+
+      <button
+        className="card"
+        type="button"
+        onClick={() => setShowKimiMemory(current => !current)}
+        style={{
+          marginBottom: 20,
+          width: '100%',
+          textAlign: 'left',
+          cursor: 'pointer',
+          borderColor: showKimiMemory ? 'var(--accent)' : undefined,
+        }}
+      >
+        <div className="card-header">
+          <span className="card-title">Kimi K2.6 Vision</span>
+          <span className="badge active">{kimiMemory ? `${kimiMemory.accuracy}% acerto` : 'Carregando'}</span>
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+          OCR de hidrômetros e validação de consumo
+        </div>
+      </button>
+
+      {showKimiMemory && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="card-header">
+            <span className="card-title">Memória de aprendizado operacional</span>
+          </div>
+          <div className="kpi-grid" style={{ marginBottom: 16 }}>
+            <MiniStat label="Amostras" value={kimiMemory?.total ?? 0} />
+            <MiniStat label="Acertos" value={kimiMemory?.correct ?? 0} />
+            <MiniStat label="Divergências" value={kimiMemory?.wrong ?? 0} />
+          </div>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {(kimiMemory?.recent || []).map(item => (
+              <div key={item.id} style={{ padding: 12, borderRadius: 'var(--radius-md)', background: 'var(--navy-900)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <strong style={{ fontSize: 13 }}>{item.stage === 'code' ? 'Código' : 'Leitura'}</strong>
+                  <span className={`badge ${item.was_correct ? 'active' : item.was_correct === false ? 'rejected' : 'pending'}`}>
+                    {item.was_correct ? 'Acertou' : item.was_correct === false ? 'Revisar' : 'Pendente'}
+                  </span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                  Kimi: {item.predicted_code || item.predicted_value || 'sem leitura'} · Humano: {item.confirmed_code || item.confirmed_value || 'sem confirmacao'}
+                </div>
+                {item.lesson && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{item.lesson}</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header">
@@ -151,6 +223,15 @@ export default function NotificationsPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="kpi-card">
+      <div className="kpi-value">{value}</div>
+      <div className="kpi-sub">{label}</div>
+    </div>
   );
 }
 

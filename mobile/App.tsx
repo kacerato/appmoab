@@ -11,6 +11,7 @@ import { colors } from './src/styles/theme';
 import LoginScreen from './src/screens/LoginScreen';
 import RouteScreen from './src/screens/RouteScreen';
 import CameraScreen from './src/screens/CameraScreen';
+import ManualCodeScreen from './src/screens/ManualCodeScreen';
 import HydrometerMatchScreen from './src/screens/HydrometerMatchScreen';
 import OCRResultScreen from './src/screens/OCRResultScreen';
 import DayHistoryScreen from './src/screens/DayHistoryScreen';
@@ -36,6 +37,7 @@ function AppNavigator() {
         <>
           <Stack.Screen name="Route" component={RouteScreen} />
           <Stack.Screen name="Camera" component={CameraScreen} />
+          <Stack.Screen name="ManualCode" component={ManualCodeScreen} />
           <Stack.Screen name="HydrometerMatch" component={HydrometerMatchScreen} />
           <Stack.Screen name="OCRResult" component={OCRResultScreen} />
           <Stack.Screen name="DayHistory" component={DayHistoryScreen} />
