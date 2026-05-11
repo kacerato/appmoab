@@ -79,6 +79,8 @@ class KimiVisionFeedbackRequest(BaseModel):
     black_digits: int | None = None
     hydrometer_brand: str | None = None
     hydrometer_model: str | None = None
+    reasoning_log: str | None = None
+    divergence_reason: str | None = None
 
 
 class HydrometerIdentifyResponse(BaseModel):

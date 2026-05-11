@@ -32,6 +32,8 @@ class KimiVisionMemory(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     was_correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True, index=True)
     lesson: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reasoning_log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    divergence_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False

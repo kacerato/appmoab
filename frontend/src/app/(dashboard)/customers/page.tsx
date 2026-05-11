@@ -18,6 +18,9 @@ interface Customer {
   due_day: number;
   has_hydrometer: boolean;
   status: string;
+  billing_status: string;
+  billing_status_label: string;
+  days_until_due: number | null;
   created_at: string;
 }
 
@@ -137,7 +140,9 @@ export default function CustomersPage() {
                     : <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--text-muted)' }}><UserCheck size={13} /> Fixo</span>
                   }
                 </td>
-                <td>Dia {c.due_day}</td>
+                <td>
+                  <span className={`badge ${billingBadgeClass(c.billing_status)}`}>{c.billing_status_label || `Dia ${c.due_day}`}</span>
+                </td>
                 <td><span className={`badge ${c.status}`}>{statusLabel(c.status)}</span></td>
               </tr>
             ))}
@@ -160,6 +165,16 @@ export default function CustomersPage() {
       )}
     </>
   );
+}
+
+function billingBadgeClass(status: string) {
+  const m: Record<string, string> = {
+    overdue: 'overdue',
+    due_today: 'rejected',
+    near_due: 'pending',
+    normal: 'active',
+  };
+  return m[status] || 'active';
 }
 
 function formatCpfCnpj(v: string) {

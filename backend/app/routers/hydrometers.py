@@ -150,9 +150,14 @@ async def store_kimi_vision_feedback(
         was_correct = abs(float(data.confirmed_value) - float(data.predicted_value)) <= 0.01
 
     lesson = "Aguardando confirmacao humana."
+    divergence_reason = data.divergence_reason
     if was_correct is True:
         lesson = "Veredito conferiu com a digitacao do colaborador."
     elif was_correct is False:
+        divergence_reason = divergence_reason or (
+            "Possivel confusao visual por reflexo, foco, recorte, sujeira, digitos vermelhos/pretos "
+            "ou formato diferente do mostrador cadastrado."
+        )
         lesson = (
             "Divergencia registrada: revisar foco, recorte, reflexo, sujeira ou digitos parecidos "
             "nas proximas leituras."
@@ -173,6 +178,9 @@ async def store_kimi_vision_feedback(
         confidence=data.confidence,
         was_correct=was_correct,
         lesson=lesson,
+        reasoning_log=data.reasoning_log
+        or f"Etapa {data.stage}: Kimi={predicted_code or data.predicted_value}; humano={confirmed_code or data.confirmed_value}; correto={was_correct}.",
+        divergence_reason=divergence_reason,
         payload={"has_photo": bool(data.photo_base64)},
     )
     db.add(memory)
@@ -239,6 +247,8 @@ async def kimi_memory_summary(
                 "hydrometer_model": item.hydrometer_model,
                 "was_correct": item.was_correct,
                 "lesson": item.lesson,
+                "reasoning_log": item.reasoning_log,
+                "divergence_reason": item.divergence_reason,
                 "created_at": item.created_at,
             }
             for item in recent

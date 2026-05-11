@@ -28,6 +28,8 @@ interface KimiMemorySummary {
     hydrometer_model: string | null;
     was_correct: boolean | null;
     lesson: string | null;
+    reasoning_log: string | null;
+    divergence_reason: string | null;
   }>;
 }
 
@@ -171,6 +173,8 @@ export default function NotificationsPage() {
                   Formato: {item.red_digits || 'n/i'} vermelhos{item.black_digits ? ` · ${item.black_digits} pretos` : ''}{item.hydrometer_brand ? ` · ${[item.hydrometer_brand, item.hydrometer_model].filter(Boolean).join(' ')}` : ''}
                 </div>
                 {item.lesson && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{item.lesson}</div>}
+                {item.reasoning_log && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>Log: {item.reasoning_log}</div>}
+                {item.divergence_reason && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>Possivel causa: {item.divergence_reason}</div>}
               </div>
             ))}
           </div>

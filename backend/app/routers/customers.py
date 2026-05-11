@@ -61,6 +61,24 @@ def _attachment_response(attachment: CustomerAttachment) -> CustomerAttachmentRe
     )
 
 
+def _apply_billing_status(response: CustomerResponse, customer: Customer, today: date) -> None:
+    due_date = _resolve_month_date(customer.due_day, today)
+    days_until_due = (due_date - today).days
+    response.days_until_due = days_until_due
+    if days_until_due < 0:
+        response.billing_status = "overdue"
+        response.billing_status_label = f"Vencido ha {abs(days_until_due)} dia(s)"
+    elif days_until_due == 0:
+        response.billing_status = "due_today"
+        response.billing_status_label = "Vence hoje"
+    elif days_until_due <= 3:
+        response.billing_status = "near_due"
+        response.billing_status_label = f"Vence em {days_until_due} dia(s)"
+    else:
+        response.billing_status = "normal"
+        response.billing_status_label = f"Vence dia {customer.due_day}"
+
+
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
     result = await db.execute(select(SystemSetting).where(SystemSetting.id == 1))
     settings = result.scalar_one_or_none()
@@ -112,7 +130,14 @@ async def list_customers(
     offset = (page - 1) * per_page
     paged_items = items[offset:offset + per_page]
 
-    return CustomerListResponse(items=paged_items, total=total, page=page, per_page=per_page)
+    today = date.today()
+    response_items = []
+    for customer in paged_items:
+        response = CustomerResponse.model_validate(customer)
+        _apply_billing_status(response, customer, today)
+        response_items.append(response)
+
+    return CustomerListResponse(items=response_items, total=total, page=page, per_page=per_page)
 
 
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
@@ -143,6 +168,7 @@ async def get_customer(
     total_inv, pending, overdue = inv_result.one()
 
     response = CustomerDetailResponse.model_validate(customer)
+    _apply_billing_status(response, customer, date.today())
     response.attachments = [_attachment_response(attachment) for attachment in customer.attachments]
     response.total_invoices = total_inv
     response.total_pending = float(pending)

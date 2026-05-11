@@ -2,15 +2,17 @@ import { StyleSheet } from 'react-native';
 
 export const colors = {
   navy950: '#07111F',
+  abyss: '#0D1F3A',
   navy900: '#0B1728',
   navy800: '#10213A',
   navy700: '#16304F',
   navy600: '#24476F',
   sidebarNavy: '#091321',
-  accent: '#1D9BF0',
-  accentHover: '#0E7FCB',
-  accentSoft: 'rgba(29, 155, 240, 0.14)',
-  cyan: '#53D3F7',
+  accent: '#00F0FF',
+  accentHover: '#0099CC',
+  accentSoft: 'rgba(0, 240, 255, 0.16)',
+  cyan: '#00F0FF',
+  coral: '#FF6B8A',
   success: '#36C98E',
   successSoft: 'rgba(54, 201, 142, 0.14)',
   warning: '#FFB84D',
@@ -20,8 +22,8 @@ export const colors = {
   textPrimary: '#F8FBFF',
   textSecondary: '#C9D6E6',
   textMuted: '#8EA4C0',
-  border: 'rgba(142, 164, 192, 0.18)',
-  borderHover: 'rgba(142, 164, 192, 0.3)',
+  border: 'rgba(0, 240, 255, 0.10)',
+  borderHover: 'rgba(0, 240, 255, 0.28)',
 };
 
 export const shared = StyleSheet.create({
@@ -38,7 +40,7 @@ export const shared = StyleSheet.create({
     paddingVertical: 18,
   },
   card: {
-    backgroundColor: colors.navy800,
+    backgroundColor: 'rgba(16, 33, 58, 0.82)',
     borderRadius: 20,
     borderWidth: 1,
     borderColor: colors.border,

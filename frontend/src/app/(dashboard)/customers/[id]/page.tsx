@@ -41,6 +41,9 @@ interface Customer {
   total_invoices: number;
   total_pending: number;
   total_overdue: number;
+  billing_status: string;
+  billing_status_label: string;
+  days_until_due: number | null;
 }
 
 interface Hydrometer {
@@ -268,8 +271,8 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           <div className="kpi-value" style={{ fontSize: 18 }}>{customer.has_hydrometer ? 'Medido' : 'Fixo'}</div>
         </div>
         <div className="kpi-card orange">
-          <div className="kpi-label">Pendente</div>
-          <div className="kpi-value" style={{ fontSize: 20, color: 'var(--warning)' }}>{fmt(customer.total_pending)}</div>
+          <div className="kpi-label">Vencimento</div>
+          <div className="kpi-value" style={{ fontSize: 18, color: billingColor(customer.billing_status) }}>{customer.billing_status_label}</div>
         </div>
         <div className="kpi-card red">
           <div className="kpi-label">Em atraso</div>
@@ -496,4 +499,10 @@ function Info({ icon, label, value }: { icon: React.ReactNode; label: string; va
 function statusLabel(status: string) {
   const map: Record<string, string> = { pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
   return map[status] || status;
+}
+
+function billingColor(status: string) {
+  if (status === 'overdue' || status === 'due_today') return 'var(--danger)';
+  if (status === 'near_due') return 'var(--warning)';
+  return 'var(--success)';
 }

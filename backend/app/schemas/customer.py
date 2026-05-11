@@ -88,6 +88,9 @@ class CustomerResponse(CustomerBase):
     created_at: datetime
     updated_at: datetime
     hydrometers: list["HydrometerResponse"] = []
+    billing_status: str = "normal"
+    billing_status_label: str = "Em dia"
+    days_until_due: int | None = None
 
     model_config = {"from_attributes": True}
 

@@ -290,11 +290,12 @@ export default function RouteScreen() {
 function Hero({ userName, stats, onLogout }: { userName: string; stats: { pending: number; completed: number; total: number }; onLogout: () => void }) {
   return (
     <View style={styles.heroCard}>
+      <View style={styles.neoLine} />
       <View style={styles.heroTopRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.heroEyebrow}>Operacao de campo</Text>
-          <Text style={styles.heroTitle}>Rota do dia</Text>
-          <Text style={styles.heroSubtitle}>{userName}</Text>
+          <Text style={styles.heroEyebrow}>COMMAND CENTER</Text>
+          <Text style={styles.heroTitle}>Ola, {userName.split(' ')[0]}!</Text>
+          <Text style={styles.heroSubtitle}>Bem-vindo de volta ao controle.</Text>
         </View>
         <TouchableOpacity style={styles.logoutPill} onPress={onLogout}>
           <Text style={styles.logoutText}>Sair</Text>
@@ -305,6 +306,15 @@ function Hero({ userName, stats, onLogout }: { userName: string; stats: { pendin
         <SummaryCard label="Concluidas" value={stats.completed} tone="success" />
         <SummaryCard label="Rota" value={stats.total} tone="info" />
       </View>
+      <View style={styles.progressPanel}>
+        <View style={styles.progressRing}>
+          <Text style={styles.progressText}>{stats.total ? Math.round((stats.completed / stats.total) * 100) : 0}%</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.progressTitle}>Status da missão</Text>
+          <Text style={styles.progressSub}>Leitura manual assistida por Kimi, sem travar o campo.</Text>
+        </View>
+      </View>
     </View>
   );
 }
@@ -312,6 +322,7 @@ function Hero({ userName, stats, onLogout }: { userName: string; stats: { pendin
 function ScreenHeader({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
   return (
     <View style={styles.heroCard}>
+      <View style={styles.neoLine} />
       <Text style={styles.heroEyebrow}>{eyebrow}</Text>
       <Text style={styles.heroTitle}>{title}</Text>
       <Text style={styles.heroSubtitle}>{subtitle}</Text>
@@ -321,7 +332,8 @@ function ScreenHeader({ eyebrow, title, subtitle }: { eyebrow: string; title: st
 
 function CustomerCard({ item, onPress }: { item: { customer: Customer; hydrometer: Hydrometer; todayStatus?: ReadingItem }; onPress: () => void }) {
   return (
-    <View style={styles.customerCard}>
+    <TouchableOpacity activeOpacity={0.88} style={styles.customerCard} onPress={onPress}>
+      <View style={styles.neoLine} />
       <View style={styles.cardTopRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.customerName}>{item.customer.name}</Text>
@@ -334,10 +346,10 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
         Mostrador: {item.hydrometer.red_digits || 3} digitos vermelhos
         {item.hydrometer.black_digits ? ` - ${item.hydrometer.black_digits} pretos` : ''}
       </Text>
-      <TouchableOpacity style={styles.rowActionButton} onPress={onPress}>
-        <Text style={styles.rowActionButtonText}>Fotografar codigo</Text>
-      </TouchableOpacity>
-    </View>
+      <View style={styles.rowActionButton}>
+        <Text style={styles.rowActionButtonText}>Escanear</Text>
+      </View>
+    </TouchableOpacity>
   );
 }
 
@@ -465,6 +477,7 @@ function BottomTabs({ active, onTabPress }: { active: ActiveTab; onTabPress: (ta
         return (
           <TouchableOpacity key={tab.key} style={styles.tabItem} onPress={() => onTabPress(tab.key)}>
             <View style={[styles.tabIcon, selected && styles.tabIconActive, isCreate && styles.createIcon]}>
+              {selected && <View style={styles.activeBeam} />}
               <Text style={[styles.tabIconText, (selected || isCreate) && styles.tabIconTextActive]}>{tab.icon}</Text>
             </View>
             <Text style={[styles.tabLabel, selected && styles.tabLabelActive]}>{tab.label}</Text>
@@ -514,14 +527,21 @@ const styles = StyleSheet.create({
     marginTop: 10,
     marginBottom: 16,
     padding: 18,
-    borderRadius: 24,
-    backgroundColor: colors.sidebarNavy,
+    borderRadius: 26,
+    backgroundColor: 'rgba(16, 33, 58, 0.78)',
     borderWidth: 1,
     borderColor: colors.border,
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.14,
+    shadowRadius: 28,
+    elevation: 10,
+    overflow: 'hidden',
   },
+  neoLine: { position: 'absolute', top: 0, left: 18, right: 18, height: 1, backgroundColor: 'rgba(0,240,255,0.44)' },
   heroTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  heroEyebrow: { color: colors.cyan, fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8 },
-  heroTitle: { color: colors.textPrimary, fontSize: 30, fontWeight: '900', marginTop: 4 },
+  heroEyebrow: { color: colors.cyan, fontSize: 11, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 2 },
+  heroTitle: { color: colors.textPrimary, fontSize: 31, fontWeight: '900', marginTop: 4, letterSpacing: 0 },
   heroSubtitle: { color: colors.textMuted, fontSize: 13, marginTop: 6, lineHeight: 19 },
   logoutPill: {
     borderWidth: 1,
@@ -533,14 +553,19 @@ const styles = StyleSheet.create({
   },
   logoutText: { color: colors.textPrimary, fontWeight: '800', fontSize: 12 },
   summaryRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  summaryCard: { flex: 1, borderRadius: 16, padding: 12, minHeight: 72 },
-  summaryLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '800', textTransform: 'uppercase' },
+  summaryCard: { flex: 1, borderRadius: 18, padding: 12, minHeight: 78, borderWidth: 1, borderColor: colors.border },
+  summaryLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 },
   summaryValue: { fontSize: 24, fontWeight: '900', marginTop: 6 },
+  progressPanel: { marginTop: 16, padding: 14, borderRadius: 22, backgroundColor: 'rgba(7,17,31,0.62)', borderWidth: 1, borderColor: colors.border, flexDirection: 'row', gap: 14, alignItems: 'center' },
+  progressRing: { width: 62, height: 62, borderRadius: 31, borderWidth: 5, borderColor: colors.accent, alignItems: 'center', justifyContent: 'center', shadowColor: colors.accent, shadowOpacity: 0.35, shadowRadius: 18 },
+  progressText: { color: colors.textPrimary, fontWeight: '900', fontSize: 15 },
+  progressTitle: { color: colors.textPrimary, fontWeight: '900', fontSize: 14 },
+  progressSub: { color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 3 },
   searchInput: {
-    backgroundColor: colors.navy800,
+    backgroundColor: 'rgba(16, 33, 58, 0.72)',
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 18,
+    borderRadius: 22,
     color: colors.textPrimary,
     fontSize: 14,
     paddingHorizontal: 16,
@@ -551,20 +576,25 @@ const styles = StyleSheet.create({
   sectionTitle: { color: colors.textPrimary, fontSize: 19, fontWeight: '800' },
   sectionMeta: { color: colors.textMuted, fontSize: 11 },
   customerCard: {
-    backgroundColor: colors.navy800,
-    borderRadius: 20,
+    backgroundColor: 'rgba(16, 33, 58, 0.76)',
+    borderRadius: 24,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 16,
     marginBottom: 12,
+    shadowColor: colors.accent,
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    elevation: 6,
+    overflow: 'hidden',
   },
   cardTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 },
   customerName: { color: colors.textPrimary, fontWeight: '900', fontSize: 17 },
   customerCode: { color: colors.cyan, fontSize: 12, fontWeight: '700', marginTop: 6 },
   metaLine: { color: colors.textMuted, fontSize: 12, marginTop: 6 },
   locationText: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginTop: 12 },
-  rowActionButton: { marginTop: 14, backgroundColor: colors.accentSoft, borderRadius: 14, paddingVertical: 13, alignItems: 'center' },
-  rowActionButtonText: { color: colors.accent, fontSize: 14, fontWeight: '900' },
+  rowActionButton: { marginTop: 14, backgroundColor: colors.accentSoft, borderRadius: 999, paddingVertical: 14, alignItems: 'center', borderWidth: 1, borderColor: colors.borderHover },
+  rowActionButtonText: { color: colors.accent, fontSize: 14, fontWeight: '900', textTransform: 'uppercase', letterSpacing: 1 },
   emptyCard: { backgroundColor: colors.navy800, borderRadius: 20, borderWidth: 1, borderColor: colors.border, padding: 18 },
   emptyTitle: { color: colors.textPrimary, fontSize: 16, fontWeight: '800' },
   emptyText: { color: colors.textSecondary, fontSize: 13, lineHeight: 20, marginTop: 8 },
@@ -592,7 +622,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     padding: 22,
     borderRadius: 24,
-    backgroundColor: colors.sidebarNavy,
+    backgroundColor: 'rgba(9,19,33,0.94)',
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: 'center',
@@ -618,8 +648,9 @@ const styles = StyleSheet.create({
   },
   tabItem: { flex: 1, alignItems: 'center' },
   tabIcon: { width: 34, height: 34, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  tabIconActive: { backgroundColor: colors.accentSoft },
-  createIcon: { backgroundColor: colors.accent, width: 48, height: 48, borderRadius: 18, marginTop: -12 },
+  tabIconActive: { backgroundColor: colors.accentSoft, shadowColor: colors.accent, shadowOpacity: 0.45, shadowRadius: 12 },
+  createIcon: { backgroundColor: colors.accent, width: 52, height: 52, borderRadius: 26, marginTop: -16, borderWidth: 4, borderColor: 'rgba(0,240,255,0.25)' },
+  activeBeam: { position: 'absolute', bottom: -8, width: 22, height: 3, borderRadius: 2, backgroundColor: colors.accent },
   tabIconText: { color: colors.textMuted, fontWeight: '900', fontSize: 14 },
   tabIconTextActive: { color: '#fff' },
   tabLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '800', marginTop: 3 },
