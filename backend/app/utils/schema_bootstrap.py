@@ -35,3 +35,9 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS hydrometer_model VARCHAR(100)"))
     await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS reasoning_log TEXT"))
     await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS divergence_reason TEXT"))
+
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_customers_status_name ON customers (status, name)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_customers_has_hydrometer_name ON customers (has_hydrometer, name)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_readings_status_created_at ON readings (status, created_at DESC)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_invoices_status_due_date ON invoices (status, due_date DESC)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_invoices_reference_month ON invoices (reference_month)"))

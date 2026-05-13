@@ -147,18 +147,7 @@ export default function ReadingsPage() {
               </div>
 
               <div style={{ padding: '0 20px 14px', display: 'grid', gridTemplateColumns: '120px 1fr', gap: 12, alignItems: 'center' }}>
-                {r.photo_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={r.photo_url.startsWith('http') ? r.photo_url : `${API_BASE}${r.photo_url}`}
-                    alt="Foto da leitura"
-                    style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }}
-                  />
-                ) : (
-                  <div style={{ width: 120, height: 90, borderRadius: 8, background: 'var(--blue-50)', display: 'grid', placeItems: 'center', color: 'var(--text-muted)' }}>
-                    Sem foto
-                  </div>
-                )}
+                <ReadingPhoto url={r.photo_url} />
                 <div style={{ display: 'grid', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
                   <div><strong>Hora da foto:</strong> {new Date(r.captured_at).toLocaleString('pt-BR')}</div>
                   <div><strong>Localizacao:</strong> {r.latitude && r.longitude ? `${r.latitude.toFixed(6)}, ${r.longitude.toFixed(6)}` : 'Nao registrada'}</div>
@@ -192,5 +181,26 @@ export default function ReadingsPage() {
         </div>
       )}
     </>
+  );
+}
+
+function ReadingPhoto({ url }: { url: string | null }) {
+  const [failed, setFailed] = useState(false);
+  if (!url || failed) {
+    return (
+      <div style={{ width: 120, height: 90, borderRadius: 8, background: 'var(--blue-50)', display: 'grid', placeItems: 'center', color: 'var(--text-muted)' }}>
+        Sem foto
+      </div>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url.startsWith('http') ? url : `${API_BASE}${url}`}
+      alt="Foto da leitura"
+      onError={() => setFailed(true)}
+      style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }}
+    />
   );
 }

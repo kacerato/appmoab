@@ -118,17 +118,23 @@ async def list_customers(
         query = query.where(Customer.has_hydrometer == has_hydrometer)
 
     query = query.order_by(Customer.name)
-    result = await db.execute(query)
-    items = list(result.scalars().all())
 
     if route_scope:
+        result = await db.execute(query)
+        items = list(result.scalars().all())
         system_settings = await _get_system_settings(db)
         today = date.today()
         items = [customer for customer in items if _customer_in_route_window(customer, system_settings, today)]
 
-    total = len(items)
-    offset = (page - 1) * per_page
-    paged_items = items[offset:offset + per_page]
+        total = len(items)
+        offset = (page - 1) * per_page
+        paged_items = items[offset:offset + per_page]
+    else:
+        count_q = select(func.count()).select_from(query.subquery())
+        total = (await db.execute(count_q)).scalar() or 0
+        offset = (page - 1) * per_page
+        result = await db.execute(query.offset(offset).limit(per_page))
+        paged_items = list(result.scalars().all())
 
     today = date.today()
     response_items = []
