@@ -61,14 +61,36 @@ def _attachment_response(attachment: CustomerAttachment) -> CustomerAttachmentRe
     )
 
 
-def _apply_billing_status(response: CustomerResponse, customer: Customer, today: date) -> None:
+OPEN_INVOICE_STATUSES = ("pending", "sent", "overdue")
+
+
+def _next_due_date(customer: Customer, today: date) -> date:
     due_date = _resolve_month_date(customer.due_day, today)
+    if due_date >= today:
+        return due_date
+
+    first_of_month = today.replace(day=1)
+    next_month_anchor = (first_of_month + timedelta(days=32)).replace(day=1)
+    return _resolve_month_date(customer.due_day, next_month_anchor)
+
+
+def _apply_billing_status(
+    response: CustomerResponse,
+    customer: Customer,
+    today: date,
+    oldest_open_overdue_due_date: date | None = None,
+) -> None:
+    if oldest_open_overdue_due_date:
+        days_overdue = (today - oldest_open_overdue_due_date).days
+        response.days_until_due = -days_overdue
+        response.billing_status = "overdue"
+        response.billing_status_label = f"Vencido ha {days_overdue} dia(s)"
+        return
+
+    due_date = _next_due_date(customer, today)
     days_until_due = (due_date - today).days
     response.days_until_due = days_until_due
-    if days_until_due < 0:
-        response.billing_status = "overdue"
-        response.billing_status_label = f"Vencido ha {abs(days_until_due)} dia(s)"
-    elif days_until_due == 0:
+    if days_until_due == 0:
         response.billing_status = "due_today"
         response.billing_status_label = "Vence hoje"
     elif days_until_due <= 3:
@@ -138,9 +160,23 @@ async def list_customers(
 
     today = date.today()
     response_items = []
+    overdue_by_customer: dict[uuid.UUID, date] = {}
+    customer_ids = [customer.id for customer in paged_items]
+    if customer_ids:
+        overdue_result = await db.execute(
+            select(Invoice.customer_id, func.min(Invoice.due_date))
+            .where(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status.in_(OPEN_INVOICE_STATUSES),
+                Invoice.due_date < today,
+            )
+            .group_by(Invoice.customer_id)
+        )
+        overdue_by_customer = {row[0]: row[1] for row in overdue_result.all()}
+
     for customer in paged_items:
         response = CustomerResponse.model_validate(customer)
-        _apply_billing_status(response, customer, today)
+        _apply_billing_status(response, customer, today, overdue_by_customer.get(customer.id))
         response_items.append(response)
 
     return CustomerListResponse(items=response_items, total=total, page=page, per_page=per_page)
@@ -168,13 +204,20 @@ async def get_customer(
         select(
             func.count(Invoice.id),
             func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
-            func.coalesce(func.sum(case((Invoice.status == "overdue", Invoice.amount), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status.in_(OPEN_INVOICE_STATUSES)) & (Invoice.due_date < date.today()),
+                Invoice.amount,
+            ), else_=0)), 0),
+            func.min(case((
+                (Invoice.status.in_(OPEN_INVOICE_STATUSES)) & (Invoice.due_date < date.today()),
+                Invoice.due_date,
+            ), else_=None)),
         ).where(Invoice.customer_id == customer.id)
     )
-    total_inv, pending, overdue = inv_result.one()
+    total_inv, pending, overdue, oldest_overdue_due_date = inv_result.one()
 
     response = CustomerDetailResponse.model_validate(customer)
-    _apply_billing_status(response, customer, date.today())
+    _apply_billing_status(response, customer, date.today(), oldest_overdue_due_date)
     response.attachments = [_attachment_response(attachment) for attachment in customer.attachments]
     response.total_invoices = total_inv
     response.total_pending = float(pending)
