@@ -6,14 +6,13 @@ import asyncio
 import logging
 
 from sqlalchemy import select
-from sqlalchemy import text
-
 from app.database import Base, async_session_factory, engine
 from app.models import *  # noqa: F401, F403
 from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
+from app.utils.schema_bootstrap import ensure_runtime_schema
 from app.utils.security import hash_password
 
 logging.basicConfig(level=logging.INFO)
@@ -26,14 +25,7 @@ ADMIN_PASSWORD = "admin123"
 async def main():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS red_digits INTEGER NOT NULL DEFAULT 3"))
-        await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS black_digits INTEGER"))
-        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS red_digits INTEGER"))
-        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS black_digits INTEGER"))
-        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS hydrometer_brand VARCHAR(100)"))
-        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS hydrometer_model VARCHAR(100)"))
-        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS reasoning_log TEXT"))
-        await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS divergence_reason TEXT"))
+        await ensure_runtime_schema(conn)
     logger.info("Tabelas criadas/verificadas")
 
     async with async_session_factory() as db:
