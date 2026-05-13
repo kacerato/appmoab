@@ -91,6 +91,9 @@ class CustomerResponse(CustomerBase):
     billing_status: str = "normal"
     billing_status_label: str = "Em dia"
     days_until_due: int | None = None
+    last_paid_date: datetime | None = None
+    next_invoice_reference_month: str | None = None
+    next_invoice_due_date: datetime | None = None
 
     model_config = {"from_attributes": True}
 

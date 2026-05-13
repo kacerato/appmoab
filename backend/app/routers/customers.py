@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, or_, select
@@ -74,11 +74,16 @@ def _next_due_date(customer: Customer, today: date) -> date:
     return _resolve_month_date(customer.due_day, next_month_anchor)
 
 
+def _next_reference_month(due_date: date) -> str:
+    return f"{due_date.year}-{due_date.month:02d}"
+
+
 def _apply_billing_status(
     response: CustomerResponse,
     customer: Customer,
     today: date,
     oldest_open_overdue_due_date: date | None = None,
+    last_paid_date: date | None = None,
 ) -> None:
     if oldest_open_overdue_due_date:
         days_overdue = (today - oldest_open_overdue_due_date).days
@@ -88,6 +93,17 @@ def _apply_billing_status(
         return
 
     due_date = _next_due_date(customer, today)
+    response.next_invoice_reference_month = _next_reference_month(due_date)
+    response.next_invoice_due_date = datetime.combine(due_date, datetime.min.time())
+    if last_paid_date:
+        response.last_paid_date = datetime.combine(last_paid_date, datetime.min.time())
+        response.billing_status = "paid"
+        response.billing_status_label = (
+            f"Pago em {last_paid_date.strftime('%d/%m/%Y')} - proxima fatura {due_date.strftime('%d/%m/%Y')}"
+        )
+        response.days_until_due = (due_date - today).days
+        return
+
     days_until_due = (due_date - today).days
     response.days_until_due = days_until_due
     if days_until_due == 0:
@@ -161,6 +177,7 @@ async def list_customers(
     today = date.today()
     response_items = []
     overdue_by_customer: dict[uuid.UUID, date] = {}
+    paid_by_customer: dict[uuid.UUID, date] = {}
     customer_ids = [customer.id for customer in paged_items]
     if customer_ids:
         overdue_result = await db.execute(
@@ -173,10 +190,26 @@ async def list_customers(
             .group_by(Invoice.customer_id)
         )
         overdue_by_customer = {row[0]: row[1] for row in overdue_result.all()}
+        paid_result = await db.execute(
+            select(Invoice.customer_id, func.max(Invoice.paid_date))
+            .where(
+                Invoice.customer_id.in_(customer_ids),
+                Invoice.status == "paid",
+                Invoice.paid_date.is_not(None),
+            )
+            .group_by(Invoice.customer_id)
+        )
+        paid_by_customer = {row[0]: row[1] for row in paid_result.all()}
 
     for customer in paged_items:
         response = CustomerResponse.model_validate(customer)
-        _apply_billing_status(response, customer, today, overdue_by_customer.get(customer.id))
+        _apply_billing_status(
+            response,
+            customer,
+            today,
+            overdue_by_customer.get(customer.id),
+            paid_by_customer.get(customer.id),
+        )
         response_items.append(response)
 
     return CustomerListResponse(items=response_items, total=total, page=page, per_page=per_page)
@@ -212,12 +245,13 @@ async def get_customer(
                 (Invoice.status.in_(OPEN_INVOICE_STATUSES)) & (Invoice.due_date < date.today()),
                 Invoice.due_date,
             ), else_=None)),
+            func.max(case((Invoice.status == "paid", Invoice.paid_date), else_=None)),
         ).where(Invoice.customer_id == customer.id)
     )
-    total_inv, pending, overdue, oldest_overdue_due_date = inv_result.one()
+    total_inv, pending, overdue, oldest_overdue_due_date, last_paid_date = inv_result.one()
 
     response = CustomerDetailResponse.model_validate(customer)
-    _apply_billing_status(response, customer, date.today(), oldest_overdue_due_date)
+    _apply_billing_status(response, customer, date.today(), oldest_overdue_due_date, last_paid_date)
     response.attachments = [_attachment_response(attachment) for attachment in customer.attachments]
     response.total_invoices = total_inv
     response.total_pending = float(pending)
