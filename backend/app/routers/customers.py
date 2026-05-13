@@ -213,6 +213,21 @@ async def create_customer(
         db.add(hydrometer)
         await db.flush()
 
+        settings = await _get_system_settings(db)
+        if settings.installation_fee_amount > 0:
+            today = date.today()
+            db.add(Invoice(
+                customer_id=customer.id,
+                amount=settings.installation_fee_amount,
+                original_amount=settings.installation_fee_amount,
+                reference_month=f"{today.year}-{today.month:02d}",
+                due_date=date(today.year, today.month, min(customer.due_day, 28)),
+                consumption_m3=0.0,
+                tariff_rate=0.0,
+                charge_type="installation",
+                status="pending",
+            ))
+
     await db.refresh(customer)
     return customer
 

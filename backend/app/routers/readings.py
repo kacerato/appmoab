@@ -24,7 +24,7 @@ from app.services.kimi_vision import kimi_service
 from app.services.billing import calculate_billing
 from app.services.inter_api import inter_service
 from app.utils.security import get_current_user, require_admin
-from app.utils.storage import save_photo_from_base64
+from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
 router = APIRouter(prefix="/readings", tags=["Leituras"])
 
@@ -62,6 +62,7 @@ async def list_readings(
         resp = ReadingResponse.model_validate(r)
         resp.collaborator_name = r.collaborator.name if r.collaborator else None
         resp.hydrometer_code = r.hydrometer.code if r.hydrometer else None
+        resp.photo_url = build_public_upload_url(r.photo_url)
         if r.hydrometer and r.hydrometer.customer:
             resp.customer_name = r.hydrometer.customer.name
             resp.customer_id = r.hydrometer.customer.id
@@ -228,6 +229,7 @@ async def approve_reading(
         consumption_m3=billing.consumption_m3,
         tariff_rate=billing.tariff_rate,
         amount=billing.final_amount,
+        original_amount=billing.final_amount,
         reference_month=ref_month,
         due_date=due_date,
         status="pending",

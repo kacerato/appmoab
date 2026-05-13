@@ -35,6 +35,13 @@ class Invoice(Base):
     consumption_m3: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     tariff_rate: Mapped[float] = mapped_column(Float, nullable=False)
     amount: Mapped[float] = mapped_column(Float, nullable=False)
+    original_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    custom_adjustment_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    late_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    interest_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    days_overdue_charged: Mapped[int] = mapped_column(default=0, nullable=False)
+    adjustment_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    charge_type: Mapped[str] = mapped_column(String(30), nullable=False, default="water")
     reference_month: Mapped[str] = mapped_column(String(7), nullable=False)  # "2026-05"
 
     # ── Datas ──────────────────────────────────────────────────

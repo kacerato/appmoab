@@ -13,6 +13,13 @@ class InvoiceResponse(BaseModel):
     consumption_m3: float
     tariff_rate: float
     amount: float
+    original_amount: float | None = None
+    custom_adjustment_amount: float = 0.0
+    late_fee_amount: float = 0.0
+    interest_amount: float = 0.0
+    days_overdue_charged: int = 0
+    adjustment_reason: str | None = None
+    charge_type: str = "water"
     reference_month: str
     due_date: date
     paid_date: date | None
@@ -47,6 +54,20 @@ class InvoiceCreateManual(BaseModel):
     due_date: date
     consumption_m3: float = 0.0
     tariff_rate: float = 0.0
+    charge_type: str = "manual"
+
+
+class InvoiceAmountUpdate(BaseModel):
+    amount: float
+    reason: str | None = None
+
+
+class InvoiceOverdueUpdate(BaseModel):
+    days_overdue: int | None = None
+
+
+class InvoiceStatusUpdate(BaseModel):
+    paid_date: date | None = None
 
 
 class InvoiceSummary(BaseModel):

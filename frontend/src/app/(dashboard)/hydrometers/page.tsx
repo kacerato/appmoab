@@ -6,7 +6,7 @@ import { useEffect, useState, FormEvent } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { Droplets, Pencil, Plus, Search, Loader2, X } from 'lucide-react';
+import { Droplets, Pencil, Plus, Search, Loader2, X, Download, Power, RotateCcw } from 'lucide-react';
 
 interface Customer {
   id: string;
@@ -17,6 +17,7 @@ interface Customer {
 interface Hydrometer {
   id: string;
   code: string;
+  qr_code_token: string;
   customer_id: string;
   brand: string;
   model: string;
@@ -27,6 +28,9 @@ interface Hydrometer {
   last_reading_date: string;
   is_active: boolean;
   installed_at: string;
+  disconnected_at: string | null;
+  reconnected_at: string | null;
+  disconnection_reason: string | null;
   customer?: Customer;
 }
 
@@ -125,6 +129,51 @@ export default function HydrometersPage() {
     h.customer?.name.toLowerCase().includes(search.toLowerCase())
   );
 
+  const downloadQr = async (hydrometer: Hydrometer) => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/hydrometers/${hydrometer.id}/qr-code.svg`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('QR Code nao disponivel');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr_${hydrometer.customer?.name || hydrometer.code}.svg`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      notify('Falha ao baixar QR Code', err instanceof Error ? err.message : 'Nao foi possivel gerar o QR.', 'error');
+    }
+  };
+
+  const disconnectHydrometer = async (hydrometer: Hydrometer) => {
+    setSaving(true);
+    try {
+      await api.post(`/hydrometers/${hydrometer.id}/disconnect`, { reason: 'Falta de pagamento' });
+      load();
+      notify('Hidrômetro desligado', 'O cliente foi marcado como desligado.', 'warning');
+    } catch (err: unknown) {
+      notify('Falha ao desligar', err instanceof Error ? err.message : 'Erro ao desligar hidrômetro.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reconnectHydrometer = async (hydrometer: Hydrometer) => {
+    setSaving(true);
+    try {
+      await api.post(`/hydrometers/${hydrometer.id}/reconnect`);
+      load();
+      notify('Religamento registrado', 'O hidrômetro foi ativado e a taxa de religamento foi gerada.', 'success');
+    } catch (err: unknown) {
+      notify('Falha ao religar', err instanceof Error ? err.message : 'Erro ao religar hidrômetro.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <Header title="Hidrômetros" subtitle={`${items.length} medidores cadastrados`} />
@@ -172,7 +221,7 @@ export default function HydrometersPage() {
             ) : filteredItems.map(h => (
               <tr key={h.id}>
                 <td>
-                  <div className="cell-primary" style={{ fontWeight: 800 }}>{h.code}</div>
+                  <div className="cell-primary" style={{ fontWeight: 800 }}>QR {h.code}</div>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{h.customer?.name || 'Cliente desconhecido'}</div>
                 </td>
                 <td>{[h.brand, h.model].filter(Boolean).join(' ') || '—'}</td>
@@ -186,9 +235,23 @@ export default function HydrometersPage() {
                 </td>
                 <td><span className={`badge ${h.is_active ? 'active' : 'suspended'}`}>{h.is_active ? 'Ativo' : 'Inativo'}</span></td>
                 <td>
-                  <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEditing(h)} title="Editar hidrômetro">
-                    <Pencil size={14} />
-                  </button>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => downloadQr(h)} title="Baixar QR Code">
+                      <Download size={14} />
+                    </button>
+                    {h.is_active ? (
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => disconnectHydrometer(h)} title="Desligar hidrômetro" disabled={saving}>
+                        <Power size={14} />
+                      </button>
+                    ) : (
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => reconnectHydrometer(h)} title="Religar hidrômetro" disabled={saving}>
+                        <RotateCcw size={14} />
+                      </button>
+                    )}
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEditing(h)} title="Editar hidrômetro">
+                      <Pencil size={14} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

@@ -5,6 +5,7 @@ import * as Location from 'expo-location';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useFeedback } from '../lib/feedback';
+import { api } from '../lib/api';
 import { colors } from '../styles/theme';
 
 export default function CameraScreen() {
@@ -30,11 +31,53 @@ export default function CameraScreen() {
 
   const [permission, requestPermission] = useCameraPermissions();
   const [capturing, setCapturing] = useState(false);
+  const [resolvingQr, setResolvingQr] = useState(false);
   const cameraRef = useRef<any>(null);
 
   const activeHydrometerId = hydrometerId || expectedHydrometerId;
   const activeHydrometerCode = hydrometerCode || expectedHydrometerCode;
   const activeCustomerName = customerName || expectedCustomerName;
+
+  const handleQrScanned = async ({ data }: { data: string }) => {
+    if (stage !== 'code' || resolvingQr || capturing) return;
+    setResolvingQr(true);
+    try {
+      const result = await api.post<{
+        matched: boolean;
+        hydrometer_id?: string;
+        hydrometer_code?: string;
+        customer_name?: string;
+        last_reading_value?: number;
+        red_digits?: number | null;
+        black_digits?: number | null;
+        brand?: string | null;
+        model?: string | null;
+        location_description?: string | null;
+      }>('/hydrometers/resolve-qr', { qr_code_token: data });
+
+      if (!result.matched || !result.hydrometer_id) {
+        showToast('QR Code nao encontrado', 'Este QR nao esta vinculado a nenhum cliente ativo.', 'warning');
+        return;
+      }
+
+      navigation.navigate('Camera', {
+        stage: 'reading',
+        hydrometerId: result.hydrometer_id,
+        hydrometerCode: result.hydrometer_code,
+        customerName: result.customer_name,
+        lastReading: result.last_reading_value || 0,
+        redDigits: result.red_digits || 3,
+        blackDigits: result.black_digits || null,
+        hydrometerBrand: result.brand || '',
+        hydrometerModel: result.model || '',
+        locationDescription: result.location_description || '',
+      });
+    } catch (error) {
+      showToast('Falha ao ler QR Code', error instanceof Error ? error.message : 'Nao foi possivel validar o QR.', 'error');
+    } finally {
+      setResolvingQr(false);
+    }
+  };
 
   if (!permission) {
     return (
@@ -129,15 +172,21 @@ export default function CameraScreen() {
     }
   };
 
-  const stageTitle = stage === 'code' ? 'Etapa 1 - Codigo do hidrometro' : 'Etapa 2 - Leitura do mostrador';
+  const stageTitle = stage === 'code' ? 'Etapa 1 - QR Code do cliente' : 'Etapa 2 - Leitura do mostrador';
   const guideText = stage === 'code'
-    ? 'Enquadre somente o codigo de identificacao gravado no hidrometro.'
+    ? 'Aponte para o QR Code impresso no ponto do cliente. Se precisar, toque para fotografar e digitar.'
     : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
       <View style={styles.cameraShell}>
-        <CameraView style={styles.camera} ref={cameraRef} facing="back" />
+        <CameraView
+          style={styles.camera}
+          ref={cameraRef}
+          facing="back"
+          onBarcodeScanned={stage === 'code' ? handleQrScanned : undefined}
+          barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+        />
 
         <View pointerEvents="box-none" style={styles.overlay}>
           <View style={styles.overlayTop}>
@@ -162,7 +211,7 @@ export default function CameraScreen() {
 
           <View style={styles.overlayBottom}>
             <View style={styles.infoCard}>
-              <Text style={styles.infoLabel}>{stage === 'code' ? 'Esperado na rota' : 'Formato do mostrador'}</Text>
+              <Text style={styles.infoLabel}>{stage === 'code' ? 'QR esperado' : 'Formato do mostrador'}</Text>
               <Text style={styles.infoValue}>
                 {stage === 'code' ? activeHydrometerCode : `${redDigits} vermelhos - base ${Number(lastReading || 0).toFixed(2)} m3`}
               </Text>
@@ -170,15 +219,15 @@ export default function CameraScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.btnCapture, capturing && { opacity: 0.5 }]}
+              style={[styles.btnCapture, (capturing || resolvingQr) && { opacity: 0.5 }]}
               onPress={capturePhoto}
-              disabled={capturing}
+              disabled={capturing || resolvingQr}
             >
-              {capturing ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
+              {capturing || resolvingQr ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
             </TouchableOpacity>
 
             <Text style={styles.captureLabel}>
-              {stage === 'code' ? 'Toque para escanear o codigo' : 'Toque para fotografar a leitura'}
+              {stage === 'code' ? 'QR automatico ou toque para digitar' : 'Toque para fotografar a leitura'}
             </Text>
           </View>
         </View>

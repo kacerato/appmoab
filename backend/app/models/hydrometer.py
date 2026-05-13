@@ -27,6 +27,7 @@ class Hydrometer(Base):
 
     # ── Identificação ──────────────────────────────────────────
     code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    qr_code_token: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, default=lambda: f"AQMOAB-{uuid.uuid4().hex}")
     brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     red_digits: Mapped[int] = mapped_column(default=3, nullable=False)
@@ -43,6 +44,9 @@ class Hydrometer(Base):
 
     # ── Status ─────────────────────────────────────────────────
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disconnection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ── Timestamps ─────────────────────────────────────────────
     installed_at: Mapped[datetime] = mapped_column(

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer
+from sqlalchemy import Boolean, DateTime, Float, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -13,6 +13,11 @@ class SystemSetting(Base):
     route_window_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     route_window_days_before_due: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     route_window_days_after_due: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    daily_interest_percent: Mapped[float] = mapped_column(Float, nullable=False, default=0.033)
+    late_fee_percent: Mapped[float] = mapped_column(Float, nullable=False, default=10.0)
+    installation_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)
+    reconnection_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=160.0)
+    cut_notice_days_after_due: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

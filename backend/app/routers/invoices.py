@@ -15,17 +15,48 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.invoice import Invoice
+from app.models.notification import Notification
+from app.models.system_setting import SystemSetting
 from app.models.customer import Customer
 from app.models.user import User
 from app.schemas.invoice import (
     InvoiceResponse, InvoiceListResponse,
     InvoiceCreateManual, InvoiceSummary, InvoiceWhatsAppDispatchResponse,
+    InvoiceAmountUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
 )
 from app.services.inter_api import inter_service
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
 
 router = APIRouter(prefix="/invoices", tags=["Faturas"])
+
+
+async def _get_system_settings(db: AsyncSession) -> SystemSetting:
+    result = await db.execute(select(SystemSetting).where(SystemSetting.id == 1))
+    settings = result.scalar_one_or_none()
+    if settings:
+        return settings
+    settings = SystemSetting(id=1)
+    db.add(settings)
+    await db.flush()
+    return settings
+
+
+def _recalculate_overdue_amount(invoice: Invoice, settings: SystemSetting, days_overdue: int | None = None) -> None:
+    base_amount = invoice.original_amount if invoice.original_amount is not None else invoice.amount
+    effective_days = max(0, days_overdue if days_overdue is not None else (date.today() - invoice.due_date).days)
+    invoice.days_overdue_charged = effective_days
+    if effective_days <= 0:
+        invoice.late_fee_amount = 0.0
+        invoice.interest_amount = 0.0
+        invoice.amount = round(base_amount + invoice.custom_adjustment_amount, 2)
+        return
+
+    invoice.late_fee_amount = round(base_amount * (settings.late_fee_percent / 100), 2)
+    invoice.interest_amount = round(base_amount * (settings.daily_interest_percent / 100) * effective_days, 2)
+    invoice.amount = round(base_amount + invoice.custom_adjustment_amount + invoice.late_fee_amount + invoice.interest_amount, 2)
+    if invoice.status in ("pending", "sent"):
+        invoice.status = "overdue"
 
 
 @router.get("", response_model=InvoiceListResponse)
@@ -175,10 +206,12 @@ async def create_manual_invoice(
     invoice = Invoice(
         customer_id=data.customer_id,
         amount=data.amount,
+        original_amount=data.amount,
         reference_month=data.reference_month,
         due_date=data.due_date,
         consumption_m3=data.consumption_m3,
         tariff_rate=data.tariff_rate,
+        charge_type=data.charge_type,
         status="pending"
     )
     db.add(invoice)
@@ -236,6 +269,193 @@ async def cancel_invoice(
     invoice.status = "cancelled"
     await db.flush()
     return {"message": "Fatura cancelada", "invoice_id": str(invoice.id)}
+
+
+@router.patch("/{invoice_id}/amount", response_model=InvoiceResponse)
+async def update_invoice_amount(
+    invoice_id: str,
+    data: InvoiceAmountUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    if invoice.status == "paid":
+        raise HTTPException(status_code=400, detail="Fatura paga nao pode ter valor editado")
+
+    base_amount = invoice.original_amount if invoice.original_amount is not None else invoice.amount
+    invoice.custom_adjustment_amount = round(data.amount - base_amount, 2)
+    invoice.adjustment_reason = data.reason
+    invoice.amount = round(data.amount, 2)
+    invoice.late_fee_amount = 0.0
+    invoice.interest_amount = 0.0
+    invoice.days_overdue_charged = 0
+    await db.flush()
+    await db.refresh(invoice)
+
+    resp = InvoiceResponse.model_validate(invoice)
+    resp.has_pdf = invoice.pdf_data is not None
+    if invoice.customer:
+        resp.customer_name = invoice.customer.name
+        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+    return resp
+
+
+@router.post("/{invoice_id}/refresh-overdue", response_model=InvoiceResponse)
+async def refresh_invoice_overdue_amount(
+    invoice_id: str,
+    data: InvoiceOverdueUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    if invoice.status == "paid":
+        raise HTTPException(status_code=400, detail="Fatura ja paga")
+
+    settings = await _get_system_settings(db)
+    _recalculate_overdue_amount(invoice, settings, data.days_overdue)
+    await db.flush()
+    await db.refresh(invoice)
+
+    resp = InvoiceResponse.model_validate(invoice)
+    resp.has_pdf = invoice.pdf_data is not None
+    if invoice.customer:
+        resp.customer_name = invoice.customer.name
+        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+    return resp
+
+
+@router.post("/{invoice_id}/mark-paid", response_model=InvoiceResponse)
+async def mark_invoice_paid(
+    invoice_id: str,
+    data: InvoiceStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+
+    settings = await _get_system_settings(db)
+    _recalculate_overdue_amount(invoice, settings)
+    invoice.status = "paid"
+    invoice.paid_date = data.paid_date or date.today()
+    await db.flush()
+    await db.refresh(invoice)
+    resp = InvoiceResponse.model_validate(invoice)
+    resp.has_pdf = invoice.pdf_data is not None
+    if invoice.customer:
+        resp.customer_name = invoice.customer.name
+        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+    return resp
+
+
+@router.post("/{invoice_id}/reopen", response_model=InvoiceResponse)
+async def reopen_invoice(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+
+    invoice.status = "pending"
+    invoice.paid_date = None
+    await db.flush()
+    await db.refresh(invoice)
+    resp = InvoiceResponse.model_validate(invoice)
+    resp.has_pdf = invoice.pdf_data is not None
+    if invoice.customer:
+        resp.customer_name = invoice.customer.name
+        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+    return resp
+
+
+@router.post("/{invoice_id}/cut-notice", response_model=InvoiceWhatsAppDispatchResponse)
+async def send_cut_notice(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    if not invoice.customer:
+        raise HTTPException(status_code=400, detail="Cliente não associado à fatura")
+
+    settings = await _get_system_settings(db)
+    days_overdue = max(0, (date.today() - invoice.due_date).days)
+    message = (
+        f"Aviso de corte: sua fatura {invoice.reference_month} esta atrasada ha {days_overdue} dia(s). "
+        f"Regularize o pagamento para evitar desligamento. Valor atualizado: R$ {invoice.amount:.2f}."
+    )
+    notification = Notification(
+        customer_id=invoice.customer_id,
+        invoice_id=invoice.id,
+        channel="whatsapp",
+        type="custom",
+        status="queued",
+        payload={
+            "kind": "cut_notice",
+            "cut_notice_days_after_due": settings.cut_notice_days_after_due,
+            "message": message,
+            "notify_collaborator": True,
+        },
+    )
+    db.add(notification)
+
+    if not whatsapp_service.is_enabled or not invoice.customer.phone:
+        notification.status = "failed"
+        notification.error_message = "WhatsApp desativado ou cliente sem telefone"
+        await db.flush()
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="whatsapp_unavailable",
+            detail=notification.error_message,
+        )
+
+    wa_result = await whatsapp_service.send_text(invoice.customer.phone, message)
+    if not wa_result or wa_result.get("status") != "sent":
+        notification.status = "failed"
+        notification.error_message = (wa_result or {}).get("error") or "A Evolution API não confirmou o envio."
+        await db.flush()
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="dispatch_failed",
+            detail=notification.error_message,
+        )
+
+    notification.status = "sent"
+    notification.sent_at = datetime.now(timezone.utc)
+    notification.external_message_id = str(wa_result.get("message_id") or "")
+    await db.flush()
+    return InvoiceWhatsAppDispatchResponse(
+        invoice_id=invoice.id,
+        status="sent",
+        reason="ok",
+        detail="Aviso de corte enviado ao cliente e registrado para o colaborador.",
+    )
 
 
 @router.post("/{invoice_id}/emit-boleto", response_model=InvoiceResponse)

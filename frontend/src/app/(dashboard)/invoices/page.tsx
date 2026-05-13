@@ -124,6 +124,7 @@ export default function InvoicesPage() {
           { v: 'sent', l: 'Enviadas' },
           { v: 'paid', l: 'Pagas' },
           { v: 'overdue', l: 'Vencidas' },
+          { v: 'cancelled', l: 'Canceladas' },
         ].map(f => (
           <button key={f.v} className={`btn ${filter === f.v ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => { setFilter(f.v); setPage(1); }}>
             {f.l}

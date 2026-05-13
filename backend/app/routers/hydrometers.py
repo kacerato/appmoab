@@ -2,8 +2,10 @@
 
 import uuid
 from datetime import datetime, timezone
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -11,13 +13,17 @@ from sqlalchemy.orm import selectinload
 from app.database import get_db
 from app.models.customer import Customer
 from app.models.hydrometer import Hydrometer
+from app.models.invoice import Invoice
 from app.models.kimi_memory import KimiVisionMemory
+from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.schemas.hydrometer import (
     HydrometerCreate,
     HydrometerIdentifyRequest,
     HydrometerIdentifyResponse,
     HydrometerListResponse,
+    HydrometerDisconnectRequest,
+    HydrometerQrResolveRequest,
     HydrometerResponse,
     HydrometerResolveCodeRequest,
     KimiVisionFeedbackRequest,
@@ -86,6 +92,7 @@ async def identify_hydrometer_from_photo(
         matched=True,
         hydrometer_id=hydrometer.id,
         hydrometer_code=hydrometer.code,
+        qr_code_token=hydrometer.qr_code_token,
         customer_id=hydrometer.customer_id,
         customer_name=hydrometer.customer.name if hydrometer.customer else None,
         location_description=hydrometer.location_description,
@@ -123,6 +130,7 @@ async def resolve_hydrometer_code(
         matched=True,
         hydrometer_id=hydrometer.id,
         hydrometer_code=hydrometer.code,
+        qr_code_token=hydrometer.qr_code_token,
         customer_id=hydrometer.customer_id,
         customer_name=hydrometer.customer.name if hydrometer.customer else None,
         location_description=hydrometer.location_description,
@@ -131,6 +139,66 @@ async def resolve_hydrometer_code(
         black_digits=hydrometer.black_digits,
         brand=hydrometer.brand,
         model=hydrometer.model,
+    )
+
+
+@router.post("/resolve-qr", response_model=HydrometerIdentifyResponse)
+async def resolve_hydrometer_qr(
+    data: HydrometerQrResolveRequest,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Resolve o QR Code unico do cliente/hidrometro capturado no app mobile."""
+    token = data.qr_code_token.strip()
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.qr_code_token == token)
+    )
+    hydrometer = result.scalar_one_or_none()
+    if not hydrometer:
+        return HydrometerIdentifyResponse(extracted_code=None, confidence=None, matched=False)
+
+    return HydrometerIdentifyResponse(
+        extracted_code=hydrometer.code,
+        confidence=1.0,
+        matched=True,
+        hydrometer_id=hydrometer.id,
+        hydrometer_code=hydrometer.code,
+        qr_code_token=hydrometer.qr_code_token,
+        customer_id=hydrometer.customer_id,
+        customer_name=hydrometer.customer.name if hydrometer.customer else None,
+        location_description=hydrometer.location_description,
+        last_reading_value=hydrometer.last_reading_value,
+        red_digits=hydrometer.red_digits,
+        black_digits=hydrometer.black_digits,
+        brand=hydrometer.brand,
+        model=hydrometer.model,
+    )
+
+
+@router.get("/{hydrometer_id}/qr-code.svg")
+async def download_hydrometer_qr_code(
+    hydrometer_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Exporta o QR Code do hidrometro em SVG para impressao."""
+    result = await db.execute(select(Hydrometer).where(Hydrometer.id == uuid.UUID(hydrometer_id)))
+    hydrometer = result.scalar_one_or_none()
+    if not hydrometer:
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
+
+    import qrcode
+    import qrcode.image.svg
+
+    image = qrcode.make(hydrometer.qr_code_token, image_factory=qrcode.image.svg.SvgPathImage)
+    buffer = BytesIO()
+    image.save(buffer)
+    return Response(
+        content=buffer.getvalue(),
+        media_type="image/svg+xml",
+        headers={"Content-Disposition": f"attachment; filename=qr_hidrometro_{hydrometer.code}.svg"},
     )
 
 
@@ -256,6 +324,80 @@ async def kimi_memory_summary(
     }
 
 
+async def _get_system_settings(db: AsyncSession) -> SystemSetting:
+    result = await db.execute(select(SystemSetting).where(SystemSetting.id == 1))
+    settings = result.scalar_one_or_none()
+    if settings:
+        return settings
+    settings = SystemSetting(id=1)
+    db.add(settings)
+    await db.flush()
+    return settings
+
+
+@router.post("/{hydrometer_id}/disconnect", response_model=HydrometerResponse)
+async def disconnect_hydrometer(
+    hydrometer_id: str,
+    data: HydrometerDisconnectRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == uuid.UUID(hydrometer_id))
+    )
+    hydrometer = result.scalar_one_or_none()
+    if not hydrometer:
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
+
+    hydrometer.is_active = False
+    hydrometer.disconnected_at = datetime.now(timezone.utc)
+    hydrometer.disconnection_reason = data.reason or "Desligado por falta de pagamento"
+    if hydrometer.customer:
+        hydrometer.customer.status = "disconnected"
+    await db.flush()
+    await db.refresh(hydrometer)
+    return hydrometer
+
+
+@router.post("/{hydrometer_id}/reconnect", response_model=HydrometerResponse)
+async def reconnect_hydrometer(
+    hydrometer_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == uuid.UUID(hydrometer_id))
+    )
+    hydrometer = result.scalar_one_or_none()
+    if not hydrometer:
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
+
+    settings = await _get_system_settings(db)
+    hydrometer.is_active = True
+    hydrometer.reconnected_at = datetime.now(timezone.utc)
+    if hydrometer.customer:
+        hydrometer.customer.status = "active"
+        invoice = Invoice(
+            customer_id=hydrometer.customer_id,
+            amount=settings.reconnection_fee_amount,
+            original_amount=settings.reconnection_fee_amount,
+            reference_month=datetime.now(timezone.utc).strftime("%Y-%m"),
+            due_date=datetime.now(timezone.utc).date(),
+            consumption_m3=0.0,
+            tariff_rate=0.0,
+            charge_type="reconnection",
+            status="pending",
+        )
+        db.add(invoice)
+    await db.flush()
+    await db.refresh(hydrometer)
+    return hydrometer
+
+
 @router.get("/{hydrometer_id}", response_model=HydrometerResponse)
 async def get_hydrometer(
     hydrometer_id: str,
@@ -298,6 +440,8 @@ async def create_hydrometer(
         code=target_code,
         brand=data.brand,
         model=data.model,
+        red_digits=data.red_digits,
+        black_digits=data.black_digits,
         location_description=data.location_description,
         latitude=data.latitude,
         longitude=data.longitude,

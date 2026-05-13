@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "mobile",
-    "slug": "mobile",
+    "slug": "aquamoab",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -21,10 +21,20 @@
         "backgroundColor": "#07111F"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.aquamoab.app"
     },
     "extra": {
-      "apiUrl": "https://aquamoab.up.railway.app/api"
+      "apiUrl": "https://aquamoab.up.railway.app/api",
+      "eas": {
+        "projectId": "96a2d2ec-7e9e-499e-a373-c38a3d973096"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -33,6 +43,7 @@
       "expo-secure-store",
       "expo-camera",
       "expo-location"
-    ]
+    ],
+    "owner": "kaceratwx"
   }
 }

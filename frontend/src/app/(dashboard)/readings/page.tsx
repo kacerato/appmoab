@@ -8,6 +8,8 @@ import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { ClipboardCheck, Check, X, Camera } from 'lucide-react';
 
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
+
 interface Reading {
   id: string;
   current_value: number;
@@ -142,6 +144,30 @@ export default function ReadingsPage() {
               <div style={{ padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)' }}>
                 <div>{new Date(r.captured_at).toLocaleString('pt-BR')}</div>
                 <div>{r.collaborator_name}</div>
+              </div>
+
+              <div style={{ padding: '0 20px 14px', display: 'grid', gridTemplateColumns: '120px 1fr', gap: 12, alignItems: 'center' }}>
+                {r.photo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={r.photo_url.startsWith('http') ? r.photo_url : `${API_BASE}${r.photo_url}`}
+                    alt="Foto da leitura"
+                    style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }}
+                  />
+                ) : (
+                  <div style={{ width: 120, height: 90, borderRadius: 8, background: 'var(--blue-50)', display: 'grid', placeItems: 'center', color: 'var(--text-muted)' }}>
+                    Sem foto
+                  </div>
+                )}
+                <div style={{ display: 'grid', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  <div><strong>Hora da foto:</strong> {new Date(r.captured_at).toLocaleString('pt-BR')}</div>
+                  <div><strong>Localizacao:</strong> {r.latitude && r.longitude ? `${r.latitude.toFixed(6)}, ${r.longitude.toFixed(6)}` : 'Nao registrada'}</div>
+                  {r.latitude && r.longitude && (
+                    <a href={`https://www.google.com/maps?q=${r.latitude},${r.longitude}`} target="_blank" rel="noreferrer" style={{ color: 'var(--cyan)', fontWeight: 700 }}>
+                      Abrir mapa
+                    </a>
+                  )}
+                </div>
               </div>
 
               {r.status === 'pending' && (

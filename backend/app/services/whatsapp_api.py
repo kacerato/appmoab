@@ -84,6 +84,28 @@ class WhatsAppService:
             logger.error(f"Erro ao conectar com Evolution API: {e}")
             return {"status": "failed", "error": str(e)}
 
+    async def send_text(self, phone: str, text: str) -> dict | None:
+        if not self.is_enabled:
+            return None
+
+        digits = self.normalize_phone(phone)
+        client = await self._get_client()
+        try:
+            response = await client.post(
+                f"/message/sendText/{settings.evolution_instance_name}",
+                json={"number": digits, "text": text},
+            )
+            response.raise_for_status()
+            logger.info(f"WhatsApp (Evolution API) enviado para {digits}")
+            payload = response.json() if response.content else {}
+            return {"status": "sent", "message_id": payload.get("key", {}).get("id")}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Erro Evolution API: {e.response.text}")
+            return {"status": "failed", "error": e.response.text}
+        except Exception as e:
+            logger.error(f"Erro ao conectar com Evolution API: {e}")
+            return {"status": "failed", "error": str(e)}
+
     async def send_invoice_document(
         self,
         phone: str,

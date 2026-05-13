@@ -44,9 +44,13 @@ class HydrometerResponse(HydrometerBase):
     id: UUID
     customer_id: UUID
     code: str
+    qr_code_token: str
     last_reading_value: float
     last_reading_date: datetime | None
     is_active: bool
+    disconnected_at: datetime | None = None
+    reconnected_at: datetime | None = None
+    disconnection_reason: str | None = None
     installed_at: datetime
     customer: HydrometerCustomer | None = None
 
@@ -89,6 +93,7 @@ class HydrometerIdentifyResponse(BaseModel):
     matched: bool
     hydrometer_id: UUID | None = None
     hydrometer_code: str | None = None
+    qr_code_token: str | None = None
     customer_id: UUID | None = None
     customer_name: str | None = None
     location_description: str | None = None
@@ -97,3 +102,11 @@ class HydrometerIdentifyResponse(BaseModel):
     black_digits: int | None = None
     brand: str | None = None
     model: str | None = None
+
+
+class HydrometerQrResolveRequest(BaseModel):
+    qr_code_token: str
+
+
+class HydrometerDisconnectRequest(BaseModel):
+    reason: str | None = None

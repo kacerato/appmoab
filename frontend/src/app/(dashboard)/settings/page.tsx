@@ -39,6 +39,11 @@ interface SystemSetting {
   route_window_enabled: boolean;
   route_window_days_before_due: number;
   route_window_days_after_due: number;
+  daily_interest_percent: number;
+  late_fee_percent: number;
+  installation_fee_amount: number;
+  reconnection_fee_amount: number;
+  cut_notice_days_after_due: number;
 }
 
 function fmt(v: number) {
@@ -74,6 +79,11 @@ export default function SettingsPage() {
     route_window_enabled: false,
     route_window_days_before_due: 5,
     route_window_days_after_due: 0,
+    daily_interest_percent: 0.033,
+    late_fee_percent: 10,
+    installation_fee_amount: 100,
+    reconnection_fee_amount: 160,
+    cut_notice_days_after_due: 5,
   });
   const [systemSaving, setSystemSaving] = useState(false);
   const [profileForm, setProfileForm] = useState<{
@@ -279,7 +289,7 @@ export default function SettingsPage() {
     try {
       const updated = await api.patch<SystemSetting>('/system-settings', systemSettings);
       setSystemSettings(updated);
-      notify('Janela da rota atualizada', 'A regra mensal do mobile foi salva com sucesso.', 'success');
+      notify('Regras atualizadas', 'Juros, multas, taxas e janela da rota foram salvos.', 'success');
     } catch (err: unknown) {
       notify('Falha ao salvar janela da rota', err instanceof Error ? err.message : 'Nao foi possivel salvar as configuracoes.', 'error');
     } finally {
@@ -419,7 +429,7 @@ export default function SettingsPage() {
         <div className="card-header"><span className="card-title">Janela Mensal da Rota</span></div>
         {user?.role === 'admin' ? (
           <>
-            <form onSubmit={handleSystemSave} className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr auto' }}>
+            <form onSubmit={handleSystemSave} className="form-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
               <div className="form-group">
                 <label className="form-label">Regra da janela</label>
                 <select
@@ -453,9 +463,64 @@ export default function SettingsPage() {
                   onChange={e => setSystemSettings(current => ({ ...current, route_window_days_after_due: parseInt(e.target.value, 10) || 0 }))}
                 />
               </div>
+              <div className="form-group">
+                <label className="form-label">Juros diario (%)</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  step="0.001"
+                  value={systemSettings.daily_interest_percent}
+                  onChange={e => setSystemSettings(current => ({ ...current, daily_interest_percent: parseFloat(e.target.value) || 0 }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Multa por atraso (%)</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={systemSettings.late_fee_percent}
+                  onChange={e => setSystemSettings(current => ({ ...current, late_fee_percent: parseFloat(e.target.value) || 0 }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Aviso de corte apos atraso</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  max={28}
+                  value={systemSettings.cut_notice_days_after_due}
+                  onChange={e => setSystemSettings(current => ({ ...current, cut_notice_days_after_due: parseInt(e.target.value, 10) || 0 }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Taxa de instalacao</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={systemSettings.installation_fee_amount}
+                  onChange={e => setSystemSettings(current => ({ ...current, installation_fee_amount: parseFloat(e.target.value) || 0 }))}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Taxa de religamento</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={systemSettings.reconnection_fee_amount}
+                  onChange={e => setSystemSettings(current => ({ ...current, reconnection_fee_amount: parseFloat(e.target.value) || 0 }))}
+                />
+              </div>
               <div style={{ display: 'flex', alignItems: 'end' }}>
                 <button className="btn btn-primary btn-sm" type="submit" disabled={systemSaving}>
-                  {systemSaving ? <Loader2 size={14} className="spinner" /> : <Save size={14} />} Salvar janela
+                  {systemSaving ? <Loader2 size={14} className="spinner" /> : <Save size={14} />} Salvar regras
                 </button>
               </div>
             </form>

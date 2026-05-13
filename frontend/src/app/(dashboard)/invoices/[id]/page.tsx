@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore } from 'lucide-react';
+import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore, CheckCircle2, RotateCcw, Calculator, BellRing, Pencil } from 'lucide-react';
 
 interface Invoice {
   id: string;
@@ -16,6 +16,13 @@ interface Invoice {
   consumption_m3: number;
   tariff_rate: number;
   amount: number;
+  original_amount: number | null;
+  custom_adjustment_amount: number;
+  late_fee_amount: number;
+  interest_amount: number;
+  days_overdue_charged: number;
+  adjustment_reason: string | null;
+  charge_type: string;
   reference_month: string;
   due_date: string;
   paid_date: string | null;
@@ -36,7 +43,7 @@ function fmt(v: number) {
 export default function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
-  const { confirm, notify } = useAppFeedback();
+  const { confirm, notify, prompt } = useAppFeedback();
   const [inv, setInv] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -92,6 +99,108 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     }
   };
 
+  const reloadInvoice = async () => {
+    const updated = await api.get<Invoice>(`/invoices/${id}`);
+    setInv(updated);
+  };
+
+  const editAmount = async () => {
+    if (!inv) return;
+    const activeInvoice = inv;
+    const value = await prompt('Editar valor da fatura', `Valor atual: ${fmt(activeInvoice.amount)}. Informe o novo valor final.`, {
+      confirmLabel: 'Salvar valor',
+      placeholder: 'Ex: 85.50',
+    });
+    if (!value) return;
+    const parsed = Number(value.replace(',', '.'));
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      notify('Valor inválido', 'Informe um valor numérico válido.', 'warning');
+      return;
+    }
+    const reason = await prompt('Motivo do ajuste', 'Registre o motivo do desconto ou alteração.', {
+      confirmLabel: 'Confirmar',
+      placeholder: 'Ex: desconto autorizado',
+    });
+    setActionLoading('amount');
+    try {
+      const updated = await api.patch<Invoice>(`/invoices/${id}/amount`, { amount: parsed, reason });
+      setInv(updated);
+      notify('Valor atualizado', 'A fatura foi ajustada com sucesso.', 'success');
+    } catch (e: unknown) {
+      notify('Falha ao ajustar valor', e instanceof Error ? e.message : 'Erro ao editar a fatura.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const refreshOverdue = async () => {
+    const value = await prompt('Atualizar atraso', 'Informe a quantidade de dias em atraso. Deixe vazio para usar a data de hoje.', {
+      confirmLabel: 'Atualizar',
+      placeholder: 'Ex: 12',
+    });
+    const days = value ? Number(value.replace(',', '.')) : undefined;
+    if (days !== undefined && (!Number.isFinite(days) || days < 0)) {
+      notify('Dias inválidos', 'Informe uma quantidade válida de dias.', 'warning');
+      return;
+    }
+    setActionLoading('overdue');
+    try {
+      const updated = await api.post<Invoice>(`/invoices/${id}/refresh-overdue`, { days_overdue: days });
+      setInv(updated);
+      notify('Valor atualizado', 'Juros e multa foram recalculados.', 'success');
+    } catch (e: unknown) {
+      notify('Falha ao atualizar atraso', e instanceof Error ? e.message : 'Erro ao recalcular juros.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const markPaid = async () => {
+    const confirmed = await confirm('Marcar como paga', 'Confirmar que esta fatura foi paga?', {
+      confirmLabel: 'Marcar paga',
+    });
+    if (!confirmed) return;
+    setActionLoading('paid');
+    try {
+      await api.post(`/invoices/${id}/mark-paid`, {});
+      await reloadInvoice();
+      notify('Pagamento registrado', 'A fatura foi marcada como paga.', 'success');
+    } catch (e: unknown) {
+      notify('Falha ao registrar pagamento', e instanceof Error ? e.message : 'Erro ao marcar como paga.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const reopenInvoice = async () => {
+    const confirmed = await confirm('Reabrir fatura', 'Deseja reabrir esta fatura para cobrança?', {
+      confirmLabel: 'Reabrir',
+    });
+    if (!confirmed) return;
+    setActionLoading('reopen');
+    try {
+      await api.post(`/invoices/${id}/reopen`);
+      await reloadInvoice();
+      notify('Fatura reaberta', 'A fatura voltou para pendente.', 'success');
+    } catch (e: unknown) {
+      notify('Falha ao reabrir', e instanceof Error ? e.message : 'Erro ao reabrir fatura.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const sendCutNotice = async () => {
+    setActionLoading('cut');
+    try {
+      const result = await api.post<{ detail: string; status: string }>(`/invoices/${id}/cut-notice`);
+      notify(result.status === 'sent' ? 'Aviso enviado' : 'Aviso registrado', result.detail || 'Aviso de corte processado.', result.status === 'sent' ? 'success' : 'warning');
+    } catch (e: unknown) {
+      notify('Falha no aviso de corte', e instanceof Error ? e.message : 'Erro ao enviar aviso.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const emitBoleto = async () => {
     setActionLoading('boleto');
     try {
@@ -137,6 +246,31 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           {['pending', 'sent', 'overdue'].includes(inv.status) && (
             <button className="btn btn-secondary btn-sm" onClick={sendWhatsApp} disabled={actionLoading === 'whatsapp'}>
               {actionLoading === 'whatsapp' ? <Loader2 size={14} className="spinner" /> : <MessageCircleMore size={14} />} WhatsApp
+            </button>
+          )}
+          {inv.status !== 'paid' && (
+            <button className="btn btn-secondary btn-sm" onClick={editAmount} disabled={actionLoading === 'amount'}>
+              {actionLoading === 'amount' ? <Loader2 size={14} className="spinner" /> : <Pencil size={14} />} Valor
+            </button>
+          )}
+          {['pending', 'sent', 'overdue'].includes(inv.status) && (
+            <button className="btn btn-secondary btn-sm" onClick={refreshOverdue} disabled={actionLoading === 'overdue'}>
+              {actionLoading === 'overdue' ? <Loader2 size={14} className="spinner" /> : <Calculator size={14} />} Atualizar atraso
+            </button>
+          )}
+          {['pending', 'sent', 'overdue'].includes(inv.status) && (
+            <button className="btn btn-secondary btn-sm" onClick={sendCutNotice} disabled={actionLoading === 'cut'}>
+              {actionLoading === 'cut' ? <Loader2 size={14} className="spinner" /> : <BellRing size={14} />} Aviso corte
+            </button>
+          )}
+          {inv.status !== 'paid' && (
+            <button className="btn btn-primary btn-sm" onClick={markPaid} disabled={actionLoading === 'paid'}>
+              {actionLoading === 'paid' ? <Loader2 size={14} className="spinner" /> : <CheckCircle2 size={14} />} Pago
+            </button>
+          )}
+          {['cancelled', 'paid'].includes(inv.status) && (
+            <button className="btn btn-secondary btn-sm" onClick={reopenInvoice} disabled={actionLoading === 'reopen'}>
+              {actionLoading === 'reopen' ? <Loader2 size={14} className="spinner" /> : <RotateCcw size={14} />} Reabrir
             </button>
           )}
           {(inv.has_pdf || inv.inter_codigo_solicitacao) && (
@@ -216,7 +350,12 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 }}>
             <Field label="Cliente" value={inv.customer_name} />
             <Field label="CPF/CNPJ" value={inv.customer_cpf_cnpj} />
+            <Field label="Tipo" value={chargeTypeLabel(inv.charge_type)} />
             <Field label="Tarifa" value={`R$ ${inv.tariff_rate.toFixed(2)}/m³`} />
+            <Field label="Valor original" value={fmt(inv.original_amount ?? inv.amount)} />
+            <Field label="Ajuste manual" value={fmt(inv.custom_adjustment_amount || 0)} />
+            <Field label="Multa / juros" value={`${fmt(inv.late_fee_amount || 0)} / ${fmt(inv.interest_amount || 0)} (${inv.days_overdue_charged || 0} dia(s))`} />
+            <Field label="Motivo do ajuste" value={inv.adjustment_reason || null} />
             <Field label="Data Pagamento" value={inv.paid_date ? new Date(inv.paid_date).toLocaleDateString('pt-BR') : 'Não pago'} />
             <Field label="Emitida em" value={new Date(inv.created_at).toLocaleString('pt-BR')} />
           </div>
@@ -237,5 +376,10 @@ function Field({ label, value }: { label: string; value: string | null | undefin
 
 function statusLabel(s: string) {
   const m: Record<string, string> = { pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
+  return m[s] || s;
+}
+
+function chargeTypeLabel(s: string) {
+  const m: Record<string, string> = { water: 'Água', installation: 'Instalação', reconnection: 'Religamento', manual: 'Manual' };
   return m[s] || s;
 }

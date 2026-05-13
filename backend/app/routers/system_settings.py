@@ -41,6 +41,11 @@ async def update_system_settings(
     settings.route_window_enabled = data.route_window_enabled
     settings.route_window_days_before_due = data.route_window_days_before_due
     settings.route_window_days_after_due = data.route_window_days_after_due
+    settings.daily_interest_percent = data.daily_interest_percent
+    settings.late_fee_percent = data.late_fee_percent
+    settings.installation_fee_amount = data.installation_fee_amount
+    settings.reconnection_fee_amount = data.reconnection_fee_amount
+    settings.cut_notice_days_after_due = data.cut_notice_days_after_due
     await db.flush()
     await db.refresh(settings)
     return settings
