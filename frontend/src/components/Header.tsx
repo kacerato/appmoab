@@ -1,6 +1,3 @@
-'use client';
-
-import { useAuth } from '@/lib/auth';
 import { Bell } from 'lucide-react';
 
 interface Props {
@@ -10,8 +7,6 @@ interface Props {
 }
 
 export default function Header({ title, subtitle, actions }: Props) {
-  const { user } = useAuth();
-
   return (
     <header className="app-header">
       <div>

@@ -130,13 +130,16 @@ export default function HydrometersPage() {
   );
 
   const downloadQr = async (hydrometer: Hydrometer) => {
-    const token = localStorage.getItem('token');
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/hydrometers/${hydrometer.id}/qr-code.svg`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const QRCode = await import('qrcode');
+      const qrValue = hydrometer.qr_code_token || hydrometer.code;
+      const svg = await QRCode.toString(qrValue, {
+        type: 'svg',
+        margin: 2,
+        width: 320,
+        errorCorrectionLevel: 'M',
       });
-      if (!res.ok) throw new Error('QR Code nao disponivel');
-      const blob = await res.blob();
+      const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

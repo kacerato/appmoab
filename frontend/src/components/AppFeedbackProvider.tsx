@@ -39,7 +39,7 @@ export function AppFeedbackProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [promptValue, setPromptValue] = useState('');
-  const resolverRef = useRef<((value: any) => void) | null>(null);
+  const resolverRef = useRef<((value: boolean | string | null) => void) | null>(null);
   const nextIdRef = useRef(1);
 
   const notify = useCallback((title: string, description?: string, tone: ToastTone = 'info') => {
@@ -52,7 +52,7 @@ export function AppFeedbackProvider({ children }: { children: ReactNode }) {
 
   const confirm = useCallback((title: string, description?: string, options?: { confirmLabel?: string; cancelLabel?: string }) => {
     return new Promise<boolean>((resolve) => {
-      resolverRef.current = resolve;
+      resolverRef.current = (value) => resolve(value === true);
       setDialog({
         mode: 'confirm',
         title,
@@ -69,7 +69,7 @@ export function AppFeedbackProvider({ children }: { children: ReactNode }) {
     options?: { confirmLabel?: string; cancelLabel?: string; defaultValue?: string; placeholder?: string }
   ) => {
     return new Promise<string | null>((resolve) => {
-      resolverRef.current = resolve;
+      resolverRef.current = (value) => resolve(typeof value === 'string' ? value : null);
       setPromptValue(options?.defaultValue || '');
       setDialog({
         mode: 'prompt',

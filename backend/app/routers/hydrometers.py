@@ -153,7 +153,7 @@ async def resolve_hydrometer_qr(
     result = await db.execute(
         select(Hydrometer)
         .options(selectinload(Hydrometer.customer))
-        .where(Hydrometer.qr_code_token == token)
+        .where((Hydrometer.qr_code_token == token) | (Hydrometer.code == token))
     )
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:

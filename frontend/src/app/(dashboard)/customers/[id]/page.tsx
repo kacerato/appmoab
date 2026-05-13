@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { api } from '@/lib/api';
 import { fileToDataUrl } from '@/lib/file-base64';
-import { ArrowLeft, Calendar, Droplets, Edit2, FileText, Loader2, MapPin, Plus, Save, Trash2, Upload, X } from 'lucide-react';
+import { ArrowLeft, Calendar, Droplets, Edit2, FileText, Loader2, MapPin, Plus, Trash2, Upload, X } from 'lucide-react';
 
 interface CustomerAttachment {
   id: string;

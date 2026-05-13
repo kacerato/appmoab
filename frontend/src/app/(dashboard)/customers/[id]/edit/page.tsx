@@ -15,6 +15,24 @@ interface Attachment {
   download_url: string;
 }
 
+interface CustomerDetail {
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string;
+  number: string;
+  complement: string | null;
+  neighborhood: string;
+  city: string;
+  state: string;
+  zip_code: string;
+  due_day: number;
+  has_hydrometer: boolean;
+  status: string;
+  notes: string | null;
+  attachments: Attachment[];
+}
+
 export default function EditCustomerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
@@ -35,7 +53,7 @@ export default function EditCustomerPage({ params }: { params: Promise<{ id: str
   });
 
   useEffect(() => {
-    api.get<any>(`/customers/${id}`)
+    api.get<CustomerDetail>(`/customers/${id}`)
       .then(customer => {
         setForm({
           name: customer.name, phone: customer.phone || '', email: customer.email || '',
@@ -68,7 +86,7 @@ export default function EditCustomerPage({ params }: { params: Promise<{ id: str
   };
 
   const refreshAttachments = async () => {
-    const customer = await api.get<any>(`/customers/${id}`);
+    const customer = await api.get<CustomerDetail>(`/customers/${id}`);
     setAttachments(customer.attachments || []);
   };
 
