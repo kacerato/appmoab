@@ -36,6 +36,15 @@ from app.utils.security import get_current_user, require_admin
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
 
 
+async def _fetch_hydrometer_response(db: AsyncSession, hydrometer_id: uuid.UUID) -> Hydrometer | None:
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == hydrometer_id)
+    )
+    return result.scalar_one_or_none()
+
+
 @router.get("", response_model=HydrometerListResponse)
 async def list_hydrometers(
     customer_id: str | None = None,
@@ -357,8 +366,8 @@ async def disconnect_hydrometer(
     if hydrometer.customer:
         hydrometer.customer.status = "disconnected"
     await db.flush()
-    await db.refresh(hydrometer)
-    return hydrometer
+    updated = await _fetch_hydrometer_response(db, hydrometer.id)
+    return updated or hydrometer
 
 
 @router.post("/{hydrometer_id}/reconnect", response_model=HydrometerResponse)
@@ -394,8 +403,8 @@ async def reconnect_hydrometer(
         )
         db.add(invoice)
     await db.flush()
-    await db.refresh(hydrometer)
-    return hydrometer
+    updated = await _fetch_hydrometer_response(db, hydrometer.id)
+    return updated or hydrometer
 
 
 @router.get("/{hydrometer_id}", response_model=HydrometerResponse)
@@ -449,8 +458,8 @@ async def create_hydrometer(
     )
     db.add(hydrometer)
     await db.flush()
-    await db.refresh(hydrometer)
-    return hydrometer
+    created = await _fetch_hydrometer_response(db, hydrometer.id)
+    return created or hydrometer
 
 
 @router.patch("/{hydrometer_id}", response_model=HydrometerResponse)
@@ -460,7 +469,11 @@ async def update_hydrometer(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    result = await db.execute(select(Hydrometer).where(Hydrometer.id == uuid.UUID(hydrometer_id)))
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == uuid.UUID(hydrometer_id))
+    )
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
         raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
@@ -486,5 +499,5 @@ async def update_hydrometer(
         setattr(hydrometer, field, value)
 
     await db.flush()
-    await db.refresh(hydrometer)
-    return hydrometer
+    updated = await _fetch_hydrometer_response(db, hydrometer.id)
+    return updated or hydrometer
