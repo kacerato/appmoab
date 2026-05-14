@@ -1,6 +1,6 @@
 """Router do Dashboard — KPIs e métricas para o painel admin."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select, func, case
@@ -25,6 +25,11 @@ async def get_dashboard(
     """Dados completos do dashboard."""
     now = datetime.now(timezone.utc)
     current_month = f"{now.year}-{now.month:02d}"
+    month_start = date(now.year, now.month, 1)
+    if now.month == 12:
+        next_month_start = date(now.year + 1, 1, 1)
+    else:
+        next_month_start = date(now.year, now.month + 1, 1)
 
     # Clientes
     customers_result = await db.execute(
@@ -41,13 +46,24 @@ async def get_dashboard(
     invoices_result = await db.execute(
         select(
             func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
-            func.coalesce(func.sum(case((Invoice.status == "overdue", Invoice.amount), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < date.today()),
+                Invoice.amount,
+            ), else_=0)), 0),
             func.coalesce(func.sum(case(
-                ((Invoice.status == "paid") & (Invoice.reference_month == current_month), Invoice.amount),
+                (
+                    (Invoice.status == "paid")
+                    & (Invoice.paid_date >= month_start)
+                    & (Invoice.paid_date < next_month_start),
+                    Invoice.amount,
+                ),
                 else_=0,
             )), 0),
             func.sum(case((Invoice.status == "pending", 1), else_=0)),
-            func.sum(case((Invoice.status == "overdue", 1), else_=0)),
+            func.sum(case((
+                (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < date.today()),
+                1,
+            ), else_=0)),
             func.sum(case((Invoice.status == "paid", 1), else_=0)),
         )
     )

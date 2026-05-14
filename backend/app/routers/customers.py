@@ -129,6 +129,38 @@ async def _get_system_settings(db: AsyncSession) -> SystemSetting:
     return settings
 
 
+async def _build_customer_response(db: AsyncSession, customer_id: uuid.UUID) -> CustomerResponse:
+    result = await db.execute(
+        select(Customer)
+        .options(selectinload(Customer.hydrometers))
+        .where(Customer.id == customer_id)
+    )
+    customer = result.scalar_one()
+
+    today = date.today()
+    overdue_result = await db.execute(
+        select(func.min(Invoice.due_date)).where(
+            Invoice.customer_id == customer.id,
+            Invoice.status.in_(OPEN_INVOICE_STATUSES),
+            Invoice.due_date < today,
+        )
+    )
+    oldest_overdue_due_date = overdue_result.scalar_one_or_none()
+
+    paid_result = await db.execute(
+        select(func.max(Invoice.paid_date)).where(
+            Invoice.customer_id == customer.id,
+            Invoice.status == "paid",
+            Invoice.paid_date.is_not(None),
+        )
+    )
+    last_paid_date = paid_result.scalar_one_or_none()
+
+    response = CustomerResponse.model_validate(customer)
+    _apply_billing_status(response, customer, today, oldest_overdue_due_date, last_paid_date)
+    return response
+
+
 @router.get("", response_model=CustomerListResponse)
 async def list_customers(
     page: int = Query(1, ge=1),
@@ -270,6 +302,9 @@ async def create_customer(
         raise HTTPException(status_code=400, detail="CPF/CNPJ ja cadastrado")
 
     payload = data.model_dump()
+    for optional_field in ("phone", "email", "complement", "notes"):
+        if payload.get(optional_field) == "":
+            payload[optional_field] = None
     hydrometer_initial_reading = payload.pop("hydrometer_initial_reading", 0.0)
     hydrometer_red_digits = payload.pop("hydrometer_red_digits", 3)
     hydrometer_black_digits = payload.pop("hydrometer_black_digits", None)
@@ -311,8 +346,8 @@ async def create_customer(
                 status="pending",
             ))
 
-    await db.refresh(customer)
-    return customer
+    await db.flush()
+    return await _build_customer_response(db, customer.id)
 
 
 @router.patch("/{customer_id}", response_model=CustomerResponse)

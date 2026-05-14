@@ -59,6 +59,14 @@ def _recalculate_overdue_amount(invoice: Invoice, settings: SystemSetting, days_
         invoice.status = "overdue"
 
 
+def _current_month_range() -> tuple[date, date]:
+    today = date.today()
+    month_start = date(today.year, today.month, 1)
+    if today.month == 12:
+        return month_start, date(today.year + 1, 1, 1)
+    return month_start, date(today.year, today.month + 1, 1)
+
+
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
     page: int = Query(1, ge=1),
@@ -106,6 +114,7 @@ async def get_summary(
     """Resumo financeiro para o dashboard."""
     now = datetime.now(timezone.utc)
     current_month = f"{now.year}-{now.month:02d}"
+    month_start, next_month_start = _current_month_range()
 
     result = await db.execute(
         select(
@@ -114,7 +123,9 @@ async def get_summary(
             func.coalesce(func.sum(case((Invoice.status == "overdue", Invoice.amount), else_=0)), 0),
             func.coalesce(func.sum(
                 case((
-                    (Invoice.status == "paid") & (Invoice.reference_month == current_month),
+                    (Invoice.status == "paid")
+                    & (Invoice.paid_date >= month_start)
+                    & (Invoice.paid_date < next_month_start),
                     Invoice.amount,
                 ), else_=0)
             ), 0),

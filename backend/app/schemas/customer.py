@@ -20,6 +20,13 @@ class CustomerBase(BaseModel):
     has_hydrometer: bool = True
     notes: str | None = None
 
+    @field_validator("phone", "email", "complement", "notes", mode="before")
+    @classmethod
+    def empty_optional_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("due_day")
     @classmethod
     def validate_due_day(cls, value: int) -> int:
@@ -73,6 +80,13 @@ class CustomerUpdate(BaseModel):
     has_hydrometer: bool | None = None
     status: str | None = None
     notes: str | None = None
+
+    @field_validator("phone", "email", "complement", "notes", mode="before")
+    @classmethod
+    def empty_optional_to_none(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("due_day")
     @classmethod

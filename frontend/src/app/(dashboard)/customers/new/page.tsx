@@ -67,9 +67,19 @@ export default function NewCustomerPage() {
     setLoading(true);
     setError('');
     try {
-      const customer = await api.post<{ id: string }>('/customers', {
+      const payload = {
         ...form,
+        phone: form.phone.trim() || null,
+        email: form.email.trim() || null,
+        complement: form.complement.trim() || null,
+        notes: form.notes.trim() || null,
+        hydrometer_brand: form.hydrometer_brand.trim() || null,
+        hydrometer_model: form.hydrometer_model.trim() || null,
+        hydrometer_location_description: form.hydrometer_location_description.trim() || null,
         hydrometer_black_digits: form.hydrometer_black_digits === '' ? null : Number(form.hydrometer_black_digits),
+      };
+      const customer = await api.post<{ id: string }>('/customers', {
+        ...payload,
       });
 
       for (const attachment of pendingAttachments) {
