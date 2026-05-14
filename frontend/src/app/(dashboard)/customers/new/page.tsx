@@ -192,9 +192,16 @@ export default function NewCustomerPage() {
           <div className="card" style={{ marginBottom: 20 }}>
             <div className="card-header"><span className="card-title">Hidrômetro inicial</span></div>
             <div className="form-grid">
-              <div className="form-group">
-                <label className="form-label">Última leitura cadastrada</label>
-                <input className="form-input" type="number" step="0.001" min="0" value={form.hydrometer_initial_reading} onChange={e => set('hydrometer_initial_reading', parseFloat(e.target.value) || 0)} />
+              <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                <div style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 14, background: 'var(--bg-tertiary)' }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+                    Instalação no app do colaborador
+                  </div>
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    Depois de cadastrar o cliente, o ponto aparece como instalação pendente no app.
+                    O colaborador registra foto e valor inicial do hidrômetro; quando o admin aprovar, o boleto de instalação é gerado.
+                  </div>
+                </div>
               </div>
               <div className="form-group">
                 <label className="form-label">Dígitos vermelhos</label>

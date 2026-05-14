@@ -15,6 +15,7 @@ from app.models.reading import Reading
 from app.models.hydrometer import Hydrometer
 from app.models.customer import Customer
 from app.models.invoice import Invoice
+from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.schemas.reading import (
     ReadingCreate, ReadingOCRResult, ReadingConfirm,
@@ -27,6 +28,17 @@ from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
 router = APIRouter(prefix="/readings", tags=["Leituras"])
+
+
+async def _get_system_settings(db: AsyncSession) -> SystemSetting:
+    result = await db.execute(select(SystemSetting).where(SystemSetting.id == 1))
+    settings = result.scalar_one_or_none()
+    if settings:
+        return settings
+    settings = SystemSetting(id=1)
+    db.add(settings)
+    await db.flush()
+    return settings
 
 
 @router.get("", response_model=ReadingListResponse)
@@ -196,13 +208,11 @@ async def approve_reading(
 
     # Atualiza última leitura do hidrômetro
     hydrometer = reading.hydrometer
+    is_installation_capture = hydrometer.last_reading_date is None
     hydrometer.last_reading_value = reading.current_value
     hydrometer.last_reading_date = datetime.now(timezone.utc)
 
     customer = hydrometer.customer
-
-    # Calcula faturamento
-    billing = await calculate_billing(db, reading.consumption)
 
     # Determina data de vencimento
     now = datetime.now(timezone.utc)
@@ -222,16 +232,32 @@ async def approve_reading(
     due_date = date(year, month, due_day)
     ref_month = f"{year}-{month:02d}"
 
+    if is_installation_capture:
+        settings = await _get_system_settings(db)
+        amount = settings.installation_fee_amount
+        consumption_m3 = 0.0
+        tariff_rate = 0.0
+        charge_type = "installation"
+        boleto_message = f"Instalacao do hidrometro {hydrometer.code} - Ref: {ref_month}"
+    else:
+        billing = await calculate_billing(db, reading.consumption)
+        amount = billing.final_amount
+        consumption_m3 = billing.consumption_m3
+        tariff_rate = billing.tariff_rate
+        charge_type = "water"
+        boleto_message = f"Consumo: {billing.consumption_m3:.2f}m³ - Ref: {ref_month}"
+
     # Cria fatura
     invoice = Invoice(
         customer_id=customer.id,
         reading_id=reading.id,
-        consumption_m3=billing.consumption_m3,
-        tariff_rate=billing.tariff_rate,
-        amount=billing.final_amount,
-        original_amount=billing.final_amount,
+        consumption_m3=consumption_m3,
+        tariff_rate=tariff_rate,
+        amount=amount,
+        original_amount=amount,
         reference_month=ref_month,
         due_date=due_date,
+        charge_type=charge_type,
         status="pending",
     )
     db.add(invoice)
@@ -242,7 +268,7 @@ async def approve_reading(
     try:
         seu_numero = f"AQ-{str(invoice.id)[:8].upper()}"
         boleto = await inter_service.emitir_cobranca(
-            valor=billing.final_amount,
+            valor=amount,
             cpf_cnpj=customer.cpf_cnpj,
             nome=customer.name,
             email=customer.email or "",
@@ -254,7 +280,7 @@ async def approve_reading(
             cep=customer.zip_code,
             data_vencimento=due_date,
             seu_numero=seu_numero,
-            mensagem=f"Consumo: {billing.consumption_m3:.2f}m³ - Ref: {ref_month}",
+            mensagem=boleto_message,
         )
 
         invoice.inter_codigo_solicitacao = boleto.get("codigoSolicitacao")
@@ -282,9 +308,10 @@ async def approve_reading(
         "message": "Leitura aprovada e fatura gerada",
         "reading_id": str(reading.id),
         "invoice_id": str(invoice.id),
-        "amount": billing.final_amount,
-        "consumption_m3": billing.consumption_m3,
-        "tariff_rate": billing.tariff_rate,
+        "amount": amount,
+        "consumption_m3": consumption_m3,
+        "tariff_rate": tariff_rate,
+        "charge_type": charge_type,
         "boleto_status": invoice.status,
     }
 

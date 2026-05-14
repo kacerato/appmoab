@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
+import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
@@ -30,6 +31,7 @@ interface Hydrometer {
   brand?: string | null;
   model?: string | null;
   location_description?: string | null;
+  last_reading_date?: string | null;
 }
 
 interface Customer {
@@ -142,7 +144,8 @@ export default function RouteScreen() {
   const stats = useMemo(() => {
     const total = routeItems.length;
     const completed = routeItems.filter(item => item.todayStatus && item.todayStatus.status !== 'rejected').length;
-    return { total, pending: Math.max(total - completed, 0), completed };
+    const installations = routeItems.filter(item => !item.hydrometer.last_reading_date).length;
+    return { total, pending: Math.max(total - completed, 0), completed, installations };
   }, [routeItems]);
 
   const tasks = useMemo(() => {
@@ -168,6 +171,7 @@ export default function RouteScreen() {
       hydrometerBrand: item.hydrometer.brand || '',
       hydrometerModel: item.hydrometer.model || '',
       locationDescription: item.hydrometer.location_description || '',
+      isInstallation: !item.hydrometer.last_reading_date,
     });
   }, [navigation]);
 
@@ -288,15 +292,15 @@ export default function RouteScreen() {
   );
 }
 
-function Hero({ userName, stats, onLogout }: { userName: string; stats: { pending: number; completed: number; total: number }; onLogout: () => void }) {
+function Hero({ userName, stats, onLogout }: { userName: string; stats: { pending: number; completed: number; total: number; installations: number }; onLogout: () => void }) {
   return (
     <View style={styles.heroCard}>
       <View style={styles.neoLine} />
       <View style={styles.heroTopRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.heroEyebrow}>Rota de leitura</Text>
+          <Text style={styles.heroEyebrow}>Rota operacional</Text>
           <Text style={styles.heroTitle}>Olá, {userName.split(' ')[0]}</Text>
-          <Text style={styles.heroSubtitle}>Clientes ativos, leituras pendentes e histórico do dia.</Text>
+          <Text style={styles.heroSubtitle}>Instalações, leituras pendentes e histórico do dia.</Text>
         </View>
         <TouchableOpacity style={styles.logoutPill} onPress={onLogout}>
           <Text style={styles.logoutText}>Sair</Text>
@@ -305,7 +309,7 @@ function Hero({ userName, stats, onLogout }: { userName: string; stats: { pendin
       <View style={styles.summaryRow}>
         <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
         <SummaryCard label="Concluidas" value={stats.completed} tone="success" />
-        <SummaryCard label="Rota" value={stats.total} tone="info" />
+        <SummaryCard label="Instalacoes" value={stats.installations} tone="info" />
       </View>
       <View style={styles.progressPanel}>
         <View style={styles.progressRing}>
@@ -332,6 +336,7 @@ function ScreenHeader({ eyebrow, title, subtitle }: { eyebrow: string; title: st
 }
 
 function CustomerCard({ item, onPress }: { item: { customer: Customer; hydrometer: Hydrometer; todayStatus?: ReadingItem }; onPress: () => void }) {
+  const isInstallation = !item.hydrometer.last_reading_date;
   return (
     <TouchableOpacity activeOpacity={0.88} style={styles.customerCard} onPress={onPress}>
       <View style={styles.neoLine} />
@@ -340,21 +345,23 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
           <Text style={styles.customerName}>{item.customer.name}</Text>
           <Text style={styles.customerCode}>QR {item.hydrometer.code}</Text>
         </View>
-        <StatusBadge status={item.todayStatus?.status || 'pending'} />
+        <StatusBadge status={item.todayStatus?.status || 'pending'} mode={isInstallation ? 'installation' : 'reading'} />
       </View>
+      {isInstallation && <Text style={styles.installationPill}>Instalacao: informar valor inicial, foto e local</Text>}
       {!!item.hydrometer.location_description && <Text style={styles.locationText}>{item.hydrometer.location_description}</Text>}
       <Text style={styles.metaLine}>
         Mostrador: {item.hydrometer.red_digits || 3} digitos vermelhos
         {item.hydrometer.black_digits ? ` - ${item.hydrometer.black_digits} pretos` : ''}
       </Text>
       <View style={styles.rowActionButton}>
-        <Text style={styles.rowActionButtonText}>Escanear</Text>
+        <Text style={styles.rowActionButtonText}>{isInstallation ? 'Iniciar instalacao' : 'Escanear'}</Text>
       </View>
     </TouchableOpacity>
   );
 }
 
 function TaskCard({ item, onPress }: { item: { customer: Customer; hydrometer: Hydrometer; todayStatus?: ReadingItem; done: boolean }; onPress: () => void }) {
+  const isInstallation = !item.hydrometer.last_reading_date;
   return (
     <TouchableOpacity style={styles.taskCard} onPress={onPress} disabled={item.done}>
       <View style={[styles.checkbox, item.done && styles.checkboxDone]}>
@@ -362,9 +369,9 @@ function TaskCard({ item, onPress }: { item: { customer: Customer; hydrometer: H
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.customerName}>{item.customer.name}</Text>
-        <Text style={styles.metaLine}>QR {item.hydrometer.code}</Text>
+        <Text style={styles.metaLine}>{isInstallation ? 'Instalacao pendente' : `QR ${item.hydrometer.code}`}</Text>
       </View>
-      <StatusBadge status={item.todayStatus?.status || 'pending'} />
+      <StatusBadge status={item.todayStatus?.status || 'pending'} mode={isInstallation ? 'installation' : 'reading'} />
     </TouchableOpacity>
   );
 }
@@ -386,7 +393,7 @@ function HistoryCard({ item }: { item: ReadingItem }) {
   );
 }
 
-function ProfileView({ name, email, role, stats, onLogout }: { name: string; email: string; role: string; stats: { pending: number; completed: number; total: number }; onLogout: () => void }) {
+function ProfileView({ name, email, role, stats, onLogout }: { name: string; email: string; role: string; stats: { pending: number; completed: number; total: number; installations: number }; onLogout: () => void }) {
   return (
     <>
       <View style={styles.profileHero}>
@@ -396,7 +403,7 @@ function ProfileView({ name, email, role, stats, onLogout }: { name: string; ema
         <View style={styles.summaryRow}>
           <SummaryCard label="Leituras" value={stats.completed} tone="success" />
           <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
-          <SummaryCard label="Rota" value={stats.total} tone="info" />
+          <SummaryCard label="Instalacoes" value={stats.installations} tone="info" />
         </View>
       </View>
       <View style={styles.customerCard}>
@@ -434,8 +441,9 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, mode = 'reading' }: { status: string; mode?: 'reading' | 'installation' }) {
   let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Pendente' };
+  if (mode === 'installation') palette = { backgroundColor: colors.accentSoft, color: colors.accent, label: 'Instalar' };
   if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
   if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };
   return (
@@ -463,12 +471,12 @@ function Segment({ label, active, onPress }: { label: string; active: boolean; o
 }
 
 function BottomTabs({ active, onTabPress }: { active: ActiveTab; onTabPress: (tab: ActiveTab) => void }) {
-  const tabs: Array<{ key: ActiveTab; label: string; icon: string }> = [
-    { key: 'home', label: 'Home', icon: 'H' },
-    { key: 'tasks', label: 'Tarefas', icon: 'T' },
-    { key: 'create', label: 'Criar', icon: '+' },
-    { key: 'history', label: 'Historico', icon: 'G' },
-    { key: 'profile', label: 'Perfil', icon: 'P' },
+  const tabs: Array<{ key: ActiveTab; label: string; icon: TabIconName }> = [
+    { key: 'home', label: 'Home', icon: 'home' },
+    { key: 'tasks', label: 'Tarefas', icon: 'tasks' },
+    { key: 'create', label: 'Criar', icon: 'plus' },
+    { key: 'history', label: 'Historico', icon: 'history' },
+    { key: 'profile', label: 'Perfil', icon: 'profile' },
   ];
   return (
     <View style={styles.tabBar}>
@@ -479,13 +487,45 @@ function BottomTabs({ active, onTabPress }: { active: ActiveTab; onTabPress: (ta
           <TouchableOpacity key={tab.key} style={styles.tabItem} onPress={() => onTabPress(tab.key)}>
             <View style={[styles.tabIcon, selected && styles.tabIconActive, isCreate && styles.createIcon]}>
               {selected && <View style={styles.activeBeam} />}
-              <Text style={[styles.tabIconText, (selected || isCreate) && styles.tabIconTextActive]}>{tab.icon}</Text>
+              <TabSvgIcon name={tab.icon} active={selected || isCreate} />
             </View>
             <Text style={[styles.tabLabel, selected && styles.tabLabelActive]}>{tab.label}</Text>
           </TouchableOpacity>
         );
       })}
     </View>
+  );
+}
+
+type TabIconName = 'home' | 'tasks' | 'plus' | 'history' | 'profile';
+
+function TabSvgIcon({ name, active }: { name: TabIconName; active: boolean }) {
+  const stroke = active ? '#fff' : colors.textMuted;
+  const common = { stroke, strokeWidth: 2.2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
+  return (
+    <Svg width={22} height={22} viewBox="0 0 24 24">
+      {name === 'home' && <Path {...common} d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-8.5Z" />}
+      {name === 'tasks' && (
+        <>
+          <Rect {...common} x="5" y="4" width="14" height="17" rx="2" />
+          <Path {...common} d="m9 10 1.7 1.7L15 7.5M9 16h6" />
+        </>
+      )}
+      {name === 'plus' && (
+        <>
+          <Circle {...common} cx="12" cy="12" r="9" />
+          <Line {...common} x1="12" y1="8" x2="12" y2="16" />
+          <Line {...common} x1="8" y1="12" x2="16" y2="12" />
+        </>
+      )}
+      {name === 'history' && <Path {...common} d="M4 12a8 8 0 1 0 2.2-5.5M4 5v5h5M12 8v5l3 2" />}
+      {name === 'profile' && (
+        <>
+          <Circle {...common} cx="12" cy="8" r="3.5" />
+          <Path {...common} d="M5 21a7 7 0 0 1 14 0" />
+        </>
+      )}
+    </Svg>
   );
 }
 
@@ -593,6 +633,18 @@ const styles = StyleSheet.create({
   customerName: { color: colors.textPrimary, fontWeight: '800', fontSize: 16 },
   customerCode: { color: colors.accent, fontSize: 12, fontWeight: '700', marginTop: 6 },
   metaLine: { color: colors.textMuted, fontSize: 12, marginTop: 6 },
+  installationPill: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+    color: colors.accent,
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
   locationText: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginTop: 12 },
   rowActionButton: { marginTop: 14, backgroundColor: colors.accent, borderRadius: 8, paddingVertical: 12, alignItems: 'center' },
   rowActionButtonText: { color: '#fff', fontSize: 14, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },

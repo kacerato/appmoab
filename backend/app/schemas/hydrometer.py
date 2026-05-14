@@ -98,6 +98,7 @@ class HydrometerIdentifyResponse(BaseModel):
     customer_name: str | None = None
     location_description: str | None = None
     last_reading_value: float | None = None
+    last_reading_date: datetime | None = None
     red_digits: int | None = None
     black_digits: int | None = None
     brand: str | None = None

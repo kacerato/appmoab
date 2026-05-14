@@ -27,6 +27,7 @@ export default function CameraScreen() {
     hydrometerId,
     hydrometerCode,
     customerName,
+    isInstallation = false,
   } = route.params || {};
 
   const [permission, requestPermission] = useCameraPermissions();
@@ -48,6 +49,7 @@ export default function CameraScreen() {
         hydrometer_code?: string;
         customer_name?: string;
         last_reading_value?: number;
+        last_reading_date?: string | null;
         red_digits?: number | null;
         black_digits?: number | null;
         brand?: string | null;
@@ -71,6 +73,7 @@ export default function CameraScreen() {
         hydrometerBrand: result.brand || '',
         hydrometerModel: result.model || '',
         locationDescription: result.location_description || '',
+        isInstallation: !result.last_reading_date,
       });
     } catch (error) {
       showToast('Falha ao ler QR Code', error instanceof Error ? error.message : 'Nao foi possivel validar o QR.', 'error');
@@ -129,6 +132,7 @@ export default function CameraScreen() {
           hydrometerBrand,
           hydrometerModel,
           locationDescription,
+          isInstallation,
         });
         return;
       }
@@ -160,6 +164,7 @@ export default function CameraScreen() {
         hydrometerBrand,
         hydrometerModel,
         locationDescription,
+        isInstallation,
       });
     } catch (error) {
       showToast(
@@ -172,10 +177,16 @@ export default function CameraScreen() {
     }
   };
 
-  const stageTitle = stage === 'code' ? 'Etapa 1 - QR Code do cliente' : 'Etapa 2 - Leitura do mostrador';
+  const stageTitle = stage === 'code'
+    ? 'Etapa 1 - QR Code do cliente'
+    : isInstallation
+      ? 'Etapa 2 - Instalacao do hidrometro'
+      : 'Etapa 2 - Leitura do mostrador';
   const guideText = stage === 'code'
     ? 'Aponte para o QR Code impresso no ponto do cliente. Se precisar, toque para fotografar e digitar.'
-    : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
+    : isInstallation
+      ? 'Fotografe o hidrometro instalado e informe o valor inicial do mostrador.'
+      : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
@@ -213,7 +224,11 @@ export default function CameraScreen() {
             <View style={styles.infoCard}>
               <Text style={styles.infoLabel}>{stage === 'code' ? 'QR esperado' : 'Formato do mostrador'}</Text>
               <Text style={styles.infoValue}>
-                {stage === 'code' ? activeHydrometerCode : `${redDigits} vermelhos - base ${Number(lastReading || 0).toFixed(2)} m3`}
+                {stage === 'code'
+                  ? activeHydrometerCode
+                  : isInstallation
+                    ? `${redDigits} vermelhos - instalacao`
+                    : `${redDigits} vermelhos - base ${Number(lastReading || 0).toFixed(2)} m3`}
               </Text>
               {!!locationDescription && <Text style={styles.locationHint}>{locationDescription}</Text>}
             </View>
@@ -227,7 +242,7 @@ export default function CameraScreen() {
             </TouchableOpacity>
 
             <Text style={styles.captureLabel}>
-              {stage === 'code' ? 'QR automatico ou toque para digitar' : 'Toque para fotografar a leitura'}
+              {stage === 'code' ? 'QR automatico ou toque para digitar' : isInstallation ? 'Toque para registrar instalacao' : 'Toque para fotografar a leitura'}
             </Text>
           </View>
         </View>

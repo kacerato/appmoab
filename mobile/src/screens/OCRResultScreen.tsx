@@ -50,6 +50,7 @@ export default function OCRResultScreen() {
     hydrometerBrand = '',
     hydrometerModel = '',
     locationDescription,
+    isInstallation = false,
   } = route.params;
 
   const [loading, setLoading] = useState(true);
@@ -101,7 +102,13 @@ export default function OCRResultScreen() {
         hydrometer_brand: hydrometerBrand || null,
         hydrometer_model: hydrometerModel || null,
       }).catch(() => null);
-      showToast('Leitura enviada', 'A leitura foi registrada e aguarda aprovação no painel.', 'success');
+      showToast(
+        isInstallation ? 'Instalacao enviada' : 'Leitura enviada',
+        isInstallation
+          ? 'A instalacao foi registrada e aguarda aprovação para gerar o boleto.'
+          : 'A leitura foi registrada e aguarda aprovação no painel.',
+        'success',
+      );
       navigation.navigate('Route');
     } catch (error) {
       showToast('Falha ao confirmar leitura', error instanceof Error ? error.message : 'Não foi possível enviar a leitura.', 'error');
@@ -121,7 +128,9 @@ export default function OCRResultScreen() {
   return (
     <ScrollView style={shared.container} contentContainerStyle={{ padding: 20, paddingBottom: 32 }}>
       <TouchableOpacity onPress={() => navigation.goBack()}>
-        <Text style={{ color: colors.accent, fontWeight: '700', marginBottom: 16 }}>← Refazer leitura</Text>
+          <Text style={{ color: colors.accent, fontWeight: '700', marginBottom: 16 }}>
+            {isInstallation ? '← Refazer instalacao' : '← Refazer leitura'}
+          </Text>
       </TouchableOpacity>
 
       {photoUri ? (
@@ -138,7 +147,7 @@ export default function OCRResultScreen() {
       ) : (
         <>
           <View style={shared.card}>
-            <Text style={shared.sectionTitle}>Revisão da associação</Text>
+            <Text style={shared.sectionTitle}>{isInstallation ? 'Revisao da instalacao' : 'Revisão da associação'}</Text>
             <Field label="Cliente" value={customerName} />
             <Field label="Código esperado" value={hydrometerCode} />
             <Field label="Formato cadastrado" value={`${selectedRedDigits} digitos vermelhos${blackDigits ? `, ${blackDigits} pretos` : ''}`} />
@@ -149,15 +158,15 @@ export default function OCRResultScreen() {
           </View>
 
           <View style={shared.card}>
-            <Text style={shared.sectionTitle}>Leitura digitada</Text>
+            <Text style={shared.sectionTitle}>{isInstallation ? 'Valor inicial informado' : 'Leitura digitada'}</Text>
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Metric label="Anterior" value={`${formatMeterReading(lastReading)} m³`} />
-              <Metric label="Consumo" value={`${formatMeterReading(consumption)} m³`} accent />
+              <Metric label={isInstallation ? 'Base anterior' : 'Anterior'} value={`${formatMeterReading(lastReading)} m³`} />
+              <Metric label={isInstallation ? 'Valor inicial' : 'Consumo'} value={`${formatMeterReading(isInstallation ? (normalizedCurrentValue || 0) : consumption)} m³`} accent />
             </View>
           </View>
 
           <View style={shared.card}>
-            <Text style={shared.sectionTitle}>Confirmar a leitura final</Text>
+            <Text style={shared.sectionTitle}>{isInstallation ? 'Confirmar valor do hidrometro' : 'Confirmar a leitura final'}</Text>
             <Text style={shared.label}>Dígitos vermelhos do hidrômetro</Text>
             <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
               <RedDigitOption value={2} selected={selectedRedDigits === 2} onPress={() => setSelectedRedDigits(2)} />
@@ -182,7 +191,7 @@ export default function OCRResultScreen() {
             onPress={confirmReading}
             disabled={submitting || normalizedCurrentValue === null}
           >
-            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>Confirmar e enviar</Text>}
+            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>{isInstallation ? 'Enviar instalacao' : 'Confirmar e enviar'}</Text>}
           </TouchableOpacity>
 
           <TouchableOpacity

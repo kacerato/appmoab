@@ -27,6 +27,9 @@ def _resolve_month_date(base_day: int, reference: date) -> date:
 
 
 def _customer_in_route_window(customer: Customer, settings: SystemSetting, today: date) -> bool:
+    if any(hydrometer.last_reading_date is None for hydrometer in customer.hydrometers):
+        return True
+
     if not settings.route_window_enabled:
         return True
 
@@ -78,6 +81,14 @@ def _next_reference_month(due_date: date) -> str:
     return f"{due_date.year}-{due_date.month:02d}"
 
 
+def _format_reference_month(reference_month: str) -> str:
+    try:
+        year, month = reference_month.split("-", 1)
+        return f"{month}/{year}"
+    except ValueError:
+        return reference_month
+
+
 def _apply_billing_status(
     response: CustomerResponse,
     customer: Customer,
@@ -89,11 +100,15 @@ def _apply_billing_status(
         days_overdue = (today - oldest_open_overdue_due_date).days
         response.days_until_due = -days_overdue
         response.billing_status = "overdue"
-        response.billing_status_label = f"Vencido ha {days_overdue} dia(s)"
+        response.billing_status_label = (
+            f"Vencido desde {oldest_open_overdue_due_date.strftime('%d/%m/%Y')} "
+            f"ha {days_overdue} dia(s)"
+        )
         return
 
     due_date = _next_due_date(customer, today)
-    response.next_invoice_reference_month = _next_reference_month(due_date)
+    reference_month = _next_reference_month(due_date)
+    response.next_invoice_reference_month = reference_month
     response.next_invoice_due_date = datetime.combine(due_date, datetime.min.time())
     if last_paid_date:
         response.last_paid_date = datetime.combine(last_paid_date, datetime.min.time())
@@ -108,13 +123,16 @@ def _apply_billing_status(
     response.days_until_due = days_until_due
     if days_until_due == 0:
         response.billing_status = "due_today"
-        response.billing_status_label = "Vence hoje"
+        response.billing_status_label = f"Vence hoje ({due_date.strftime('%d/%m/%Y')})"
     elif days_until_due <= 3:
         response.billing_status = "near_due"
-        response.billing_status_label = f"Vence em {days_until_due} dia(s)"
+        response.billing_status_label = f"Vence em {days_until_due} dia(s) - {due_date.strftime('%d/%m/%Y')}"
     else:
         response.billing_status = "normal"
-        response.billing_status_label = f"Vence dia {customer.due_day}"
+        response.billing_status_label = (
+            f"Vence em {due_date.strftime('%d/%m/%Y')} "
+            f"(ref. {_format_reference_month(reference_month)})"
+        )
 
 
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
@@ -330,21 +348,6 @@ async def create_customer(
         )
         db.add(hydrometer)
         await db.flush()
-
-        settings = await _get_system_settings(db)
-        if settings.installation_fee_amount > 0:
-            today = date.today()
-            db.add(Invoice(
-                customer_id=customer.id,
-                amount=settings.installation_fee_amount,
-                original_amount=settings.installation_fee_amount,
-                reference_month=f"{today.year}-{today.month:02d}",
-                due_date=date(today.year, today.month, min(customer.due_day, 28)),
-                consumption_m3=0.0,
-                tariff_rate=0.0,
-                charge_type="installation",
-                status="pending",
-            ))
 
     await db.flush()
     return await _build_customer_response(db, customer.id)

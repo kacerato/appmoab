@@ -34,7 +34,23 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="sidebar-brand-icon">A</div>
+        <div className="sidebar-brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 64 64" role="img">
+            <defs>
+              <linearGradient id="sidebar-bg" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0%" stopColor="#08213b" />
+                <stop offset="100%" stopColor="#0e4f7f" />
+              </linearGradient>
+              <linearGradient id="sidebar-drop" x1="0" x2="1" y1="0" y2="1">
+                <stop offset="0%" stopColor="#76d4ff" />
+                <stop offset="100%" stopColor="#29a3ff" />
+              </linearGradient>
+            </defs>
+            <rect width="64" height="64" rx="18" fill="url(#sidebar-bg)" />
+            <path d="M32 10c-7 9-14 16-14 25 0 8 6 14 14 14s14-6 14-14c0-9-7-16-14-25Z" fill="url(#sidebar-drop)" />
+            <circle cx="32" cy="36" r="7" fill="#08213b" opacity=".22" />
+          </svg>
+        </div>
         <div>
           <h1>AquaMoab</h1>
           <span>Gestão de Água</span>
