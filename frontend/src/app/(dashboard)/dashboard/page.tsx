@@ -18,6 +18,7 @@ interface DashboardData {
   };
   readings: { pending_approval: number; this_month: number };
   current_month: string;
+  scope: 'month' | 'all';
 }
 
 function fmt(v: number) {
@@ -26,16 +27,15 @@ function fmt(v: number) {
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [scope, setScope] = useState<'month' | 'all'>('month');
 
   useEffect(() => {
-    api.get<DashboardData>('/dashboard')
+    api.get<DashboardData>(`/dashboard?scope=${scope}`)
       .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+      .catch(console.error);
+  }, [scope]);
 
-  if (loading || !data) {
+  if (!data) {
     return (
       <>
         <Header title="Dashboard" subtitle="Visão geral do sistema" />
@@ -52,7 +52,16 @@ export default function DashboardPage() {
 
   return (
     <>
-      <Header title="Dashboard" subtitle={`Referência: ${data.current_month}`} />
+      <Header
+        title="Dashboard"
+        subtitle={scope === 'all' ? 'Visão acumulada de todos os registros' : `Referência: ${data.current_month}`}
+        actions={(
+          <div className="toolbar" style={{ margin: 0, padding: 0 }}>
+            <button className={`btn ${scope === 'month' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setScope('month')}>Mês</button>
+            <button className={`btn ${scope === 'all' ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => setScope('all')}>Total</button>
+          </div>
+        )}
+      />
 
       <div className="kpi-grid">
         <div className="kpi-card blue">
@@ -69,7 +78,7 @@ export default function DashboardPage() {
 
         <div className="kpi-card green">
           <div className="kpi-icon green"><DollarSign size={20} /></div>
-          <div className="kpi-label">Recebido este mês</div>
+          <div className="kpi-label">{scope === 'all' ? 'Recebido total' : 'Recebido este mês'}</div>
           <div className="kpi-value" style={{ color: 'var(--success)' }}>{fmt(data.financial.paid_this_month)}</div>
           <div className="kpi-sub">{data.financial.paid_count} faturas pagas</div>
         </div>
@@ -92,7 +101,7 @@ export default function DashboardPage() {
           <div className="kpi-icon cyan"><ClipboardCheck size={20} /></div>
           <div className="kpi-label">Leituras Pendentes</div>
           <div className="kpi-value">{data.readings.pending_approval}</div>
-          <div className="kpi-sub">{data.readings.this_month} leituras este mês</div>
+          <div className="kpi-sub">{data.readings.this_month} leituras {scope === 'all' ? 'no total' : 'este mês'}</div>
         </div>
 
         <div className="kpi-card blue">

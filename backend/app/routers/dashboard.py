@@ -19,6 +19,7 @@ router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 @router.get("")
 async def get_dashboard(
+    scope: str = "month",
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -43,6 +44,12 @@ async def get_dashboard(
     c = customers_result.one()
 
     # Faturas
+    paid_condition = Invoice.status == "paid"
+    readings_condition = True
+    if scope != "all":
+        paid_condition = paid_condition & (Invoice.paid_date >= month_start) & (Invoice.paid_date < next_month_start)
+        readings_condition = func.to_char(Reading.created_at, "YYYY-MM") == current_month
+
     invoices_result = await db.execute(
         select(
             func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
@@ -50,21 +57,13 @@ async def get_dashboard(
                 (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < date.today()),
                 Invoice.amount,
             ), else_=0)), 0),
-            func.coalesce(func.sum(case(
-                (
-                    (Invoice.status == "paid")
-                    & (Invoice.paid_date >= month_start)
-                    & (Invoice.paid_date < next_month_start),
-                    Invoice.amount,
-                ),
-                else_=0,
-            )), 0),
+            func.coalesce(func.sum(case((paid_condition, Invoice.amount), else_=0)), 0),
             func.sum(case((Invoice.status == "pending", 1), else_=0)),
             func.sum(case((
                 (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < date.today()),
                 1,
             ), else_=0)),
-            func.sum(case((Invoice.status == "paid", 1), else_=0)),
+            func.sum(case((paid_condition, 1), else_=0)),
         )
     )
     inv = invoices_result.one()
@@ -77,9 +76,7 @@ async def get_dashboard(
 
     # Leituras do mês
     readings_month = await db.execute(
-        select(func.count(Reading.id)).where(
-            func.to_char(Reading.created_at, "YYYY-MM") == current_month
-        )
+        select(func.count(Reading.id)).where(readings_condition)
     )
     month_readings = readings_month.scalar() or 0
 
@@ -114,4 +111,5 @@ async def get_dashboard(
             "this_month": month_readings,
         },
         "current_month": current_month,
+        "scope": "all" if scope == "all" else "month",
     }

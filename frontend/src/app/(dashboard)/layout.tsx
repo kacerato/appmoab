@@ -27,7 +27,8 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
       ].forEach(route => router.prefetch(route));
 
       const warmData = () => api.prefetch([
-        '/dashboard',
+        '/dashboard?scope=month',
+        '/dashboard?scope=all',
         '/customers?per_page=1000',
         '/hydrometers',
         '/readings?status=pending&per_page=50',

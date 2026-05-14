@@ -32,6 +32,7 @@ openai==1.82.0
 # File handling
 python-magic==0.4.27
 Pillow==11.2.1
+pypdf==5.5.0
 
 # Date/Time
 python-dateutil==2.9.0
