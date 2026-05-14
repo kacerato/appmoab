@@ -16,6 +16,7 @@ import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
+import { formatMeterReading } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
 
 type ActiveTab = 'home' | 'tasks' | 'create' | 'history' | 'profile';
@@ -379,7 +380,7 @@ function HistoryCard({ item }: { item: ReadingItem }) {
         <StatusBadge status={item.status} />
       </View>
       <Text style={styles.locationText}>
-        Leitura {(item.current_value || 0).toFixed(2)} m3 - Consumo {(item.consumption || 0).toFixed(2)} m3
+        Leitura {formatMeterReading(item.current_value || 0)} m3 - Consumo {formatMeterReading(item.consumption || 0)} m3
       </Text>
     </View>
   );

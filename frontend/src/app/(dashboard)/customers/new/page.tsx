@@ -184,7 +184,7 @@ export default function NewCustomerPage() {
             <div className="form-grid">
               <div className="form-group">
                 <label className="form-label">Última leitura cadastrada</label>
-                <input className="form-input" type="number" step="0.01" min="0" value={form.hydrometer_initial_reading} onChange={e => set('hydrometer_initial_reading', parseFloat(e.target.value) || 0)} />
+                <input className="form-input" type="number" step="0.001" min="0" value={form.hydrometer_initial_reading} onChange={e => set('hydrometer_initial_reading', parseFloat(e.target.value) || 0)} />
               </div>
               <div className="form-group">
                 <label className="form-label">Dígitos vermelhos</label>

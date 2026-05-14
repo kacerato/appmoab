@@ -11,6 +11,7 @@ import {
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
+import { formatMeterReading, parseMeterReadingInput } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
 
 interface OCRData {
@@ -59,6 +60,11 @@ export default function OCRResultScreen() {
   const [readingId, setReadingId] = useState('');
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
 
+  const normalizedCurrentValue = useMemo(
+    () => parseMeterReadingInput(currentValue, selectedRedDigits),
+    [currentValue, selectedRedDigits],
+  );
+
   useEffect(() => {
     setLoading(false);
     api.post<VisionVerdict>('/hydrometers/vision-verdict', { photo_base64: photoBase64 })
@@ -67,7 +73,7 @@ export default function OCRResultScreen() {
   }, [photoBase64]);
 
   const confirmReading = async () => {
-    if (!currentValue) return;
+    if (normalizedCurrentValue === null) return;
     setSubmitting(true);
     try {
       const result = await api.post<OCRData>('/readings', {
@@ -76,7 +82,7 @@ export default function OCRResultScreen() {
         latitude,
         longitude,
         captured_at: capturedAt,
-        current_value: parseFloat(currentValue),
+        current_value: normalizedCurrentValue,
         confirmed_code: hydrometerCode || null,
       });
       setOcrData(result);
@@ -88,7 +94,7 @@ export default function OCRResultScreen() {
         predicted_value: verdict?.predicted_value || null,
         confidence: verdict?.confidence || null,
         confirmed_code: hydrometerCode || null,
-        confirmed_value: parseFloat(currentValue),
+        confirmed_value: normalizedCurrentValue,
         hydrometer_id: hydrometerId,
         red_digits: selectedRedDigits,
         black_digits: blackDigits || verdict?.black_digits || null,
@@ -104,7 +110,7 @@ export default function OCRResultScreen() {
     }
   };
 
-  const consumption = currentValue ? Math.max(0, parseFloat(currentValue) - lastReading) : 0;
+  const consumption = normalizedCurrentValue !== null ? Math.max(0, normalizedCurrentValue - lastReading) : 0;
   const locationLabel = useMemo(() => {
     if (latitude && longitude) {
       return `${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
@@ -145,8 +151,8 @@ export default function OCRResultScreen() {
           <View style={shared.card}>
             <Text style={shared.sectionTitle}>Leitura digitada</Text>
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Metric label="Anterior" value={`${lastReading.toFixed(2)} m³`} />
-              <Metric label="Consumo" value={`${consumption.toFixed(2)} m³`} accent />
+              <Metric label="Anterior" value={`${formatMeterReading(lastReading)} m³`} />
+              <Metric label="Consumo" value={`${formatMeterReading(consumption)} m³`} accent />
             </View>
           </View>
 
@@ -157,21 +163,24 @@ export default function OCRResultScreen() {
               <RedDigitOption value={2} selected={selectedRedDigits === 2} onPress={() => setSelectedRedDigits(2)} />
               <RedDigitOption value={3} selected={selectedRedDigits === 3} onPress={() => setSelectedRedDigits(3)} />
             </View>
-            <Text style={shared.label}>Leitura atual (m³)</Text>
+            <Text style={shared.label}>Leitura atual do visor</Text>
             <TextInput
               style={[shared.input, { fontSize: 24, fontWeight: '800', textAlign: 'center', marginBottom: 16 }]}
               value={currentValue}
               onChangeText={setCurrentValue}
               keyboardType="decimal-pad"
-              placeholder="0.00"
+              placeholder="Ex: 0013440"
               placeholderTextColor={colors.textMuted}
             />
+            <Text style={{ color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: -8 }}>
+              Interpretado como {formatMeterReading(normalizedCurrentValue)} m³ com {selectedRedDigits} dígitos vermelhos.
+            </Text>
           </View>
 
           <TouchableOpacity
-            style={[shared.btnPrimary, submitting && { opacity: 0.5 }, !currentValue && { opacity: 0.45 }]}
+            style={[shared.btnPrimary, submitting && { opacity: 0.5 }, normalizedCurrentValue === null && { opacity: 0.45 }]}
             onPress={confirmReading}
-            disabled={submitting || !currentValue}
+            disabled={submitting || normalizedCurrentValue === null}
           >
             {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>Confirmar e enviar</Text>}
           </TouchableOpacity>

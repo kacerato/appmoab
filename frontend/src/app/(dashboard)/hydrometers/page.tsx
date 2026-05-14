@@ -329,7 +329,7 @@ export default function HydrometersPage() {
 
               <div className="form-group" style={{ marginBottom: 24 }}>
                 <label className="form-label">Leitura Inicial (m³)</label>
-                <input className="form-input" type="number" step="0.01" min="0" value={form.initial_reading} onChange={e => setForm({ ...form, initial_reading: parseFloat(e.target.value) })} required />
+                <input className="form-input" type="number" step="0.001" min="0" value={form.initial_reading} onChange={e => setForm({ ...form, initial_reading: parseFloat(e.target.value) })} required />
               </div>
 
               <div className="modal-footer">
@@ -358,7 +358,7 @@ export default function HydrometersPage() {
                 </div>
                 <div className="form-group">
                   <label className="form-label">Última leitura base</label>
-                  <input className="form-input" type="number" step="0.01" min="0" value={editing.last_reading_value} onChange={e => setEditing({ ...editing, last_reading_value: parseFloat(e.target.value) || 0 })} />
+                  <input className="form-input" type="number" step="0.001" min="0" value={editing.last_reading_value} onChange={e => setEditing({ ...editing, last_reading_value: parseFloat(e.target.value) || 0 })} />
                 </div>
               </div>
               <div className="form-grid" style={{ marginBottom: 16 }}>

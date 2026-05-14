@@ -402,7 +402,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
               </div>
               <div className="form-group" style={{ marginBottom: 16 }}>
                 <label className="form-label">Consumo associado (m³)</label>
-                <input className="form-input" type="number" step="0.01" min="0" value={invoiceForm.consumption_m3} onChange={e => setInvoiceForm({ ...invoiceForm, consumption_m3: e.target.value })} placeholder="Opcional" />
+                <input className="form-input" type="number" step="0.001" min="0" value={invoiceForm.consumption_m3} onChange={e => setInvoiceForm({ ...invoiceForm, consumption_m3: e.target.value })} placeholder="Opcional" />
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
                   <input type="checkbox" checked={invoiceForm.auto_amount} onChange={e => setInvoiceForm({ ...invoiceForm, auto_amount: e.target.checked })} />
                   Calcular valor automaticamente pela tabela quando houver consumo
@@ -468,7 +468,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             <form onSubmit={handleHydrometerAdjust}>
               <div className="form-group" style={{ marginBottom: 24 }}>
                 <label className="form-label">Leitura atual do hidrômetro (m³)</label>
-                <input className="form-input" type="number" step="0.01" min="0" value={adjustingHydrometerValue} onChange={e => setAdjustingHydrometerValue(e.target.value)} required />
+                <input className="form-input" type="number" step="0.001" min="0" value={adjustingHydrometerValue} onChange={e => setAdjustingHydrometerValue(e.target.value)} required />
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-ghost" onClick={() => setAdjustingHydrometerId(null)}>Cancelar</button>

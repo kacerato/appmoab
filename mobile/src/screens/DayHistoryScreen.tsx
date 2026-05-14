@@ -5,6 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useFeedback } from '../lib/feedback';
+import { formatMeterReading } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
 
 interface ReadingItem {
@@ -99,7 +100,7 @@ export default function DayHistoryScreen() {
                 </View>
 
                 <Text style={styles.valueLine}>
-                  Leitura {item.current_value.toFixed(2)} m³ • Consumo {item.consumption.toFixed(2)} m³
+                  Leitura {formatMeterReading(item.current_value)} m³ • Consumo {formatMeterReading(item.consumption)} m³
                 </Text>
               </View>
             )}
