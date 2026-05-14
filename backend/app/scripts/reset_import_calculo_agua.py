@@ -6,6 +6,8 @@ Uso:
 
 Reseta somente a base operacional: clientes, hidrometros, leituras, faturas,
 notificacoes e anexos. Preserva usuarios, tarifas, configuracoes e deducoes.
+Importa apenas os clientes da tabela principal de leituras, sem adicionar
+clientes antigos encontrados apenas no bloco de status.
 """
 
 from __future__ import annotations
@@ -221,23 +223,11 @@ async def import_customers(customers: list[ImportedCustomer], dry_run: bool) -> 
             await db.commit()
 
 
-def merge_status(readings: list[ImportedCustomer], statuses: dict[str, str]) -> list[ImportedCustomer]:
-    seen = {_name_key(item.name) for item in readings}
+def apply_status_to_readings(readings: list[ImportedCustomer], statuses: dict[str, str]) -> list[ImportedCustomer]:
     merged = []
     for item in readings:
         item.status = statuses.get(_name_key(item.name), item.status)
         merged.append(item)
-    for name_upper, status in statuses.items():
-        if name_upper not in seen:
-            merged.append(
-                ImportedCustomer(
-                    name=name_upper.title(),
-                    previous_reading=0.0,
-                    current_reading=0.0,
-                    consumption=0.0,
-                    status=status,
-                )
-            )
     return merged
 
 
@@ -256,10 +246,9 @@ async def main() -> None:
     text = extract_text(args.pdf)
     readings = parse_latest_readings(text)
     statuses = parse_status_block(text)
-    customers = merge_status(readings, statuses)
+    customers = apply_status_to_readings(readings, statuses)
 
-    print(f"Clientes com leitura na tabela mais recente: {len(readings)}")
-    print(f"Clientes totais apos mesclar status: {len(customers)}")
+    print(f"Clientes importados da tabela principal: {len(customers)}")
     for item in customers[:40]:
         print(f"- {item.name} | status={item.status} | anterior={item.previous_reading} | atual={item.current_reading}")
 

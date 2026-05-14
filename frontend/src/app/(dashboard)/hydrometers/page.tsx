@@ -128,6 +128,11 @@ export default function HydrometersPage() {
     h.code.toLowerCase().includes(search.toLowerCase()) ||
     h.customer?.name.toLowerCase().includes(search.toLowerCase())
   );
+  const activeCount = items.filter(h => h.is_active).length;
+  const inactiveCount = items.length - activeCount;
+  const countSubtitle = search.trim()
+    ? `${filteredItems.length} encontrados de ${items.length} medidores · ${activeCount} ativos · ${inactiveCount} inativos`
+    : `${items.length} medidores · ${activeCount} ativos · ${inactiveCount} inativos`;
 
   const downloadQr = async (hydrometer: Hydrometer) => {
     try {
@@ -179,7 +184,7 @@ export default function HydrometersPage() {
 
   return (
     <>
-      <Header title="Hidrômetros" subtitle={`${items.length} medidores cadastrados`} />
+      <Header title="Hidrômetros" subtitle={countSubtitle} />
 
       <div className="toolbar">
         <div className="search-box">
