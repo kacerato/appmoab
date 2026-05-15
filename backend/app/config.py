@@ -44,8 +44,8 @@ class Settings(BaseSettings):
         default="http://evolution-api:8080",
         validation_alias=AliasChoices("EVOLUTION_API_URL", "WHATSAPP_SERVICE_URL"),
     )
-    evolution_api_key: str = "appmoab-secret-key-123"
-    evolution_instance_name: str = "appmoab"
+    evolution_api_key: str = "appmoab-secret-123"
+    evolution_instance_name: str = "AquaMoab"
 
     whatsapp_token: str = ""
     whatsapp_phone_id: str = ""

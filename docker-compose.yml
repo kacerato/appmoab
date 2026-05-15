@@ -53,7 +53,7 @@ services:
       - CORS_CREDENTIALS=true
       - LOG_LEVEL=ERROR
       - AUTHENTICATION_TYPE=apikey
-      - AUTHENTICATION_API_KEY=appmoab-secret-key-123  # Senha para seu Python usar a API
+      - AUTHENTICATION_API_KEY=appmoab-secret-123  # Senha para seu Python usar a API
       - REDIS_ENABLED=true
       - REDIS_URI=redis://redis:6379/1
       - DATABASE_ENABLED=false
