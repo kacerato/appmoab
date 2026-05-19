@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import {
   LayoutDashboard, Users, Droplets, ClipboardCheck, FileText,
-  DollarSign, Settings, Bell, LogOut, ChevronRight
+  DollarSign, Settings, Bell, LogOut, ChevronRight, MessagesSquare
 } from 'lucide-react';
 import { LucideIcon } from 'lucide-react';
 
@@ -21,6 +21,7 @@ const NAV_ITEMS: NavItem[] = [
   { section: 'Operações' },
   { href: '/leituras', label: 'Leituras', icon: ClipboardCheck },
   { href: '/faturas', label: 'Faturas', icon: FileText },
+  { href: '/conversas', label: 'Conversas', icon: MessagesSquare },
   { section: 'Configurações' },
   { href: '/tarifas', label: 'Tarifas', icon: DollarSign },
   { href: '/notificacoes', label: 'Notificações', icon: Bell },

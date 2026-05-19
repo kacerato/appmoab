@@ -28,6 +28,24 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS installation_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 100"))
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS reconnection_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 160"))
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS cut_notice_days_after_due INTEGER NOT NULL DEFAULT 5"))
+    await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS default_due_day INTEGER NOT NULL DEFAULT 10"))
+    await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS notification_flows JSONB NOT NULL DEFAULT '{}'::jsonb"))
+
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS whatsapp_messages (
+            id UUID PRIMARY KEY,
+            customer_id UUID NULL REFERENCES customers(id) ON DELETE SET NULL,
+            phone VARCHAR(30) NOT NULL,
+            direction VARCHAR(12) NOT NULL DEFAULT 'inbound',
+            body TEXT NOT NULL,
+            external_message_id VARCHAR(255),
+            status VARCHAR(30) NOT NULL DEFAULT 'received',
+            payload JSONB,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+        )
+    """))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_whatsapp_messages_phone ON whatsapp_messages (phone)"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_whatsapp_messages_created_at ON whatsapp_messages (created_at DESC)"))
 
     await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS red_digits INTEGER"))
     await conn.execute(text("ALTER TABLE kimi_vision_memory ADD COLUMN IF NOT EXISTS black_digits INTEGER"))

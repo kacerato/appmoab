@@ -28,7 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const cachedUser = await SecureStore.getItemAsync('user');
     if (cachedUser) {
-      try { setUser(JSON.parse(cachedUser)); } catch { /* ignore */ }
+      try {
+        setUser(JSON.parse(cachedUser));
+        setLoading(false);
+      } catch { /* ignore */ }
     }
 
     try {

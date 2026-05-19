@@ -23,6 +23,7 @@ const nextConfig: NextConfig = {
       { source: "/faturas", destination: "/invoices" },
       { source: "/faturas/:id", destination: "/invoices/:id" },
       { source: "/notificacoes", destination: "/notifications" },
+      { source: "/conversas", destination: "/conversations" },
       { source: "/configuracoes", destination: "/settings" },
       { source: "/tarifas", destination: "/tariffs" },
       { source: "/painel", destination: "/dashboard" },

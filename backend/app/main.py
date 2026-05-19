@@ -21,6 +21,7 @@ from app.routers import (
     system_settings,
     tariffs,
     webhooks,
+    whatsapp_messages,
 )
 from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
@@ -94,6 +95,7 @@ app.include_router(tariffs.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(deductions.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/api")
+app.include_router(whatsapp_messages.router, prefix="/api")
 app.include_router(system_settings.router, prefix="/api")
 
 

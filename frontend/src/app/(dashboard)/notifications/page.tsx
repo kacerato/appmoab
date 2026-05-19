@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
-import { CheckCircle2, Loader2, MessageCircle, Settings2, TriangleAlert } from 'lucide-react';
+import { CheckCircle2, Loader2, MessageCircle, Send, ToggleLeft } from 'lucide-react';
 
 interface HealthData {
   status: string;
@@ -37,40 +37,66 @@ const FLOW_DEFINITIONS = [
   {
     key: 'invoice_generated',
     title: 'Fatura gerada',
-    description: 'Disparo manual pela tela de faturas, usando o telefone do cliente cadastrado.',
-    mode: 'manual',
+    description: 'Permite enviar a cobrança pela tela da fatura.',
   },
   {
-    key: 'reminder_5d',
-    title: 'Lembrete 5 dias antes',
-    description: 'Estrutura de envio automático já existe no backend e depende apenas do canal ativo.',
-    mode: 'automatic',
+    key: 'reminder_before_due',
+    title: 'Lembrete antes do vencimento',
+    description: 'Avisa o cliente alguns dias antes da data de pagamento.',
+    hasDays: true,
   },
   {
     key: 'due_today',
     title: 'Vence hoje',
-    description: 'Fluxo preparado para comunicação no dia do vencimento.',
-    mode: 'automatic',
+    description: 'Avisa o cliente no próprio dia do vencimento.',
   },
   {
-    key: 'overdue_1d',
+    key: 'overdue',
     title: 'Fatura atrasada',
-    description: 'Fluxo preparado para cobrança após o vencimento.',
-    mode: 'automatic',
+    description: 'Envia aviso quando existir cobrança em atraso.',
+    hasDays: true,
   },
   {
     key: 'payment_confirmed',
     title: 'Pagamento confirmado',
-    description: 'Template previsto para confirmação de pagamento.',
-    mode: 'automatic',
+    description: 'Confirma para o cliente quando o pagamento for registrado.',
   },
 ];
+
+interface NotificationFlowSetting {
+  enabled: boolean;
+  days?: number;
+  message?: string;
+}
+
+interface SystemSetting {
+  route_window_enabled: boolean;
+  route_window_days_before_due: number;
+  route_window_days_after_due: number;
+  daily_interest_percent: number;
+  late_fee_percent: number;
+  installation_fee_amount: number;
+  reconnection_fee_amount: number;
+  cut_notice_days_after_due: number;
+  default_due_day: number;
+  notification_flows: Record<string, NotificationFlowSetting>;
+}
+
+const DEFAULT_NOTIFICATION_FLOWS: Record<string, NotificationFlowSetting> = {
+  invoice_generated: { enabled: true, message: 'Olá, sua fatura foi gerada. Consulte o valor e o vencimento no atendimento.' },
+  reminder_before_due: { enabled: true, days: 5, message: 'Olá, sua fatura vence em breve. Evite atraso fazendo o pagamento até o vencimento.' },
+  due_today: { enabled: true, message: 'Olá, sua fatura vence hoje. Se já pagou, desconsidere esta mensagem.' },
+  overdue: { enabled: true, days: 1, message: 'Olá, identificamos uma fatura em atraso. Regularize para evitar bloqueios.' },
+  payment_confirmed: { enabled: true, message: 'Pagamento confirmado. Obrigado!' },
+};
 
 export default function NotificationsPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
   const [kimiMemory, setKimiMemory] = useState<KimiMemorySummary | null>(null);
   const [showKimiMemory, setShowKimiMemory] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [settings, setSettings] = useState<SystemSetting | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.get<HealthData>('/health')
@@ -80,6 +106,15 @@ export default function NotificationsPage() {
     api.get<KimiMemorySummary>('/hydrometers/kimi-memory/summary')
       .then(setKimiMemory)
       .catch(console.error);
+    api.get<SystemSetting>('/system-settings')
+      .then(data => setSettings({
+        ...data,
+        notification_flows: {
+          ...DEFAULT_NOTIFICATION_FLOWS,
+          ...(data.notification_flows || {}),
+        },
+      }))
+      .catch(console.error);
   }, []);
 
   const statusTone = useMemo(() => {
@@ -87,16 +122,47 @@ export default function NotificationsPage() {
       return {
         label: 'Pronto para ativação',
         color: 'var(--warning)',
-        description: 'O painel já pode ser configurado antes do número ser conectado. Quando a instância do WhatsApp estiver ativa, os fluxos passam a usar o canal automaticamente.',
+        description: 'Você pode deixar os avisos configurados. Eles só serão enviados quando o número estiver conectado.',
       };
     }
 
     return {
       label: 'Canal ativo',
       color: 'var(--success)',
-      description: 'A central está pronta para usar o WhatsApp conectado no backend.',
+      description: 'O número está conectado e pronto para enviar cobranças e avisos.',
     };
   }, [health?.whatsapp_enabled]);
+
+  const updateFlow = (key: string, patch: Partial<NotificationFlowSetting>) => {
+    setSettings(current => current ? ({
+      ...current,
+      notification_flows: {
+        ...current.notification_flows,
+        [key]: {
+          ...DEFAULT_NOTIFICATION_FLOWS[key],
+          ...(current.notification_flows[key] || {}),
+          ...patch,
+        },
+      },
+    }) : current);
+  };
+
+  const saveSettings = async () => {
+    if (!settings) return;
+    setSaving(true);
+    try {
+      const updated = await api.patch<SystemSetting>('/system-settings', settings);
+      setSettings({
+        ...updated,
+        notification_flows: {
+          ...DEFAULT_NOTIFICATION_FLOWS,
+          ...(updated.notification_flows || {}),
+        },
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <>
@@ -183,23 +249,23 @@ export default function NotificationsPage() {
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header">
-          <span className="card-title">Como o fluxo funciona hoje</span>
+          <span className="card-title">Como vai funcionar</span>
         </div>
         <div style={{ display: 'grid', gap: 12 }}>
           <FlowInfo
             icon={<CheckCircle2 size={16} />}
-            title="Cobrança manual já pronta"
-            text="Na lista e no detalhe de faturas, o sistema já usa o telefone do cadastro e informa claramente por que não conseguiu enviar, se houver falha."
+            title="Enviar pela fatura"
+            text="Abra uma fatura e envie a cobrança para o telefone cadastrado do cliente."
           />
           <FlowInfo
-            icon={<Settings2 size={16} />}
-            title="Automação preparada no backend"
-            text="Os lembretes automáticos já têm estrutura no backend. O que faltava aqui era a tela refletir isso corretamente, sem depender de .env local ou Meta Business."
+            icon={<ToggleLeft size={16} />}
+            title="Escolher avisos automáticos"
+            text="Ligue apenas os avisos que deseja usar e ajuste os dias de lembrete."
           />
           <FlowInfo
-            icon={<TriangleAlert size={16} />}
-            title="Ativação do número não bloqueia a configuração"
-            text="Você pode revisar o fluxo agora. O canal só entra em ação quando o WhatsApp estiver conectado, mas a lógica de cobrança e os gatilhos já podem ficar alinhados antes disso."
+            icon={<Send size={16} />}
+            title="Mensagens do seu jeito"
+            text="Revise o texto de cada aviso antes de salvar."
           />
         </div>
       </div>
@@ -207,6 +273,9 @@ export default function NotificationsPage() {
       <div className="card">
         <div className="card-header">
           <span className="card-title">Fluxos disponíveis</span>
+          <button className="btn btn-primary btn-sm" type="button" onClick={saveSettings} disabled={saving || !settings}>
+            {saving ? <Loader2 size={14} className="spinner" /> : null} Salvar fluxos
+          </button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {FLOW_DEFINITIONS.map(flow => (
@@ -218,17 +287,41 @@ export default function NotificationsPage() {
                 borderRadius: 'var(--radius-md)',
                 display: 'flex',
                 justifyContent: 'space-between',
-                alignItems: 'center',
+                alignItems: 'flex-start',
                 gap: 12,
               }}
             >
-              <div>
+              <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 13 }}>{flow.title}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{flow.description}</div>
+                {flow.hasDays && (
+                  <div className="form-group" style={{ marginTop: 10, maxWidth: 220 }}>
+                    <label className="form-label">Dias</label>
+                    <input
+                      className="form-input"
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={settings?.notification_flows[flow.key]?.days ?? DEFAULT_NOTIFICATION_FLOWS[flow.key].days ?? 1}
+                      onChange={e => updateFlow(flow.key, { days: parseInt(e.target.value, 10) || 1 })}
+                    />
+                  </div>
+                )}
+                <textarea
+                  className="form-input"
+                  rows={2}
+                  style={{ marginTop: 10, resize: 'vertical' }}
+                  value={settings?.notification_flows[flow.key]?.message ?? DEFAULT_NOTIFICATION_FLOWS[flow.key].message ?? ''}
+                  onChange={e => updateFlow(flow.key, { message: e.target.value })}
+                />
               </div>
-              <span className={`badge ${flow.mode === 'automatic' ? 'active' : 'pending'}`}>
-                {flow.mode === 'automatic' ? 'Automático' : 'Manual'}
-              </span>
+              <button
+                className={`btn btn-sm ${settings?.notification_flows[flow.key]?.enabled ?? true ? 'btn-primary' : 'btn-secondary'}`}
+                type="button"
+                onClick={() => updateFlow(flow.key, { enabled: !(settings?.notification_flows[flow.key]?.enabled ?? true) })}
+              >
+                {settings?.notification_flows[flow.key]?.enabled ?? true ? 'Ligado' : 'Desligado'}
+              </button>
             </div>
           ))}
         </div>

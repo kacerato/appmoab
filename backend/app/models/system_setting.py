@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, Float, Integer
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -18,6 +19,8 @@ class SystemSetting(Base):
     installation_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)
     reconnection_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=160.0)
     cut_notice_days_after_due: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    default_due_day: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    notification_flows: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

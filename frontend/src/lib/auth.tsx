@@ -40,6 +40,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (cached) {
       try {
         setUser(JSON.parse(cached));
+        setLoading(false);
       } catch {
         // Ignore malformed cached user.
       }

@@ -3,7 +3,6 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { AuthProvider, useAuth } from '@/lib/auth';
-import { api } from '@/lib/api';
 import Sidebar from '@/components/Sidebar';
 
 function ProtectedShell({ children }: { children: React.ReactNode }) {
@@ -26,25 +25,7 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
         '/configuracoes',
       ].forEach(route => router.prefetch(route));
 
-      const warmData = () => api.prefetch([
-        '/dashboard?scope=month',
-        '/dashboard?scope=all',
-        '/customers?per_page=1000',
-        '/hydrometers',
-        '/readings?status=pending&per_page=50',
-        '/invoices?page=1&per_page=20',
-        '/tariffs',
-        '/system-settings',
-        '/deductions',
-        ...(user.role === 'admin' ? ['/auth/users'] : []),
-      ]);
-
-      const idleCallback = window.requestIdleCallback;
-      if (idleCallback) {
-        idleCallback(warmData, { timeout: 2000 });
-      } else {
-        setTimeout(warmData, 500);
-      }
+      // As paginas carregam seus proprios dados. Evita disputar rede no primeiro acesso.
     }
   }, [loading, user, router]);
 

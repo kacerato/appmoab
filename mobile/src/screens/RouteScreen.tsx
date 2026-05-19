@@ -13,12 +13,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
+import * as SecureStore from 'expo-secure-store';
 import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { formatMeterReading } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
+
+const ROUTE_CACHE_KEY = 'route_screen_cache_v1';
 
 type ActiveTab = 'home' | 'tasks' | 'create' | 'history' | 'profile';
 
@@ -76,6 +79,14 @@ export default function RouteScreen() {
     navigation.navigate('Camera', { stage: 'code' });
   }, [navigation]);
 
+  const saveRouteCache = useCallback(async (nextCustomers: Customer[], nextReadings: ReadingItem[]) => {
+    await SecureStore.setItemAsync(ROUTE_CACHE_KEY, JSON.stringify({
+      customers: nextCustomers,
+      todayReadings: nextReadings,
+      savedAt: Date.now(),
+    })).catch(() => undefined);
+  }, []);
+
   const load = useCallback(async (force = false) => {
     const now = Date.now();
     if (!force && lastLoadedAt && now - lastLoadedAt < 45000) {
@@ -84,36 +95,60 @@ export default function RouteScreen() {
       return;
     }
 
-    if (!force) setLoading(true);
+    if (!force && !lastLoadedAt) setLoading(true);
     const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=100&route_scope=true');
     const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
     const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);
 
+    let nextCustomers: Customer[] | null = null;
+    let nextReadings: ReadingItem[] | null = null;
     if (customersResult.status === 'fulfilled') {
-      setCustomers((customersResult.value.items || []).filter(customer => customer.hydrometers?.length));
+      nextCustomers = (customersResult.value.items || []).filter(customer => customer.hydrometers?.length);
+      setCustomers(nextCustomers);
     } else {
       showToast('Falha ao carregar clientes', getMessage(customersResult.reason, 'Nao foi possivel buscar sua rota.'), 'error');
     }
 
     if (readingsResult.status === 'fulfilled') {
       const todayKey = new Date().toISOString().slice(0, 10);
-      setTodayReadings(
-        (readingsResult.value.items || []).filter(
-          item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey,
-        ),
+      nextReadings = (readingsResult.value.items || []).filter(
+        item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey,
       );
+      setTodayReadings(nextReadings);
     } else {
       setTodayReadings([]);
       showToast('Historico parcial', getMessage(readingsResult.reason, 'Nao foi possivel carregar as leituras de hoje.'), 'warning');
     }
 
+    if (nextCustomers && nextReadings) {
+      void saveRouteCache(nextCustomers, nextReadings);
+    }
     setLastLoadedAt(Date.now());
     setLoading(false);
     setRefreshing(false);
-  }, [lastLoadedAt, refreshing, showToast, user?.id]);
+  }, [lastLoadedAt, saveRouteCache, showToast, user?.id]);
 
   useEffect(() => {
-    void load();
+    let mounted = true;
+    const hydrate = async () => {
+      const cached = await SecureStore.getItemAsync(ROUTE_CACHE_KEY).catch(() => null);
+      if (cached && mounted) {
+        try {
+          const parsed = JSON.parse(cached) as { customers?: Customer[]; todayReadings?: ReadingItem[]; savedAt?: number };
+          setCustomers(parsed.customers || []);
+          setTodayReadings(parsed.todayReadings || []);
+          setLastLoadedAt(parsed.savedAt || Date.now());
+          setLoading(false);
+        } catch {
+          // Ignore invalid cache and load from the API.
+        }
+      }
+      if (mounted) void load(true);
+    };
+    void hydrate();
+    return () => {
+      mounted = false;
+    };
   }, [load]);
 
   const routeItems = useMemo(() => {

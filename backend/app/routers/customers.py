@@ -1,8 +1,9 @@
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, func, or_, select
+from pydantic import BaseModel, field_validator
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +21,17 @@ from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, delete_photo, save_binary_from_base64
 
 router = APIRouter(prefix="/customers", tags=["Clientes"])
+
+
+class BulkDueDayUpdate(BaseModel):
+    due_day: int
+
+    @field_validator("due_day")
+    @classmethod
+    def validate_due_day(cls, value: int) -> int:
+        if not 1 <= value <= 28:
+            raise ValueError("Dia de vencimento deve ser entre 1 e 28")
+        return value
 
 
 def _resolve_month_date(base_day: int, reference: date) -> date:
@@ -263,6 +275,23 @@ async def list_customers(
         response_items.append(response)
 
     return CustomerListResponse(items=response_items, total=total, page=page, per_page=per_page)
+
+
+@router.post("/bulk-due-day")
+async def update_all_customers_due_day(
+    data: BulkDueDayUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        update(Customer)
+        .where(Customer.status == "active")
+        .values(due_day=data.due_day, updated_at=datetime.now(timezone.utc))
+        .returning(Customer.id)
+    )
+    updated_ids = result.scalars().all()
+    await db.flush()
+    return {"updated": len(updated_ids), "due_day": data.due_day}
 
 
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)

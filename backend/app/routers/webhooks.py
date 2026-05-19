@@ -3,8 +3,14 @@ AquaMoab — Webhooks Router.
 Recebe requisições de serviços externos, como o nosso microserviço de WhatsApp.
 """
 
-from fastapi import APIRouter, Request, BackgroundTasks
+from fastapi import APIRouter, Request, BackgroundTasks, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+
+from app.database import get_db
+from app.models.customer import Customer
+from app.models.whatsapp_message import WhatsAppMessage
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +18,11 @@ router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
 
 @router.post("/whatsapp")
-async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
+async def whatsapp_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Recebe mensagens do microserviço Evolution API.
     """
@@ -46,6 +56,27 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             return {"status": "ignored", "reason": "empty or unsupported message type"}
         
         logger.info(f"Nova mensagem (Evolution API) de {phone}: {body}")
+
+        digits = "".join(char for char in phone if char.isdigit())
+        customer = None
+        if len(digits) >= 8:
+            customer_result = await db.execute(
+                select(Customer).where(Customer.phone.ilike(f"%{digits[-8:]}%")).limit(1)
+            )
+            customer = customer_result.scalar_one_or_none()
+        message_id = key.get("id") or data.get("messageId")
+
+        message = WhatsAppMessage(
+            customer_id=customer.id if customer else None,
+            phone=digits or phone,
+            direction="inbound",
+            body=body,
+            external_message_id=message_id,
+            status="received",
+            payload=payload,
+        )
+        db.add(message)
+        await db.flush()
         
         # Aqui no futuro você integrará com o Kimi (Moonshot AI)
         # background_tasks.add_task(process_whatsapp_message_with_ai, phone, body)

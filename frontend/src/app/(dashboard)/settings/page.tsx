@@ -7,8 +7,7 @@ import Header from '@/components/Header';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { BACKEND_FRAMEWORK, BUILD_REVISION, DEPLOY_TARGET, FRONTEND_FRAMEWORK, FRONTEND_VERSION } from '@/lib/app-info';
-import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, Sparkles } from 'lucide-react';
+import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, ToggleLeft } from 'lucide-react';
 
 interface Deduction {
   id: string;
@@ -44,7 +43,23 @@ interface SystemSetting {
   installation_fee_amount: number;
   reconnection_fee_amount: number;
   cut_notice_days_after_due: number;
+  default_due_day: number;
+  notification_flows: Record<string, NotificationFlowSetting>;
 }
+
+interface NotificationFlowSetting {
+  enabled: boolean;
+  days?: number;
+  message?: string;
+}
+
+const DEFAULT_NOTIFICATION_FLOWS: Record<string, NotificationFlowSetting> = {
+  invoice_generated: { enabled: true, message: 'Olá, sua fatura foi gerada. Consulte o valor e o vencimento no atendimento.' },
+  reminder_before_due: { enabled: true, days: 5, message: 'Olá, sua fatura vence em breve. Evite atraso fazendo o pagamento até o vencimento.' },
+  due_today: { enabled: true, message: 'Olá, sua fatura vence hoje. Se já pagou, desconsidere esta mensagem.' },
+  overdue: { enabled: true, days: 1, message: 'Olá, identificamos uma fatura em atraso. Regularize para evitar bloqueios.' },
+  payment_confirmed: { enabled: true, message: 'Pagamento confirmado. Obrigado!' },
+};
 
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
@@ -84,6 +99,8 @@ export default function SettingsPage() {
     installation_fee_amount: 100,
     reconnection_fee_amount: 160,
     cut_notice_days_after_due: 5,
+    default_due_day: 10,
+    notification_flows: DEFAULT_NOTIFICATION_FLOWS,
   });
   const [systemSaving, setSystemSaving] = useState(false);
   const [profileForm, setProfileForm] = useState<{
@@ -117,7 +134,13 @@ export default function SettingsPage() {
         setDeductions(deductionData.items);
         setTotal(deductionData.total);
         setHealth(healthData);
-        setSystemSettings(systemData);
+        setSystemSettings({
+          ...systemData,
+          notification_flows: {
+            ...DEFAULT_NOTIFICATION_FLOWS,
+            ...(systemData.notification_flows || {}),
+          },
+        });
         if (usersData) {
           setUsers(usersData.items);
         }
@@ -270,13 +293,6 @@ export default function SettingsPage() {
     }
   };
 
-  const systemVersion = useMemo(() => {
-    const backendVersion = health?.version || '1.0.0';
-    return backendVersion === FRONTEND_VERSION ? backendVersion : `${backendVersion} / web ${FRONTEND_VERSION}`;
-  }, [health]);
-
-  const revisionLabel = (health?.revision || BUILD_REVISION || '').slice(0, 7);
-
   const startEdit = (d: Deduction) => {
     setEditId(d.id);
     setForm({ label: d.label, amount: d.amount.toString() });
@@ -288,10 +304,51 @@ export default function SettingsPage() {
     setSystemSaving(true);
     try {
       const updated = await api.patch<SystemSetting>('/system-settings', systemSettings);
-      setSystemSettings(updated);
+      setSystemSettings({
+        ...updated,
+        notification_flows: {
+          ...DEFAULT_NOTIFICATION_FLOWS,
+          ...(updated.notification_flows || {}),
+        },
+      });
       notify('Regras atualizadas', 'Juros, multas, taxas e janela da rota foram salvos.', 'success');
     } catch (err: unknown) {
       notify('Falha ao salvar janela da rota', err instanceof Error ? err.message : 'Nao foi possivel salvar as configuracoes.', 'error');
+    } finally {
+      setSystemSaving(false);
+    }
+  };
+
+  const updateNotificationFlow = (key: string, patch: Partial<NotificationFlowSetting>) => {
+    setSystemSettings(current => ({
+      ...current,
+      notification_flows: {
+        ...current.notification_flows,
+        [key]: {
+          ...DEFAULT_NOTIFICATION_FLOWS[key],
+          ...(current.notification_flows[key] || {}),
+          ...patch,
+        },
+      },
+    }));
+  };
+
+  const handleApplyDueDayToAll = async () => {
+    const confirmed = await confirm(
+      'Alterar vencimento de todos',
+      `Deseja definir o dia ${systemSettings.default_due_day} como vencimento de todos os clientes ativos?`,
+      { confirmLabel: 'Aplicar para todos' },
+    );
+    if (!confirmed) return;
+
+    setSystemSaving(true);
+    try {
+      const result = await api.post<{ updated: number; due_day: number }>('/customers/bulk-due-day', {
+        due_day: systemSettings.default_due_day,
+      });
+      notify('Vencimentos atualizados', `${result.updated} cliente(s) ativo(s) agora vencem no dia ${result.due_day}.`, 'success');
+    } catch (err: unknown) {
+      notify('Falha ao atualizar vencimentos', err instanceof Error ? err.message : 'Nao foi possivel alterar os vencimentos.', 'error');
     } finally {
       setSystemSaving(false);
     }
@@ -336,16 +393,16 @@ export default function SettingsPage() {
         </div>
 
         <div style={{ display: 'grid', gap: 16 }}>
-          <SettingCard icon={<Database size={18} />} title="Banco de Dados" desc="Neon PostgreSQL Serverless" status="Conectado" statusColor="var(--success)" />
-          <SettingCard icon={<Key size={18} />} title="Banco Inter" desc={health?.inter_sandbox ? 'Cobrança V3 em Sandbox' : 'Cobrança V3 em Produção'} status="Configurado" statusColor="var(--success)" />
+          <SettingCard icon={<Database size={18} />} title="Dados dos clientes" desc="Cadastros, leituras e faturas disponíveis" status="Ativo" statusColor="var(--success)" />
+          <SettingCard icon={<Key size={18} />} title="Cobranças" desc={health?.inter_sandbox ? 'Modo de teste ativado' : 'Pronto para cobrança real'} status="Configurado" statusColor="var(--success)" />
           <SettingCard
             icon={<Globe size={18} />}
             title="WhatsApp"
-            desc="Evolution API conectada ao backend"
+            desc={health?.whatsapp_enabled ? 'Número pronto para envios' : 'Conecte o número para enviar mensagens'}
             status={health?.whatsapp_enabled ? 'Ativado' : 'Desativado'}
             statusColor={health?.whatsapp_enabled ? 'var(--success)' : 'var(--warning)'}
           />
-          <SettingCard icon={<Server size={18} />} title="Kimi K2.6 Vision" desc="OCR de hidrômetros e validação de consumo" status="Configurado" statusColor="var(--success)" />
+          <SettingCard icon={<Server size={18} />} title="Leitura por foto" desc="Ajuda na leitura dos hidrômetros" status="Configurado" statusColor="var(--success)" />
         </div>
       </div>
 
@@ -410,18 +467,11 @@ export default function SettingsPage() {
       </div>
 
       <div className="card" style={{ marginTop: 24 }}>
-        <div className="card-header"><span className="card-title">Informações do Sistema</span></div>
+        <div className="card-header"><span className="card-title">Status do Sistema</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Versão</span><span style={{ fontWeight: 600 }}>{systemVersion}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Backend</span><span style={{ fontWeight: 600 }}>{BACKEND_FRAMEWORK}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Frontend</span><span style={{ fontWeight: 600 }}>{FRONTEND_FRAMEWORK}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Deploy</span><span style={{ fontWeight: 600 }}>{DEPLOY_TARGET}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Revisão</span><span style={{ fontWeight: 600 }}>{revisionLabel || 'local'}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Status</span><span style={{ fontWeight: 600 }}>{health?.status || 'carregando'}</span></div>
-        </div>
-        <div className="easter-egg-note">
-          <Sparkles size={12} />
-          <span>kaceratw</span>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sistema</span><span style={{ fontWeight: 600 }}>{health?.status === 'healthy' ? 'Funcionando' : 'Verificando'}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>WhatsApp</span><span style={{ fontWeight: 600 }}>{health?.whatsapp_enabled ? 'Conectado' : 'Aguardando conexão'}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Cobrança</span><span style={{ fontWeight: 600 }}>{health?.inter_sandbox ? 'Modo teste' : 'Modo real'}</span></div>
         </div>
       </div>
 
@@ -430,6 +480,17 @@ export default function SettingsPage() {
         {user?.role === 'admin' ? (
           <>
             <form onSubmit={handleSystemSave} className="form-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+              <div className="form-group">
+                <label className="form-label">Vencimento padrão</label>
+                <input
+                  className="form-input"
+                  type="number"
+                  min={1}
+                  max={28}
+                  value={systemSettings.default_due_day}
+                  onChange={e => setSystemSettings(current => ({ ...current, default_due_day: parseInt(e.target.value, 10) || 10 }))}
+                />
+              </div>
               <div className="form-group">
                 <label className="form-label">Regra da janela</label>
                 <select
@@ -524,12 +585,27 @@ export default function SettingsPage() {
                 </button>
               </div>
             </form>
+            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, borderRadius: 'var(--radius-md)', background: 'var(--blue-50)' }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>Aplicar vencimento para todos</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Define o dia {systemSettings.default_due_day} para todos os clientes ativos.
+                </div>
+              </div>
+              <button className="btn btn-secondary btn-sm" type="button" disabled={systemSaving} onClick={handleApplyDueDayToAll}>
+                Aplicar para todos
+              </button>
+            </div>
             <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
               Quando ativada, a rota do mobile mostra clientes dentro da janela relativa ao dia de vencimento.
             </p>
           </>
         ) : (
           <div style={{ display: 'grid', gap: 8, fontSize: 13, color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Vencimento padrão</span>
+              <strong>Dia {systemSettings.default_due_day}</strong>
+            </div>
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span>Status</span>
               <strong>{systemSettings.route_window_enabled ? 'Ativada' : 'Desativada'}</strong>
