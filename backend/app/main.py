@@ -109,6 +109,5 @@ async def health_check():
         "whatsapp_enabled": settings.whatsapp_enabled,
         "payment_provider": "efi",
         "efi_sandbox": settings.efi_sandbox,
-        "inter_sandbox": settings.inter_sandbox,
         "cors_origins": settings.cors_origin_list,
     }

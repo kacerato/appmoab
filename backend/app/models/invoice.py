@@ -69,14 +69,6 @@ class Invoice(Base):
     efi_pix_qrcode: Mapped[str | None] = mapped_column(Text, nullable=True)
     efi_raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # ── Legado Inter ───────────────────────────────────────────
-    inter_codigo_solicitacao: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    inter_nosso_numero: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    inter_linha_digitavel: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    inter_codigo_barras: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    inter_pix_copia_cola: Mapped[str | None] = mapped_column(Text, nullable=True)
-    inter_raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-
     # ── PDF do Boleto ──────────────────────────────────────────
     pdf_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 

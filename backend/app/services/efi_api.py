@@ -212,8 +212,6 @@ class EfiAPIService:
     def _build_customer(self, **data) -> dict:
         digits = "".join(c for c in data["cpf_cnpj"] if c.isdigit())
         customer: dict[str, Any] = {
-            "email": data["email"] or "sem-email@appmoab.local",
-            "phone_number": "".join(c for c in (data.get("telefone") or "") if c.isdigit())[:11] or "0000000000",
             "address": {
                 "street": data["endereco"],
                 "number": data["numero"] or "S/N",
@@ -224,6 +222,11 @@ class EfiAPIService:
                 "state": data["uf"],
             },
         }
+        if data["email"]:
+            customer["email"] = data["email"]
+        phone = "".join(c for c in (data.get("telefone") or "") if c.isdigit())[:11]
+        if len(phone) >= 10:
+            customer["phone_number"] = phone
         if len(digits) == 14:
             customer["juridical_person"] = {"corporate_name": data["nome"], "cnpj": digits}
         else:

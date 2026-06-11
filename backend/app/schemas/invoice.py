@@ -34,11 +34,6 @@ class InvoiceResponse(BaseModel):
     efi_pix_qrcode: str | None = None
     paid_date: date | None
     status: str
-    inter_codigo_solicitacao: str | None
-    inter_nosso_numero: str | None
-    inter_linha_digitavel: str | None
-    inter_codigo_barras: str | None
-    inter_pix_copia_cola: str | None
     has_pdf: bool = False
     created_at: datetime
 

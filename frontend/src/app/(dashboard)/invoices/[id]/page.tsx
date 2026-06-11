@@ -27,17 +27,26 @@ interface Invoice {
   due_date: string;
   paid_date: string | null;
   status: string;
-  inter_codigo_solicitacao: string | null;
-  inter_nosso_numero: string | null;
-  inter_linha_digitavel: string | null;
-  inter_codigo_barras: string | null;
-  inter_pix_copia_cola: string | null;
+  payment_provider: string | null;
+  payment_due_date: string | null;
+  efi_charge_id: string | null;
+  efi_status: string | null;
+  efi_barcode: string | null;
+  efi_payment_url: string | null;
+  efi_pdf_url: string | null;
+  efi_pix_qrcode: string | null;
+  overdue_charges_allowed: boolean;
+  overdue_charge_blocked_reason: string | null;
   has_pdf: boolean;
   created_at: string;
 }
 
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+}
+
+function formatDateOnly(value: string | null | undefined) {
+  return value ? new Date(`${value}T00:00:00`).toLocaleDateString('pt-BR') : null;
 }
 
 export default function InvoiceDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -63,7 +72,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) {
-        notify('PDF ainda indisponível', 'O Banco Inter ainda está processando o PDF deste boleto. Aguarde alguns segundos e tente novamente.', 'warning');
+        notify('PDF ainda indisponível', 'A Efí ainda não disponibilizou o PDF desta cobrança. Tente novamente em alguns instantes.', 'warning');
         return;
       }
       const blob = await res.blob();
@@ -134,6 +143,20 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const refreshOverdue = async () => {
+    if (!inv) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(`${inv.due_date}T00:00:00`);
+    if (!inv.overdue_charges_allowed) {
+      notify('Atraso sem multa', inv.overdue_charge_blocked_reason || 'Esta fatura não permite cobrança de multa/juros por atraso operacional de leitura.', 'warning');
+      return;
+    }
+    if (due >= today) {
+      const confirmed = await confirm('Fatura em dia', 'Você tem certeza? Essa fatura ainda está dentro do prazo e não deve receber multa ou juros.', {
+        confirmLabel: 'Recalcular sem multa',
+      });
+      if (!confirmed) return;
+    }
     const value = await prompt('Atualizar atraso', 'Informe a quantidade de dias em atraso. Deixe vazio para usar a data de hoje.', {
       confirmLabel: 'Atualizar',
       placeholder: 'Ex: 12',
@@ -207,9 +230,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       await api.post(`/invoices/${id}/emit-boleto`);
       const updated = await api.get<Invoice>(`/invoices/${id}`);
       setInv(updated);
-      notify('Boleto emitido', 'O Banco Inter gerou a cobrança com sucesso.', 'success');
+      notify('Cobrança emitida', 'A Efí gerou a cobrança com sucesso.', 'success');
     } catch (e: unknown) {
-      notify('Falha ao emitir boleto', e instanceof Error ? e.message : 'Erro ao emitir boleto no Banco Inter.', 'error');
+      notify('Falha ao emitir cobrança', e instanceof Error ? e.message : 'Erro ao emitir cobrança na Efí.', 'error');
     } finally {
       setActionLoading(null);
     }
@@ -238,9 +261,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     <>
       <Header title={`Fatura ${inv.reference_month}`} subtitle={inv.customer_name} actions={
         <div style={{ display: 'flex', gap: 8 }}>
-          {!inv.inter_codigo_solicitacao && (
+          {!inv.efi_charge_id && !inv.efi_payment_url && (
             <button className="btn btn-primary btn-sm" onClick={emitBoleto} disabled={actionLoading === 'boleto'}>
-              {actionLoading === 'boleto' ? <Loader2 size={14} className="spinner" /> : 'Emitir Boleto Inter'}
+              {actionLoading === 'boleto' ? <Loader2 size={14} className="spinner" /> : 'Emitir cobrança Efí'}
             </button>
           )}
           {['pending', 'sent', 'overdue'].includes(inv.status) && (
@@ -253,7 +276,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
               {actionLoading === 'amount' ? <Loader2 size={14} className="spinner" /> : <Pencil size={14} />} Valor
             </button>
           )}
-          {['pending', 'sent', 'overdue'].includes(inv.status) && (
+          {['pending', 'sent', 'overdue'].includes(inv.status) && inv.overdue_charges_allowed && new Date(`${inv.due_date}T00:00:00`) < new Date(new Date().toDateString()) && (
             <button className="btn btn-secondary btn-sm" onClick={refreshOverdue} disabled={actionLoading === 'overdue'}>
               {actionLoading === 'overdue' ? <Loader2 size={14} className="spinner" /> : <Calculator size={14} />} Atualizar atraso
             </button>
@@ -273,7 +296,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
               {actionLoading === 'reopen' ? <Loader2 size={14} className="spinner" /> : <RotateCcw size={14} />} Reabrir
             </button>
           )}
-          {(inv.has_pdf || inv.inter_codigo_solicitacao) && (
+          {(inv.has_pdf || inv.efi_pdf_url) && (
             <button className="btn btn-secondary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>
           )}
           {['pending', 'sent'].includes(inv.status) && <button className="btn btn-danger btn-sm" onClick={cancelInvoice}><Ban size={14} /> Cancelar</button>}
@@ -302,7 +325,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         </div>
         <div className="kpi-card blue">
           <div className="kpi-label">Vencimento</div>
-          <div style={{ fontWeight: 700, fontSize: 15 }}>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{formatDateOnly(inv.due_date)}</div>
         </div>
         <div className="kpi-card orange">
           <div className="kpi-label">Status</div>
@@ -312,31 +335,45 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">
-          <div className="card-header"><span className="card-title">Dados do Boleto</span></div>
+          <div className="card-header"><span className="card-title">Dados da Efí</span></div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14, fontSize: 13 }}>
-            <Field label="Nosso Número" value={inv.inter_nosso_numero} />
-            <Field label="Cód. Solicitação" value={inv.inter_codigo_solicitacao} />
-            {inv.inter_linha_digitavel && (
+            <Field label="ID da cobrança" value={inv.efi_charge_id} />
+            <Field label="Status Efí" value={inv.efi_status} />
+            <Field label="Vencimento na Efí" value={formatDateOnly(inv.payment_due_date)} />
+            {inv.efi_payment_url && (
               <div>
-                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>Linha Digitável</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>Link de pagamento</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <code style={{ fontSize: 12, color: 'var(--text-primary)', flex: 1, wordBreak: 'break-all', background: 'var(--navy-900)', padding: '6px 10px', borderRadius: 'var(--radius-sm)' }}>
-                    {inv.inter_linha_digitavel}
+                    {inv.efi_payment_url}
                   </code>
-                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => copyToClipboard(inv.inter_linha_digitavel!)}>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => copyToClipboard(inv.efi_payment_url!)}>
                     <Copy size={13} />
                   </button>
                 </div>
               </div>
             )}
-            {inv.inter_pix_copia_cola && (
+            {inv.efi_barcode && (
+              <div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>Linha Digitável</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <code style={{ fontSize: 12, color: 'var(--text-primary)', flex: 1, wordBreak: 'break-all', background: 'var(--navy-900)', padding: '6px 10px', borderRadius: 'var(--radius-sm)' }}>
+                    {inv.efi_barcode}
+                  </code>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => copyToClipboard(inv.efi_barcode!)}>
+                    <Copy size={13} />
+                  </button>
+                </div>
+              </div>
+            )}
+            {inv.efi_pix_qrcode && (
               <div>
                 <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 4 }}>Pix Copia e Cola</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   <code style={{ fontSize: 11, color: 'var(--text-secondary)', flex: 1, wordBreak: 'break-all', background: 'var(--navy-900)', padding: '6px 10px', borderRadius: 'var(--radius-sm)', maxHeight: 60, overflow: 'hidden' }}>
-                    {inv.inter_pix_copia_cola}
+                    {inv.efi_pix_qrcode}
                   </code>
-                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => copyToClipboard(inv.inter_pix_copia_cola!)}>
+                  <button className="btn btn-ghost btn-sm btn-icon" onClick={() => copyToClipboard(inv.efi_pix_qrcode!)}>
                     <Copy size={13} />
                   </button>
                 </div>
@@ -355,8 +392,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
             <Field label="Valor original" value={fmt(inv.original_amount ?? inv.amount)} />
             <Field label="Ajuste manual" value={fmt(inv.custom_adjustment_amount || 0)} />
             <Field label="Multa / juros" value={`${fmt(inv.late_fee_amount || 0)} / ${fmt(inv.interest_amount || 0)} (${inv.days_overdue_charged || 0} dia(s))`} />
+            <Field label="Regra de atraso" value={inv.overdue_charges_allowed ? 'Multa e juros permitidos conforme configuração' : inv.overdue_charge_blocked_reason} />
             <Field label="Motivo do ajuste" value={inv.adjustment_reason || null} />
-            <Field label="Data Pagamento" value={inv.paid_date ? new Date(inv.paid_date).toLocaleDateString('pt-BR') : 'Não pago'} />
+            <Field label="Data Pagamento" value={formatDateOnly(inv.paid_date) || 'Não pago'} />
             <Field label="Emitida em" value={new Date(inv.created_at).toLocaleString('pt-BR')} />
           </div>
         </div>

@@ -173,7 +173,6 @@ async def _generate_fixed_async():
                     mensagem=f"Taxa fixa mensal - Ref: {ref_month}",
                     multa_percentual=settings.late_fee_percent,
                     juros_diario_percentual=settings.daily_interest_percent,
-                    dias_baixa_apos_vencimento=settings.route_window_days_after_due,
                 )
 
                 invoice.payment_provider = "efi"
@@ -185,9 +184,6 @@ async def _generate_fixed_async():
                 invoice.efi_pdf_url = boleto.get("pdf_url")
                 invoice.efi_pix_qrcode = boleto.get("pix_qrcode")
                 invoice.efi_raw_response = boleto.get("raw")
-                invoice.inter_codigo_solicitacao = invoice.efi_charge_id
-                invoice.inter_linha_digitavel = invoice.efi_barcode
-                invoice.inter_pix_copia_cola = invoice.efi_pix_qrcode
                 invoice.status = "sent"
 
                 if invoice.efi_pdf_url:

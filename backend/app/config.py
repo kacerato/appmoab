@@ -32,13 +32,6 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 43200
 
-    inter_client_id: str = ""
-    inter_client_secret: str = ""
-    inter_cert_path: str = ""
-    inter_key_path: str = ""
-    inter_sandbox: bool = True
-    inter_conta_corrente: str = ""
-
     efi_client_id: str = ""
     efi_client_secret: str = ""
     efi_sandbox: bool = True
@@ -88,12 +81,6 @@ class Settings(BaseSettings):
             ]
 
         return sorted(defaults | set(parsed))
-
-    @property
-    def inter_base_url(self) -> str:
-        if self.inter_sandbox:
-            return "https://cdpj-sandbox.partners.uatinter.co"
-        return "https://cdpj.bancointer.com.br"
 
     @property
     def efi_cobrancas_base_url(self) -> str:

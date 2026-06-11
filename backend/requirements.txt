@@ -14,7 +14,7 @@ python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
 
-# HTTP Client (Inter API, Kimi API)
+# HTTP Client (Efí API, Kimi API)
 httpx==0.28.1
 
 # Validation & Settings

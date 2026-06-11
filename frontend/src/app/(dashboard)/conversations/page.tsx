@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
 import { Loader2, MessageCircle } from 'lucide-react';
@@ -31,24 +31,26 @@ export default function ConversationsPage() {
   const [loading, setLoading] = useState(true);
   const [messagesLoading, setMessagesLoading] = useState(false);
 
+  const loadMessages = useCallback((phone: string) => {
+    setMessagesLoading(true);
+    api.get<WhatsAppMessage[]>(`/whatsapp/conversations/${encodeURIComponent(phone)}/messages`)
+      .then(setMessages)
+      .catch(console.error)
+      .finally(() => setMessagesLoading(false));
+  }, []);
+
   useEffect(() => {
     api.get<Conversation[]>('/whatsapp/conversations')
       .then(items => {
         setConversations(items);
-        if (items[0]) setSelectedPhone(items[0].phone);
+        if (items[0]) {
+          setSelectedPhone(items[0].phone);
+          loadMessages(items[0].phone);
+        }
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (!selectedPhone) return;
-    setMessagesLoading(true);
-    api.get<WhatsAppMessage[]>(`/whatsapp/conversations/${encodeURIComponent(selectedPhone)}/messages`)
-      .then(setMessages)
-      .catch(console.error)
-      .finally(() => setMessagesLoading(false));
-  }, [selectedPhone]);
+  }, [loadMessages]);
 
   const selected = conversations.find(item => item.phone === selectedPhone);
 
@@ -76,7 +78,10 @@ export default function ConversationsPage() {
                 <button
                   key={item.phone}
                   type="button"
-                  onClick={() => setSelectedPhone(item.phone)}
+                  onClick={() => {
+                    setSelectedPhone(item.phone);
+                    loadMessages(item.phone);
+                  }}
                   style={{
                     textAlign: 'left',
                     border: '1px solid var(--border)',

@@ -73,10 +73,6 @@ def _apply_efi_result(invoice: Invoice, result: dict, payment_due_date: date | N
     invoice.efi_pdf_url = result.get("pdf_url") or invoice.efi_pdf_url
     invoice.efi_pix_qrcode = result.get("pix_qrcode") or invoice.efi_pix_qrcode
     invoice.efi_raw_response = result.get("raw") or result
-    # Campos legados mantidos preenchidos para telas/relatorios antigos.
-    invoice.inter_codigo_solicitacao = invoice.efi_charge_id
-    invoice.inter_linha_digitavel = invoice.efi_barcode
-    invoice.inter_pix_copia_cola = invoice.efi_pix_qrcode
 
 
 async def _emit_invoice_charge(invoice: Invoice, customer: Customer, settings: SystemSetting, mensagem: str) -> dict:
@@ -98,7 +94,6 @@ async def _emit_invoice_charge(invoice: Invoice, customer: Customer, settings: S
         mensagem=mensagem,
         multa_percentual=settings.late_fee_percent if invoice.overdue_charges_allowed else 0.0,
         juros_diario_percentual=settings.daily_interest_percent if invoice.overdue_charges_allowed else 0.0,
-        dias_baixa_apos_vencimento=settings.route_window_days_after_due,
     )
     _apply_efi_result(invoice, result, payment_due_date)
     if invoice.status == "pending":

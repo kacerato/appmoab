@@ -22,7 +22,7 @@ atrasos e etc.
 =======
 
 verifique se realmente esses dados sao verdadeiro
-### API do Banco Inter (Cobrança V3)
+### API Efí Pay (Cobranças)
 
 - A API de Cobrança está na versão 3 (a V2 foi descontinuada)[](https://developers.inter.co/references/cobranca-bolepix).
     
@@ -143,7 +143,7 @@ precisa ter ods boletos salvos de cada cliente podendo baixar pdf e etc
 
 **Integrações de API Exigidas:**
 
-1. **API do Banco Inter (Cobrança V3):** Para emissão de boletos, cobranças com Pix, callbacks de pagamento e consulta de situações (VENCIDO, RECEBIDO, ATRASADO).
+1. **API Efí Pay (Cobranças):** Para emissão de boletos/Bolix, cobranças com Pix, callbacks de pagamento e consulta de status.
 2. **WhatsApp Cloud API:** Para envio de templates de mensagens automáticas de cobrança.
 3. **Kimi K2.6 (Visão Computacional):** Para análise de fotos dos hidrômetros (extração de código de identificação e valor de consumo via processamento de imagem
 

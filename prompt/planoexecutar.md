@@ -13,7 +13,7 @@ Sistema completo para gestão de clientes, leitura de hidrômetros via IA, fatur
 | **Deploy Backend**        | **Railway**                                        |
 | **Tarefas Async**         | Celery + Redis                                     |
 | **WhatsApp**              | 🔶 Código preparado, flag `WHATSAPP_ENABLED=false` |
-| **Banco Inter**           | API Cobrança V3 com mTLS                           |
+| **Efí Pay**               | API Cobranças com OAuth2                           |
 | **Kimi K2.6**             | OCR de hidrômetros                                 |
 | **Dia vencimento**        | ✅ Configurável por cliente                         |
 | **Clientes sem contador** | ✅ Também recebem boleto via Inter (R$100 fixo)     |
@@ -66,7 +66,7 @@ Tarifa aplicada sobre **todo** o consumo (não apenas excedente). Taxa mínima
 
 ## Integrações de API
 
-### Banco Inter V3 ✅
+### Efí Pay API Cobranças ✅
 
 - **Sandbox:** `https://cdpj-sandbox.partners.uatinter.co`
 - **Produção:** `https://cdpj.bancointer.com.br`
@@ -134,7 +134,7 @@ Tarifa aplicada sobre **todo** o consumo (não apenas excedente). Taxa mínima
 -  CRUD Clientes (com/sem hidrômetro, dia vencimento)
 -  CRUD Hidrômetros + CRUD Tarifas
 -  Serviço Billing (fórmula completa)
--  Serviço Inter API (Python/httpx, mTLS)
+-  Serviço Efí Pay API (Python/httpx, OAuth2)
 -  Serviço Kimi Vision (OCR)
 -  Serviço WhatsApp (preparado, flag off)
 -  Endpoints: leituras, aprovação, faturas, PDF

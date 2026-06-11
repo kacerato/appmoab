@@ -31,10 +31,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
     const initialTheme = getInitialTheme();
-    setThemeState(initialTheme);
     document.documentElement.setAttribute('data-theme', initialTheme);
+    queueMicrotask(() => {
+      setThemeState(initialTheme);
+      setMounted(true);
+    });
   }, []);
 
   const setTheme = (newTheme: Theme) => {
