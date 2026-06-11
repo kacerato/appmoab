@@ -36,6 +36,44 @@ def _build_quoted_payload(quoted: WhatsAppMessage | None, sent_text: str) -> dic
     }
 
 
+def _payload_data(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    data = payload.get("data")
+    if isinstance(data, dict):
+        return data
+    return payload
+
+
+def _extract_stored_message_object(message: WhatsAppMessage) -> dict:
+    data = _payload_data(message.payload)
+    stored_message = data.get("message")
+    if isinstance(stored_message, dict) and stored_message:
+        return stored_message
+    return {"conversation": message.body}
+
+
+def _build_evolution_quote(message: WhatsAppMessage) -> dict | None:
+    if not message.external_message_id:
+        return None
+
+    data = _payload_data(message.payload)
+    key = data.get("key") if isinstance(data.get("key"), dict) else {}
+    remote_jid = key.get("remoteJid") or f"{message.phone}@s.whatsapp.net"
+    from_me = key.get("fromMe")
+    if from_me is None:
+        from_me = message.direction == "outbound"
+
+    return {
+        "key": {
+            "id": message.external_message_id,
+            "remoteJid": remote_jid,
+            "fromMe": bool(from_me),
+        },
+        "message": _extract_stored_message_object(message),
+    }
+
+
 async def _find_customer_by_phone(db: AsyncSession, phone: str) -> Customer | None:
     suffix = _phone_suffix(phone)
     if len(suffix) < 8:
@@ -147,14 +185,18 @@ async def send_message(
         if quoted.phone != phone:
             raise HTTPException(status_code=400, detail="Mensagem citada pertence a outra conversa")
 
+    quoted_payload = _build_evolution_quote(quoted) if quoted else None
+    if quoted and not quoted_payload:
+        raise HTTPException(
+            status_code=400,
+            detail="Nao foi possivel responder nativamente essa mensagem porque ela nao tem ID do WhatsApp",
+        )
+
     sent_text = data.text
     if quoted:
-        snippet = quoted.body.strip().replace("\n", " ")
-        if len(snippet) > 180:
-            snippet = f"{snippet[:177]}..."
-        sent_text = f'Respondendo: "{snippet}"\n\n{data.text}'
+        sent_text = data.text
 
-    result = await whatsapp_service.send_text(phone, sent_text)
+    result = await whatsapp_service.send_text(phone, sent_text, quoted=quoted_payload)
     status = (result or {}).get("status") or "disabled"
     detail = (result or {}).get("error")
 
@@ -165,7 +207,11 @@ async def send_message(
         body=data.text,
         external_message_id=(result or {}).get("message_id"),
         status=status,
-        payload=_build_quoted_payload(quoted, sent_text),
+        payload={
+            **(_build_quoted_payload(quoted, sent_text) or {}),
+            "quoted": quoted_payload,
+            "evolution_response": (result or {}).get("payload"),
+        },
     )
     db.add(message)
     await db.flush()
