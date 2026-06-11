@@ -1,6 +1,6 @@
 # AquaMoab - Sistema de Gestao de Distribuicao de Agua
 
-Sistema completo para gestao de clientes, leitura de hidrometros via OCR (Kimi K2.6), faturamento automatico e geracao de boletos via Banco Inter V3.
+Sistema completo para gestao de clientes, leitura de hidrometros via OCR (Kimi K2.6), faturamento automatico e geracao de cobrancas via Efi Pay.
 
 ## Arquitetura
 
@@ -21,7 +21,7 @@ appmoab/
 | Banco | PostgreSQL (Neon Serverless) |
 | Frontend | Next.js 16, TypeScript, CSS |
 | Mobile | Expo SDK 54, React Native, TypeScript |
-| Pagamentos | Banco Inter Cobranca V3 (mTLS) |
+| Pagamentos | Efi Pay API Cobrancas |
 | OCR | Kimi K2.6 Vision (Moonshot AI) |
 | Filas | Celery + Redis |
 | Notificacoes | Evolution API (WhatsApp) |
@@ -77,10 +77,11 @@ docker-compose up -d
 | `JWT_SECRET` | Segredo JWT principal |
 | `SECRET_KEY` | Alias legado aceito pelo backend |
 | `REDIS_URL` | Redis usado por Celery |
-| `INTER_CLIENT_ID` | Banco Inter |
-| `INTER_CLIENT_SECRET` | Banco Inter |
-| `INTER_CERT_PATH` | Caminho do certificado do Inter |
-| `INTER_KEY_PATH` | Caminho da chave do Inter |
+| `EFI_CLIENT_ID` | Client ID da aplicacao Efi |
+| `EFI_CLIENT_SECRET` | Client Secret da aplicacao Efi |
+| `EFI_SANDBOX` | `true` para homologacao, `false` para producao |
+| `EFI_NOTIFICATION_URL` | URL publica do webhook `/api/webhooks/efi` |
+| `EFI_BOLETO_DAYS_TO_WRITE_OFF` | Dias para baixa automatica da cobranca apos vencimento |
 | `KIMI_API_KEY` | OCR do Kimi |
 | `EVOLUTION_API_URL` | URL base da Evolution API |
 | `EVOLUTION_API_KEY` | Chave enviada no header `apikey` |
@@ -122,6 +123,6 @@ Colaborador tira foto
 -> backend envia para Kimi
 -> gestor aprova leitura
 -> sistema calcula fatura
--> Banco Inter gera boleto
+-> Efi Pay gera boleto/Bolix
 -> backend envia notificacao pelo WhatsApp
 ```

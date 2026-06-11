@@ -19,7 +19,8 @@ interface Invoice {
   status: string;
   reference_month: string;
   has_pdf: boolean;
-  inter_linha_digitavel: string;
+  efi_pdf_url: string | null;
+  efi_payment_url: string | null;
 }
 
 interface ListRes {
@@ -38,6 +39,10 @@ interface WhatsAppDispatchResult {
 
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
+}
+
+function formatDateOnly(value: string | null | undefined) {
+  return value ? new Date(`${value}T00:00:00`).toLocaleDateString('pt-BR') : '';
 }
 
 export default function InvoicesPage() {
@@ -159,7 +164,7 @@ export default function InvoicesPage() {
                   <td>{inv.reference_month}</td>
                   <td>{inv.consumption_m3.toFixed(2)} m³</td>
                   <td style={{ fontWeight: 700 }}>{fmt(inv.amount)}</td>
-                  <td>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</td>
+                  <td>{formatDateOnly(inv.due_date)}</td>
                   <td><span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span></td>
                   <td>
                     <div style={{ display: 'flex', gap: 8 }}>
@@ -168,7 +173,7 @@ export default function InvoicesPage() {
                           {sendingId === inv.id ? <Loader2 size={14} className="spinner" /> : <MessageCircleMore size={14} />}
                         </button>
                       )}
-                      {inv.has_pdf && (
+                      {(inv.has_pdf || inv.efi_pdf_url) && (
                         <button className="btn btn-ghost btn-icon btn-sm" onClick={(e) => downloadPdf(inv.id, e)} title="Download PDF">
                           <Download size={14} />
                         </button>

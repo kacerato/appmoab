@@ -19,15 +19,15 @@ import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { formatMeterReading } from '../lib/meter-reading';
+import { ROUTE_CACHE_KEY } from '../lib/route-cache';
 import { colors, shared } from '../styles/theme';
-
-const ROUTE_CACHE_KEY = 'route_screen_cache_v1';
 
 type ActiveTab = 'home' | 'tasks' | 'create' | 'history' | 'profile';
 
 interface Hydrometer {
   id: string;
   code: string;
+  qr_code_token?: string | null;
   last_reading_value: number;
   red_digits?: number | null;
   black_digits?: number | null;
@@ -200,6 +200,7 @@ export default function RouteScreen() {
       expectedCustomerName: item.customer.name,
       expectedHydrometerId: item.hydrometer.id,
       expectedHydrometerCode: item.hydrometer.code,
+      expectedQrCodeToken: item.hydrometer.qr_code_token || null,
       lastReading: item.hydrometer.last_reading_value || 0,
       redDigits: item.hydrometer.red_digits || 3,
       blackDigits: item.hydrometer.black_digits || null,

@@ -7,7 +7,8 @@ import Header from '@/components/Header';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, ToggleLeft } from 'lucide-react';
+import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, Palette } from 'lucide-react';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 interface Deduction {
   id: string;
@@ -23,7 +24,8 @@ interface HealthData {
   version: string;
   revision: string;
   whatsapp_enabled: boolean;
-  inter_sandbox: boolean;
+  payment_provider: string;
+  efi_sandbox: boolean;
 }
 
 interface ManagedUser {
@@ -319,20 +321,6 @@ export default function SettingsPage() {
     }
   };
 
-  const updateNotificationFlow = (key: string, patch: Partial<NotificationFlowSetting>) => {
-    setSystemSettings(current => ({
-      ...current,
-      notification_flows: {
-        ...current.notification_flows,
-        [key]: {
-          ...DEFAULT_NOTIFICATION_FLOWS[key],
-          ...(current.notification_flows[key] || {}),
-          ...patch,
-        },
-      },
-    }));
-  };
-
   const handleApplyDueDayToAll = async () => {
     const confirmed = await confirm(
       'Alterar vencimento de todos',
@@ -394,7 +382,7 @@ export default function SettingsPage() {
 
         <div style={{ display: 'grid', gap: 16 }}>
           <SettingCard icon={<Database size={18} />} title="Dados dos clientes" desc="Cadastros, leituras e faturas disponíveis" status="Ativo" statusColor="var(--success)" />
-          <SettingCard icon={<Key size={18} />} title="Cobranças" desc={health?.inter_sandbox ? 'Modo de teste ativado' : 'Pronto para cobrança real'} status="Configurado" statusColor="var(--success)" />
+          <SettingCard icon={<Key size={18} />} title="Cobranças Efí" desc={health?.efi_sandbox ? 'Homologação ativada' : 'Pronto para cobrança real'} status="Configurado" statusColor="var(--success)" />
           <SettingCard
             icon={<Globe size={18} />}
             title="WhatsApp"
@@ -403,6 +391,24 @@ export default function SettingsPage() {
             statusColor={health?.whatsapp_enabled ? 'var(--success)' : 'var(--warning)'}
           />
           <SettingCard icon={<Server size={18} />} title="Leitura por foto" desc="Ajuda na leitura dos hidrômetros" status="Configurado" statusColor="var(--success)" />
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 24 }}>
+        <div className="card-header">
+          <span className="card-title">Aparência</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div className="kpi-icon blue" style={{ width: 44, height: 44, flexShrink: 0 }}>
+              <Palette size={18} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Tema do Aplicativo</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Escolha entre o modo claro ou escuro</div>
+            </div>
+          </div>
+          <ThemeToggle />
         </div>
       </div>
 
@@ -471,7 +477,7 @@ export default function SettingsPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sistema</span><span style={{ fontWeight: 600 }}>{health?.status === 'healthy' ? 'Funcionando' : 'Verificando'}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>WhatsApp</span><span style={{ fontWeight: 600 }}>{health?.whatsapp_enabled ? 'Conectado' : 'Aguardando conexão'}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Cobrança</span><span style={{ fontWeight: 600 }}>{health?.inter_sandbox ? 'Modo teste' : 'Modo real'}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Cobrança</span><span style={{ fontWeight: 600 }}>{health?.efi_sandbox ? 'Efí homologação' : 'Efí produção'}</span></div>
         </div>
       </div>
 
@@ -514,7 +520,7 @@ export default function SettingsPage() {
                 />
               </div>
               <div className="form-group">
-                <label className="form-label">Manter dias depois do vencimento</label>
+                <label className="form-label">Manter na rota apos vencimento</label>
                 <input
                   className="form-input"
                   type="number"
@@ -597,7 +603,7 @@ export default function SettingsPage() {
               </button>
             </div>
             <p style={{ marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
-              Quando ativada, a rota do mobile mostra clientes dentro da janela relativa ao dia de vencimento.
+              A janela da rota controla quando o colaborador enxerga clientes para leitura. &quot;Manter na rota apos vencimento&quot; nao altera fatura, juros ou banco: apenas mantém o cliente visível para leitura por mais alguns dias. &quot;Aviso de corte apos atraso&quot; é a quantidade de dias vencidos para exibir/enviar aviso operacional de corte.
             </p>
           </>
         ) : (
