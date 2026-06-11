@@ -76,7 +76,8 @@ class WhatsAppService:
             )
             response.raise_for_status()
             logger.info(f"WhatsApp (Evolution API) enviado para {digits}")
-            return {"status": "sent"}
+            payload = response.json() if response.content else {}
+            return {"status": "sent", "message_id": payload.get("key", {}).get("id")}
         except httpx.HTTPStatusError as e:
             logger.error(f"Erro Evolution API: {e.response.text}")
             return {"status": "failed", "error": e.response.text}
@@ -139,7 +140,8 @@ class WhatsAppService:
             )
             response.raise_for_status()
             logger.info(f"Fatura PDF (Evolution API) enviada para {digits}")
-            return {"status": "sent"}
+            payload = response.json() if response.content else {}
+            return {"status": "sent", "message_id": payload.get("key", {}).get("id")}
         except httpx.HTTPStatusError as e:
             logger.error(f"Erro ao enviar doc Evolution API: {e.response.text}")
             return {"status": "failed", "error": e.response.text}

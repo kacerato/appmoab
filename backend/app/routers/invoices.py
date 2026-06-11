@@ -17,6 +17,7 @@ from app.database import get_db
 from app.models.invoice import Invoice
 from app.models.notification import Notification
 from app.models.system_setting import SystemSetting
+from app.models.whatsapp_message import WhatsAppMessage
 from app.models.customer import Customer
 from app.models.user import User
 from app.schemas.invoice import (
@@ -26,6 +27,11 @@ from app.schemas.invoice import (
 )
 from app.services.billing_policy import calculate_overdue_amount, payment_due_date_for_provider
 from app.services.efi_api import efi_service
+from app.services.notification_templates import (
+    FLOW_NOTIFICATION_TYPES,
+    notification_flow_enabled,
+    render_notification_message,
+)
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
 
@@ -99,6 +105,36 @@ async def _emit_invoice_charge(invoice: Invoice, customer: Customer, settings: S
     if invoice.status == "pending":
         invoice.status = "sent"
     return result
+
+
+def _append_payment_link(message: str, invoice: Invoice) -> str:
+    link = invoice.efi_payment_url
+    if not link:
+        return message
+    if link in message:
+        return message
+    return f"{message}\n\nLink de pagamento: {link}"
+
+
+def _record_outbound_whatsapp(
+    db: AsyncSession,
+    *,
+    invoice: Invoice,
+    phone: str,
+    body: str,
+    status: str,
+    message_id: str | None,
+    payload: dict,
+) -> None:
+    db.add(WhatsAppMessage(
+        customer_id=invoice.customer_id,
+        phone=whatsapp_service.normalize_phone(phone),
+        direction="outbound",
+        body=body,
+        external_message_id=message_id,
+        status=status,
+        payload=payload,
+    ))
 
 
 def _current_month_range() -> tuple[date, date]:
@@ -398,6 +434,41 @@ async def mark_invoice_paid(
     _recalculate_overdue_amount(invoice, settings)
     invoice.status = "paid"
     invoice.paid_date = data.paid_date or date.today()
+    if invoice.customer and invoice.customer.phone and notification_flow_enabled(settings, "payment_confirmed"):
+        message = render_notification_message(settings, "payment_confirmed", {
+            "nome": invoice.customer.name,
+            "valor": f"R$ {invoice.amount:.2f}",
+            "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
+        })
+        notification = Notification(
+            customer_id=invoice.customer_id,
+            invoice_id=invoice.id,
+            channel="whatsapp",
+            type=FLOW_NOTIFICATION_TYPES["payment_confirmed"],
+            status="queued",
+            payload={"flow_key": "payment_confirmed", "message": message},
+        )
+        db.add(notification)
+        wa_result = await whatsapp_service.send_text(invoice.customer.phone, message)
+        if wa_result:
+            notification.status = wa_result.get("status", "failed")
+            notification.external_message_id = wa_result.get("message_id")
+            notification.sent_at = datetime.now(timezone.utc)
+            if wa_result.get("error"):
+                notification.error_message = wa_result["error"][:500]
+            elif notification.status == "sent":
+                _record_outbound_whatsapp(
+                    db,
+                    invoice=invoice,
+                    phone=invoice.customer.phone,
+                    body=message,
+                    status="sent",
+                    message_id=notification.external_message_id,
+                    payload={"flow_key": "payment_confirmed", "invoice_id": str(invoice.id)},
+                )
+        else:
+            notification.status = "failed"
+            notification.error_message = "WhatsApp desabilitado ou sem canal ativo"
     await db.flush()
     await db.refresh(invoice)
     resp = InvoiceResponse.model_validate(invoice)
@@ -495,6 +566,15 @@ async def send_cut_notice(
     notification.status = "sent"
     notification.sent_at = datetime.now(timezone.utc)
     notification.external_message_id = str(wa_result.get("message_id") or "")
+    _record_outbound_whatsapp(
+        db,
+        invoice=invoice,
+        phone=invoice.customer.phone,
+        body=message,
+        status="sent",
+        message_id=notification.external_message_id,
+        payload={"flow_key": "cut_notice", "invoice_id": str(invoice.id)},
+    )
     await db.flush()
     return InvoiceWhatsAppDispatchResponse(
         invoice_id=invoice.id,
@@ -597,6 +677,21 @@ async def send_invoice_whatsapp(
             detail="O telefone do cliente está incompleto ou inválido para WhatsApp.",
         )
 
+    settings = await _get_system_settings(db)
+    if not notification_flow_enabled(settings, "invoice_generated"):
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="flow_disabled",
+            detail="O fluxo de envio de fatura está desativado nas configurações.",
+        )
+
+    base_message = render_notification_message(settings, "invoice_generated", {
+        "nome": invoice.customer.name,
+        "valor": f"R$ {invoice.amount:.2f}",
+        "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
+    })
+
     if not invoice.efi_charge_id and not invoice.efi_payment_url:
         return InvoiceWhatsAppDispatchResponse(
             invoice_id=invoice.id,
@@ -620,14 +715,21 @@ async def send_invoice_whatsapp(
 
     if not invoice.pdf_data:
         if invoice.efi_payment_url:
-            text = (
-                f"Sua fatura do mês {invoice.reference_month} está disponível: {invoice.efi_payment_url}"
-            )
+            text = _append_payment_link(base_message, invoice)
             wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
             if wa_result and wa_result.get("status") == "sent":
                 if invoice.status == "pending":
                     invoice.status = "sent"
-                    await db.flush()
+                _record_outbound_whatsapp(
+                    db,
+                    invoice=invoice,
+                    phone=invoice.customer.phone,
+                    body=text,
+                    status="sent",
+                    message_id=wa_result.get("message_id"),
+                    payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "payment_link"},
+                )
+                await db.flush()
                 return InvoiceWhatsAppDispatchResponse(
                     invoice_id=invoice.id,
                     status="sent",
@@ -645,7 +747,7 @@ async def send_invoice_whatsapp(
         phone=invoice.customer.phone,
         pdf_data=invoice.pdf_data,
         filename=f"boleto_{str(invoice.id)[:8]}.pdf",
-        caption=f"Sua fatura do mês {invoice.reference_month} já está disponível.",
+        caption=_append_payment_link(base_message, invoice),
     )
 
     if not wa_result or wa_result.get("status") != "sent":
@@ -658,7 +760,16 @@ async def send_invoice_whatsapp(
 
     if invoice.status == "pending":
         invoice.status = "sent"
-        await db.flush()
+    _record_outbound_whatsapp(
+        db,
+        invoice=invoice,
+        phone=invoice.customer.phone,
+        body=_append_payment_link(base_message, invoice),
+        status="sent",
+        message_id=(wa_result or {}).get("message_id"),
+        payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "document"},
+    )
+    await db.flush()
 
     return InvoiceWhatsAppDispatchResponse(
         invoice_id=invoice.id,
