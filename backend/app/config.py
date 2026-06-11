@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     inter_sandbox: bool = True
     inter_conta_corrente: str = ""
 
+    efi_client_id: str = ""
+    efi_client_secret: str = ""
+    efi_sandbox: bool = True
+    efi_notification_url: str = ""
+    efi_boleto_days_to_write_off: int = 30
+
     whatsapp_enabled: bool = False
     evolution_api_url: str = Field(
         default="http://evolution-api:8080",
@@ -88,6 +94,12 @@ class Settings(BaseSettings):
         if self.inter_sandbox:
             return "https://cdpj-sandbox.partners.uatinter.co"
         return "https://cdpj.bancointer.com.br"
+
+    @property
+    def efi_cobrancas_base_url(self) -> str:
+        if self.efi_sandbox:
+            return "https://cobrancas-h.api.efipay.com.br"
+        return "https://cobrancas.api.efipay.com.br"
 
     @property
     def whatsapp_base_url(self) -> str:

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { AppFeedbackProvider } from '@/components/AppFeedbackProvider';
+import { ThemeProvider } from '@/components/ThemeProvider';
 
 export const metadata: Metadata = {
   title: 'AquaMoab - Gestao de Distribuicao de Agua',
@@ -14,9 +15,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="pt-BR">
+    <html lang="pt-BR" suppressHydrationWarning>
       <body>
-        <AppFeedbackProvider>{children}</AppFeedbackProvider>
+        <ThemeProvider>
+          <AppFeedbackProvider>{children}</AppFeedbackProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

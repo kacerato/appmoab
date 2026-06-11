@@ -23,7 +23,12 @@ from app.schemas.reading import (
 )
 from app.services.kimi_vision import kimi_service
 from app.services.billing import calculate_billing
-from app.services.inter_api import inter_service
+from app.services.billing_policy import (
+    payment_due_date_for_provider,
+    resolve_invoice_due_date,
+    should_block_overdue_charges_for_late_reading,
+)
+from app.services.efi_api import efi_service
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
@@ -214,23 +219,12 @@ async def approve_reading(
 
     customer = hydrometer.customer
 
-    # Determina data de vencimento
+    # Determina data de vencimento da competencia atual.
     now = datetime.now(timezone.utc)
-    due_day = customer.due_day
-    if now.day >= due_day:
-        # Vencimento no próximo mês
-        month = now.month + 1
-        year = now.year
-        if month > 12:
-            month = 1
-            year += 1
-    else:
-        month = now.month
-        year = now.year
-
     from datetime import date
-    due_date = date(year, month, due_day)
-    ref_month = f"{year}-{month:02d}"
+    today = now.date()
+    due_date = resolve_invoice_due_date(today, customer.due_day)
+    ref_month = f"{due_date.year}-{due_date.month:02d}"
 
     if is_installation_capture:
         settings = await _get_system_settings(db)
@@ -260,47 +254,68 @@ async def approve_reading(
         charge_type=charge_type,
         status="pending",
     )
+    if should_block_overdue_charges_for_late_reading(
+        charge_type=charge_type,
+        invoice_due_date=due_date,
+        created_on=today,
+    ):
+        invoice.overdue_charges_allowed = False
+        invoice.overdue_charge_blocked_reason = (
+            "Leitura aprovada apos o vencimento da competencia. "
+            "Multa e juros bloqueados por atraso operacional de leitura."
+        )
     db.add(invoice)
     await db.flush()
     await db.refresh(invoice)
 
-    # Gera boleto no Inter
+    # Gera cobranca Efí
     try:
-        seu_numero = f"AQ-{str(invoice.id)[:8].upper()}"
-        boleto = await inter_service.emitir_cobranca(
+        settings = await _get_system_settings(db)
+        payment_due_date = payment_due_date_for_provider(invoice.due_date, today)
+        boleto = await efi_service.emitir_cobranca(
             valor=amount,
             cpf_cnpj=customer.cpf_cnpj,
             nome=customer.name,
             email=customer.email or "",
+            telefone=customer.phone,
             endereco=customer.address,
             numero=customer.number,
             bairro=customer.neighborhood,
             cidade=customer.city,
             uf=customer.state,
             cep=customer.zip_code,
-            data_vencimento=due_date,
-            seu_numero=seu_numero,
+            data_vencimento=payment_due_date,
+            seu_numero=f"AQ-{str(invoice.id)[:8].upper()}",
             mensagem=boleto_message,
+            multa_percentual=settings.late_fee_percent if invoice.overdue_charges_allowed else 0.0,
+            juros_diario_percentual=settings.daily_interest_percent if invoice.overdue_charges_allowed else 0.0,
+            dias_baixa_apos_vencimento=settings.route_window_days_after_due,
         )
 
-        invoice.inter_codigo_solicitacao = boleto.get("codigoSolicitacao")
-        invoice.inter_nosso_numero = boleto.get("nossoNumero")
-        invoice.inter_linha_digitavel = boleto.get("linhaDigitavel")
-        invoice.inter_codigo_barras = boleto.get("codigoBarras")
-        invoice.inter_pix_copia_cola = boleto.get("pixCopiaECola")
-        invoice.inter_raw_response = boleto.get("raw")
+        invoice.payment_provider = "efi"
+        invoice.payment_due_date = payment_due_date
+        invoice.efi_charge_id = boleto.get("charge_id")
+        invoice.efi_status = boleto.get("status")
+        invoice.efi_barcode = boleto.get("barcode")
+        invoice.efi_payment_url = boleto.get("payment_url")
+        invoice.efi_pdf_url = boleto.get("pdf_url")
+        invoice.efi_pix_qrcode = boleto.get("pix_qrcode")
+        invoice.efi_raw_response = boleto.get("raw")
+        invoice.inter_codigo_solicitacao = invoice.efi_charge_id
+        invoice.inter_linha_digitavel = invoice.efi_barcode
+        invoice.inter_pix_copia_cola = invoice.efi_pix_qrcode
         invoice.status = "sent"
 
         # Busca PDF
-        if boleto.get("codigoSolicitacao"):
-            pdf_data = await inter_service.buscar_pdf(boleto["codigoSolicitacao"])
+        if invoice.efi_pdf_url:
+            pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url)
             if pdf_data:
                 invoice.pdf_data = pdf_data
 
     except Exception as e:
         import logging
-        logging.getLogger(__name__).error(f"Erro ao gerar boleto: {e}")
-        # Fatura criada mas sem boleto — pode ser gerado depois
+        logging.getLogger(__name__).error(f"Erro ao gerar cobranca Efí: {e}")
+        # Fatura criada mas sem cobranca — pode ser gerada depois
 
     await db.flush()
 
@@ -313,6 +328,9 @@ async def approve_reading(
         "tariff_rate": tariff_rate,
         "charge_type": charge_type,
         "boleto_status": invoice.status,
+        "due_date": invoice.due_date.isoformat(),
+        "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
+        "overdue_charges_allowed": invoice.overdue_charges_allowed,
     }
 
 

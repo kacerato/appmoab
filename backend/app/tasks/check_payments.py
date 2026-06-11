@@ -22,37 +22,38 @@ def _run_async(coro):
 
 @celery_app.task(name="app.tasks.check_payments.check_payment_status")
 def check_payment_status():
-    """Consulta Inter por boletos RECEBIDO e atualiza status."""
+    """Consulta Efí por cobranças pagas e atualiza status."""
     _run_async(_check_payments_async())
 
 
 async def _check_payments_async():
     from app.database import async_session_factory
     from app.models.invoice import Invoice
-    from app.services.inter_api import inter_service
+    from app.services.efi_api import efi_service
     from sqlalchemy import select
 
     logger.info("Verificando pagamentos recebidos...")
 
     try:
-        cobrancas = await inter_service.consultar_situacao(["RECEBIDO"])
+        cobrancas = await efi_service.listar_cobrancas(statuses=["paid", "settled"])
 
         async with async_session_factory() as db:
             for cob in cobrancas:
-                codigo = cob.get("codigoSolicitacao")
+                codigo = str(cob.get("id") or cob.get("charge_id") or "")
                 if not codigo:
                     continue
 
                 result = await db.execute(
                     select(Invoice).where(
-                        Invoice.inter_codigo_solicitacao == codigo,
+                        Invoice.efi_charge_id == codigo,
                         Invoice.status.in_(["sent", "overdue"]),
                     )
                 )
                 invoice = result.scalar_one_or_none()
                 if invoice:
                     invoice.status = "paid"
-                    invoice.paid_date = date.today()
+                    paid_at = ((cob.get("payment") or {}).get("paid_at") or cob.get("paid_at") or "")[:10]
+                    invoice.paid_date = date.fromisoformat(paid_at) if paid_at else date.today()
                     logger.info(f"Fatura {invoice.id} marcada como PAGA")
 
             await db.commit()
@@ -101,8 +102,10 @@ async def _generate_fixed_async():
     from app.models.customer import Customer
     from app.models.invoice import Invoice
     from app.services.billing import get_fixed_rate
-    from app.services.inter_api import inter_service
+    from app.models.system_setting import SystemSetting
     from sqlalchemy import select
+    from app.services.billing_policy import payment_due_date_for_provider
+    from app.services.efi_api import efi_service
 
     logger.info("Gerando faturas fixas para clientes sem hidrômetro...")
 
@@ -119,6 +122,8 @@ async def _generate_fixed_async():
         )
         customers = result.scalars().all()
         fixed_rate = await get_fixed_rate(db)
+        settings_result = await db.execute(select(SystemSetting).where(SystemSetting.id == 1))
+        settings = settings_result.scalar_one_or_none() or SystemSetting(id=1)
 
         for customer in customers:
             # Verifica se já existe fatura do mês
@@ -139,6 +144,7 @@ async def _generate_fixed_async():
                 consumption_m3=0.0,
                 tariff_rate=0.0,
                 amount=fixed_rate,
+                original_amount=fixed_rate,
                 reference_month=ref_month,
                 due_date=due_date,
                 status="pending",
@@ -147,38 +153,50 @@ async def _generate_fixed_async():
             await db.flush()
             await db.refresh(invoice)
 
-            # Gera boleto Inter
+            # Gera cobranca Efí
             try:
-                seu_numero = f"AQ-FX-{str(invoice.id)[:8].upper()}"
-                boleto = await inter_service.emitir_cobranca(
+                payment_due_date = payment_due_date_for_provider(invoice.due_date, date.today())
+                boleto = await efi_service.emitir_cobranca(
                     valor=fixed_rate,
                     cpf_cnpj=customer.cpf_cnpj,
                     nome=customer.name,
                     email=customer.email or "",
+                    telefone=customer.phone,
                     endereco=customer.address,
                     numero=customer.number,
                     bairro=customer.neighborhood,
                     cidade=customer.city,
                     uf=customer.state,
                     cep=customer.zip_code,
-                    data_vencimento=due_date,
-                    seu_numero=seu_numero,
+                    data_vencimento=payment_due_date,
+                    seu_numero=f"AQ-FX-{str(invoice.id)[:8].upper()}",
                     mensagem=f"Taxa fixa mensal - Ref: {ref_month}",
+                    multa_percentual=settings.late_fee_percent,
+                    juros_diario_percentual=settings.daily_interest_percent,
+                    dias_baixa_apos_vencimento=settings.route_window_days_after_due,
                 )
 
-                invoice.inter_codigo_solicitacao = boleto.get("codigoSolicitacao")
-                invoice.inter_nosso_numero = boleto.get("nossoNumero")
-                invoice.inter_linha_digitavel = boleto.get("linhaDigitavel")
-                invoice.inter_codigo_barras = boleto.get("codigoBarras")
+                invoice.payment_provider = "efi"
+                invoice.payment_due_date = payment_due_date
+                invoice.efi_charge_id = boleto.get("charge_id")
+                invoice.efi_status = boleto.get("status")
+                invoice.efi_barcode = boleto.get("barcode")
+                invoice.efi_payment_url = boleto.get("payment_url")
+                invoice.efi_pdf_url = boleto.get("pdf_url")
+                invoice.efi_pix_qrcode = boleto.get("pix_qrcode")
+                invoice.efi_raw_response = boleto.get("raw")
+                invoice.inter_codigo_solicitacao = invoice.efi_charge_id
+                invoice.inter_linha_digitavel = invoice.efi_barcode
+                invoice.inter_pix_copia_cola = invoice.efi_pix_qrcode
                 invoice.status = "sent"
 
-                if boleto.get("codigoSolicitacao"):
-                    pdf = await inter_service.buscar_pdf(boleto["codigoSolicitacao"])
+                if invoice.efi_pdf_url:
+                    pdf = await efi_service.baixar_pdf(invoice.efi_pdf_url)
                     if pdf:
                         invoice.pdf_data = pdf
 
             except Exception as e:
-                logger.error(f"Erro ao gerar boleto para {customer.name}: {e}")
+                logger.error(f"Erro ao gerar cobranca Efí para {customer.name}: {e}")
 
         await db.commit()
         logger.info(f"Processados {len(customers)} clientes sem hidrômetro")

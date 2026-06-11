@@ -18,10 +18,20 @@ class InvoiceResponse(BaseModel):
     late_fee_amount: float = 0.0
     interest_amount: float = 0.0
     days_overdue_charged: int = 0
+    overdue_charges_allowed: bool = True
+    overdue_charge_blocked_reason: str | None = None
     adjustment_reason: str | None = None
     charge_type: str = "water"
     reference_month: str
     due_date: date
+    payment_provider: str | None = None
+    payment_due_date: date | None = None
+    efi_charge_id: str | None = None
+    efi_status: str | None = None
+    efi_barcode: str | None = None
+    efi_payment_url: str | None = None
+    efi_pdf_url: str | None = None
+    efi_pix_qrcode: str | None = None
     paid_date: date | None
     status: str
     inter_codigo_solicitacao: str | None

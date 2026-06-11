@@ -1,5 +1,5 @@
 """
-Modelo de Fatura — Boleto gerado via Banco Inter.
+Modelo de Fatura e cobranca.
 
 Cada fatura pode ser:
 - Vinculada a uma leitura (cliente COM hidrômetro)
@@ -40,6 +40,8 @@ class Invoice(Base):
     late_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     interest_amount: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     days_overdue_charged: Mapped[int] = mapped_column(default=0, nullable=False)
+    overdue_charges_allowed: Mapped[bool] = mapped_column(default=True, nullable=False)
+    overdue_charge_blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     adjustment_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     charge_type: Mapped[str] = mapped_column(String(30), nullable=False, default="water")
     reference_month: Mapped[str] = mapped_column(String(7), nullable=False)  # "2026-05"
@@ -56,7 +58,18 @@ class Invoice(Base):
         index=True,
     )
 
-    # ── Dados do Banco Inter ───────────────────────────────────
+    # ── Dados da Cobranca ──────────────────────────────────────
+    payment_provider: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    payment_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    efi_charge_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    efi_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    efi_barcode: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    efi_payment_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    efi_pdf_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    efi_pix_qrcode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    efi_raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # ── Legado Inter ───────────────────────────────────────────
     inter_codigo_solicitacao: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     inter_nosso_numero: Mapped[str | None] = mapped_column(String(50), nullable=True)
     inter_linha_digitavel: Mapped[str | None] = mapped_column(String(100), nullable=True)

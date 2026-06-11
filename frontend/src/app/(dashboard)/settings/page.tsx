@@ -7,7 +7,8 @@ import Header from '@/components/Header';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, ToggleLeft } from 'lucide-react';
+import { Database, Globe, Key, Server, Plus, Pencil, Trash2, Save, X, Loader2, ShieldCheck, ToggleLeft, Palette } from 'lucide-react';
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 interface Deduction {
   id: string;
@@ -403,6 +404,24 @@ export default function SettingsPage() {
             statusColor={health?.whatsapp_enabled ? 'var(--success)' : 'var(--warning)'}
           />
           <SettingCard icon={<Server size={18} />} title="Leitura por foto" desc="Ajuda na leitura dos hidrômetros" status="Configurado" statusColor="var(--success)" />
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 24 }}>
+        <div className="card-header">
+          <span className="card-title">Aparência</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div className="kpi-icon blue" style={{ width: 44, height: 44, flexShrink: 0 }}>
+              <Palette size={18} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>Tema do Aplicativo</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Escolha entre o modo claro ou escuro</div>
+            </div>
+          </div>
+          <ThemeToggle />
         </div>
       </div>
 

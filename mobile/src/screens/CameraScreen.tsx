@@ -6,7 +6,36 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useFeedback } from '../lib/feedback';
 import { api } from '../lib/api';
+import { findCachedHydrometerByQr, matchesHydrometerQr, normalizeScannedQrValue } from '../lib/route-cache';
 import { colors } from '../styles/theme';
+
+interface QrResolveResult {
+  matched: boolean;
+  hydrometer_id?: string | null;
+  hydrometer_code?: string | null;
+  customer_id?: string | null;
+  customer_name?: string | null;
+  last_reading_value?: number | null;
+  last_reading_date?: string | null;
+  red_digits?: number | null;
+  black_digits?: number | null;
+  brand?: string | null;
+  model?: string | null;
+  location_description?: string | null;
+}
+
+interface ReadingNavigationPayload {
+  hydrometerId?: string | null;
+  hydrometerCode?: string | null;
+  customerName?: string | null;
+  lastReading?: number | null;
+  redDigits?: number | null;
+  blackDigits?: number | null;
+  hydrometerBrand?: string | null;
+  hydrometerModel?: string | null;
+  locationDescription?: string | null;
+  isInstallation?: boolean;
+}
 
 export default function CameraScreen() {
   const navigation = useNavigation<any>();
@@ -18,6 +47,7 @@ export default function CameraScreen() {
     expectedCustomerName,
     expectedHydrometerId,
     expectedHydrometerCode,
+    expectedQrCodeToken,
     lastReading = 0,
     redDigits = 3,
     blackDigits = null,
@@ -34,36 +64,104 @@ export default function CameraScreen() {
   const [capturing, setCapturing] = useState(false);
   const [resolvingQr, setResolvingQr] = useState(false);
   const cameraRef = useRef<any>(null);
+  const qrScanLockRef = useRef(false);
+  const lastQrScanRef = useRef<{ value: string; at: number } | null>(null);
 
   const activeHydrometerId = hydrometerId || expectedHydrometerId;
   const activeHydrometerCode = hydrometerCode || expectedHydrometerCode;
   const activeCustomerName = customerName || expectedCustomerName;
 
+  const navigateToReading = (payload: ReadingNavigationPayload) => {
+    if (!payload.hydrometerId) {
+      showToast('Hidrometro nao localizado', 'Nao foi possivel identificar o hidrometro deste QR.', 'error');
+      return;
+    }
+
+    navigation.navigate('Camera', {
+      stage: 'reading',
+      hydrometerId: payload.hydrometerId,
+      hydrometerCode: payload.hydrometerCode || '',
+      customerName: payload.customerName || expectedCustomerName || 'Escaneamento manual',
+      lastReading: payload.lastReading ?? 0,
+      redDigits: payload.redDigits || 3,
+      blackDigits: payload.blackDigits || null,
+      hydrometerBrand: payload.hydrometerBrand || '',
+      hydrometerModel: payload.hydrometerModel || '',
+      locationDescription: payload.locationDescription || '',
+      isInstallation: Boolean(payload.isInstallation),
+    });
+  };
+
   const handleQrScanned = async ({ data }: { data: string }) => {
-    if (stage !== 'code' || resolvingQr || capturing) return;
+    if (stage !== 'code' || resolvingQr || capturing || qrScanLockRef.current) return;
+    const scannedValue = normalizeScannedQrValue(data);
+    if (!scannedValue) return;
+
+    const now = Date.now();
+    const lastScan = lastQrScanRef.current;
+    if (lastScan?.value === scannedValue && now - lastScan.at < 3500) return;
+    lastQrScanRef.current = { value: scannedValue, at: now };
+
+    qrScanLockRef.current = true;
     setResolvingQr(true);
+
     try {
-      const result = await api.post<{
-        matched: boolean;
-        hydrometer_id?: string;
-        hydrometer_code?: string;
-        customer_name?: string;
-        last_reading_value?: number;
-        last_reading_date?: string | null;
-        red_digits?: number | null;
-        black_digits?: number | null;
-        brand?: string | null;
-        model?: string | null;
-        location_description?: string | null;
-      }>('/hydrometers/resolve-qr', { qr_code_token: data });
+      const expectedHydrometer = expectedHydrometerId
+        ? { code: expectedHydrometerCode || '', qr_code_token: expectedQrCodeToken || null }
+        : null;
+
+      if (expectedHydrometer && matchesHydrometerQr(scannedValue, expectedHydrometer)) {
+        navigateToReading({
+          hydrometerId: expectedHydrometerId,
+          hydrometerCode: expectedHydrometerCode,
+          customerName: expectedCustomerName,
+          lastReading,
+          redDigits,
+          blackDigits,
+          hydrometerBrand,
+          hydrometerModel,
+          locationDescription,
+          isInstallation,
+        });
+        return;
+      }
+
+      if (expectedHydrometer && expectedQrCodeToken) {
+        showToast('QR fora da rota', 'Este QR pertence a outro hidrometro. Confira o cliente aberto antes de seguir.', 'error');
+        return;
+      }
+
+      const cachedMatch = await findCachedHydrometerByQr(scannedValue);
+      if (cachedMatch) {
+        const { customer, hydrometer } = cachedMatch;
+        navigateToReading({
+          hydrometerId: hydrometer.id,
+          hydrometerCode: hydrometer.code,
+          customerName: customer.name,
+          lastReading: hydrometer.last_reading_value ?? 0,
+          redDigits: hydrometer.red_digits || 3,
+          blackDigits: hydrometer.black_digits || null,
+          hydrometerBrand: hydrometer.brand || '',
+          hydrometerModel: hydrometer.model || '',
+          locationDescription: hydrometer.location_description || '',
+          isInstallation: !hydrometer.last_reading_date,
+        });
+        return;
+      }
+
+      const result = await api.post<QrResolveResult>('/hydrometers/resolve-qr', { qr_code_token: scannedValue });
 
       if (!result.matched || !result.hydrometer_id) {
         showToast('QR Code nao encontrado', 'Este QR nao esta vinculado a nenhum cliente ativo.', 'warning');
         return;
       }
 
-      navigation.navigate('Camera', {
-        stage: 'reading',
+      if (expectedHydrometerId && result.hydrometer_id !== expectedHydrometerId) {
+        showToast('QR fora da rota', `O QR lido pertence a ${result.customer_name || 'outro cliente'}.`, 'error');
+        return;
+      }
+
+      navigateToReading({
         hydrometerId: result.hydrometer_id,
         hydrometerCode: result.hydrometer_code,
         customerName: result.customer_name,
@@ -79,6 +177,9 @@ export default function CameraScreen() {
       showToast('Falha ao ler QR Code', error instanceof Error ? error.message : 'Nao foi possivel validar o QR.', 'error');
     } finally {
       setResolvingQr(false);
+      setTimeout(() => {
+        qrScanLockRef.current = false;
+      }, 700);
     }
   };
 
@@ -195,7 +296,7 @@ export default function CameraScreen() {
           style={styles.camera}
           ref={cameraRef}
           facing="back"
-          onBarcodeScanned={stage === 'code' ? handleQrScanned : undefined}
+          onBarcodeScanned={stage === 'code' && !resolvingQr ? handleQrScanned : undefined}
           barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
         />
 
@@ -303,8 +404,8 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   guideCode: {
-    width: 300,
-    height: 120,
+    width: 240,
+    height: 240,
   },
   guideReading: {
     width: 280,

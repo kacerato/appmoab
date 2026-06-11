@@ -24,7 +24,8 @@ from app.schemas.invoice import (
     InvoiceCreateManual, InvoiceSummary, InvoiceWhatsAppDispatchResponse,
     InvoiceAmountUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
 )
-from app.services.inter_api import inter_service
+from app.services.billing_policy import calculate_overdue_amount, payment_due_date_for_provider
+from app.services.efi_api import efi_service
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
 
@@ -44,19 +45,65 @@ async def _get_system_settings(db: AsyncSession) -> SystemSetting:
 
 def _recalculate_overdue_amount(invoice: Invoice, settings: SystemSetting, days_overdue: int | None = None) -> None:
     base_amount = invoice.original_amount if invoice.original_amount is not None else invoice.amount
-    effective_days = max(0, days_overdue if days_overdue is not None else (date.today() - invoice.due_date).days)
-    invoice.days_overdue_charged = effective_days
-    if effective_days <= 0:
-        invoice.late_fee_amount = 0.0
-        invoice.interest_amount = 0.0
-        invoice.amount = round(base_amount + invoice.custom_adjustment_amount, 2)
-        return
-
-    invoice.late_fee_amount = round(base_amount * (settings.late_fee_percent / 100), 2)
-    invoice.interest_amount = round(base_amount * (settings.daily_interest_percent / 100) * effective_days, 2)
-    invoice.amount = round(base_amount + invoice.custom_adjustment_amount + invoice.late_fee_amount + invoice.interest_amount, 2)
-    if invoice.status in ("pending", "sent"):
+    calc = calculate_overdue_amount(
+        original_amount=base_amount,
+        custom_adjustment_amount=invoice.custom_adjustment_amount,
+        due_date=invoice.due_date,
+        today=date.today(),
+        late_fee_percent=settings.late_fee_percent,
+        daily_interest_percent=settings.daily_interest_percent,
+        requested_days_overdue=days_overdue,
+        overdue_charges_allowed=invoice.overdue_charges_allowed,
+    )
+    invoice.days_overdue_charged = calc.days_overdue_charged
+    invoice.late_fee_amount = calc.late_fee_amount
+    invoice.interest_amount = calc.interest_amount
+    invoice.amount = calc.total_amount
+    if calc.is_overdue and invoice.status in ("pending", "sent"):
         invoice.status = "overdue"
+
+
+def _apply_efi_result(invoice: Invoice, result: dict, payment_due_date: date | None = None) -> None:
+    invoice.payment_provider = "efi"
+    invoice.payment_due_date = payment_due_date or invoice.payment_due_date
+    invoice.efi_charge_id = result.get("charge_id") or invoice.efi_charge_id
+    invoice.efi_status = result.get("status") or invoice.efi_status
+    invoice.efi_barcode = result.get("barcode") or invoice.efi_barcode
+    invoice.efi_payment_url = result.get("payment_url") or invoice.efi_payment_url
+    invoice.efi_pdf_url = result.get("pdf_url") or invoice.efi_pdf_url
+    invoice.efi_pix_qrcode = result.get("pix_qrcode") or invoice.efi_pix_qrcode
+    invoice.efi_raw_response = result.get("raw") or result
+    # Campos legados mantidos preenchidos para telas/relatorios antigos.
+    invoice.inter_codigo_solicitacao = invoice.efi_charge_id
+    invoice.inter_linha_digitavel = invoice.efi_barcode
+    invoice.inter_pix_copia_cola = invoice.efi_pix_qrcode
+
+
+async def _emit_invoice_charge(invoice: Invoice, customer: Customer, settings: SystemSetting, mensagem: str) -> dict:
+    payment_due_date = payment_due_date_for_provider(invoice.due_date, date.today())
+    result = await efi_service.emitir_cobranca(
+        valor=invoice.amount,
+        cpf_cnpj=customer.cpf_cnpj,
+        nome=customer.name,
+        email=customer.email or "",
+        telefone=customer.phone,
+        endereco=customer.address,
+        numero=customer.number or "S/N",
+        bairro=customer.neighborhood,
+        cidade=customer.city,
+        uf=customer.state,
+        cep=customer.zip_code,
+        data_vencimento=payment_due_date,
+        seu_numero=f"AQ-{str(invoice.id)[:8].upper()}",
+        mensagem=mensagem,
+        multa_percentual=settings.late_fee_percent if invoice.overdue_charges_allowed else 0.0,
+        juros_diario_percentual=settings.daily_interest_percent if invoice.overdue_charges_allowed else 0.0,
+        dias_baixa_apos_vencimento=settings.route_window_days_after_due,
+    )
+    _apply_efi_result(invoice, result, payment_due_date)
+    if invoice.status == "pending":
+        invoice.status = "sent"
+    return result
 
 
 def _current_month_range() -> tuple[date, date]:
@@ -184,9 +231,8 @@ async def download_pdf(
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
 
     if not invoice.pdf_data:
-        # Tenta buscar do Inter se tiver código
-        if invoice.inter_codigo_solicitacao:
-            pdf_data = await inter_service.buscar_pdf(invoice.inter_codigo_solicitacao)
+        if invoice.efi_pdf_url:
+            pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url)
             if pdf_data:
                 invoice.pdf_data = pdf_data
                 await db.flush()
@@ -228,32 +274,14 @@ async def create_manual_invoice(
     db.add(invoice)
     await db.flush()
 
-    # Opcional: já emitir o boleto no Inter
+    settings = await _get_system_settings(db)
+    # Opcional: ja emitir a cobranca na Efí
     try:
-        result = await inter_service.emitir_cobranca(
-            valor=invoice.amount,
-            cpf_cnpj=customer.cpf_cnpj,
-            nome=customer.name,
-            email=customer.email or "",
-            endereco=customer.address,
-            numero=customer.number or "S/N",
-            bairro=customer.neighborhood,
-            cidade=customer.city,
-            uf=customer.state,
-            cep=customer.zip_code,
-            data_vencimento=invoice.due_date,
-            seu_numero=str(invoice.id)[:15],
-            mensagem=f"Fatura avulsa {invoice.reference_month}"
-        )
-        invoice.inter_codigo_solicitacao = result.get("codigoSolicitacao")
-        invoice.inter_nosso_numero = result.get("nossoNumero")
-        invoice.inter_linha_digitavel = result.get("linhaDigitavel")
-        invoice.inter_codigo_barras = result.get("codigoBarras")
-        invoice.inter_pix_copia_cola = result.get("pixCopiaECola")
+        await _emit_invoice_charge(invoice, customer, settings, f"Fatura avulsa {invoice.reference_month}")
         await db.flush()
     except Exception as e:
         import logging
-        logging.getLogger(__name__).warning(f"Não foi possível emitir boleto Inter automático: {e}")
+        logging.getLogger(__name__).warning(f"Nao foi possivel emitir cobranca Efí automatica: {e}")
 
     await db.refresh(invoice)
     
@@ -331,6 +359,18 @@ async def refresh_invoice_overdue_amount(
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
     if invoice.status == "paid":
         raise HTTPException(status_code=400, detail="Fatura ja paga")
+    if invoice.due_date >= date.today() and (data.days_overdue or 0) > 0:
+        raise HTTPException(status_code=400, detail="Fatura em dia nao pode receber multa ou juros")
+    if not invoice.overdue_charges_allowed:
+        _recalculate_overdue_amount(invoice, await _get_system_settings(db), data.days_overdue)
+        await db.flush()
+        await db.refresh(invoice)
+        resp = InvoiceResponse.model_validate(invoice)
+        resp.has_pdf = invoice.pdf_data is not None
+        if invoice.customer:
+            resp.customer_name = invoice.customer.name
+            resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+        return resp
 
     settings = await _get_system_settings(db)
     _recalculate_overdue_amount(invoice, settings, data.days_overdue)
@@ -476,7 +516,7 @@ async def force_emit_boleto(
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Emite ou reemite o boleto no Banco Inter para uma fatura existente."""
+    """Emite ou reemite a cobranca Efí para uma fatura existente."""
     result = await db.execute(
         select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
     )
@@ -488,34 +528,16 @@ async def force_emit_boleto(
         raise HTTPException(status_code=400, detail="Cliente não associado à fatura")
 
     try:
-        inter_result = await inter_service.emitir_cobranca(
-            valor=invoice.amount,
-            cpf_cnpj=invoice.customer.cpf_cnpj,
-            nome=invoice.customer.name,
-            email=invoice.customer.email or "",
-            endereco=invoice.customer.address,
-            numero=invoice.customer.number or "S/N",
-            bairro=invoice.customer.neighborhood,
-            cidade=invoice.customer.city,
-            uf=invoice.customer.state,
-            cep=invoice.customer.zip_code,
-            data_vencimento=invoice.due_date,
-            seu_numero=str(invoice.id)[:15],
-            mensagem=f"Fatura {invoice.reference_month}"
-        )
-        invoice.inter_codigo_solicitacao = inter_result.get("codigoSolicitacao")
-        invoice.inter_nosso_numero = inter_result.get("nossoNumero")
-        invoice.inter_linha_digitavel = inter_result.get("linhaDigitavel")
-        invoice.inter_codigo_barras = inter_result.get("codigoBarras")
-        invoice.inter_pix_copia_cola = inter_result.get("pixCopiaECola")
+        settings = await _get_system_settings(db)
+        efi_result = await _emit_invoice_charge(invoice, invoice.customer, settings, f"Fatura {invoice.reference_month}")
         await db.flush()
         await db.refresh(invoice)
 
         # Agenda a busca do PDF e envio por WhatsApp em background
-        if invoice.customer.phone and invoice.inter_codigo_solicitacao:
+        if invoice.customer.phone and invoice.efi_pdf_url:
             background_tasks.add_task(
                 process_pdf_and_whatsapp,
-                invoice.inter_codigo_solicitacao,
+                invoice.efi_pdf_url,
                 invoice.customer.phone,
                 f"boleto_{str(invoice.id)[:8]}.pdf",
                 f"Sua fatura do mês {invoice.reference_month} já está disponível."
@@ -529,8 +551,8 @@ async def force_emit_boleto(
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)
-        logger.error(f"Erro ao emitir boleto forçado: {e}")
-        raise HTTPException(status_code=500, detail=f"Falha ao emitir boleto: {str(e)}")
+        logger.error(f"Erro ao emitir cobranca Efí: {e}")
+        raise HTTPException(status_code=500, detail=f"Falha ao emitir cobranca Efí: {str(e)}")
 
 
 @router.post("/{invoice_id}/send-whatsapp", response_model=InvoiceWhatsAppDispatchResponse)
@@ -580,17 +602,17 @@ async def send_invoice_whatsapp(
             detail="O telefone do cliente está incompleto ou inválido para WhatsApp.",
         )
 
-    if not invoice.inter_codigo_solicitacao:
+    if not invoice.efi_charge_id and not invoice.efi_payment_url:
         return InvoiceWhatsAppDispatchResponse(
             invoice_id=invoice.id,
             status="failed",
             reason="boleto_missing",
-            detail="A fatura ainda não possui boleto emitido no Banco Inter.",
+            detail="A fatura ainda não possui cobranca emitida na Efí.",
         )
 
     if not invoice.pdf_data:
         try:
-            invoice.pdf_data = await inter_service.buscar_pdf(invoice.inter_codigo_solicitacao)
+            invoice.pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url or "")
             if invoice.pdf_data:
                 await db.flush()
         except Exception as exc:
@@ -598,15 +620,30 @@ async def send_invoice_whatsapp(
                 invoice_id=invoice.id,
                 status="failed",
                 reason="pdf_fetch_error",
-                detail=f"Não foi possível obter o PDF do boleto: {exc}",
+                detail=f"Nao foi possivel obter o PDF da cobranca: {exc}",
             )
 
     if not invoice.pdf_data:
+        if invoice.efi_payment_url:
+            text = (
+                f"Sua fatura do mês {invoice.reference_month} está disponível: {invoice.efi_payment_url}"
+            )
+            wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
+            if wa_result and wa_result.get("status") == "sent":
+                if invoice.status == "pending":
+                    invoice.status = "sent"
+                    await db.flush()
+                return InvoiceWhatsAppDispatchResponse(
+                    invoice_id=invoice.id,
+                    status="sent",
+                    reason="ok",
+                    detail="Link de pagamento enviado pelo WhatsApp.",
+                )
         return InvoiceWhatsAppDispatchResponse(
             invoice_id=invoice.id,
             status="failed",
             reason="pdf_missing",
-            detail="O Banco Inter ainda não disponibilizou o PDF do boleto.",
+            detail="A Efí ainda não disponibilizou o PDF nem um link de pagamento.",
         )
 
     wa_result = await whatsapp_service.send_invoice_document(
@@ -636,24 +673,23 @@ async def send_invoice_whatsapp(
     )
 
 
-async def process_pdf_and_whatsapp(codigo_solicitacao: str, phone: str, filename: str, caption: str):
-    """Espera o Banco Inter gerar o PDF e depois envia pelo WhatsApp."""
+async def process_pdf_and_whatsapp(pdf_url: str, phone: str, filename: str, caption: str):
+    """Baixa o PDF da Efí e depois envia pelo WhatsApp."""
     import logging
     logger = logging.getLogger(__name__)
     
-    # Faz tentativas (polling) para buscar o PDF do boleto (geralmente pode demorar alguns segundos)
     pdf_data = None
     for attempt in range(6):
         await asyncio.sleep(5)  # Espera 5 segundos entre as tentativas
         try:
-            pdf_data = await inter_service.buscar_pdf(codigo_solicitacao)
+            pdf_data = await efi_service.baixar_pdf(pdf_url)
             if pdf_data:
                 break
         except Exception:
             pass
 
     if pdf_data:
-        logger.info(f"PDF obtido para solicitação {codigo_solicitacao}. Enviando via WhatsApp...")
+        logger.info("PDF Efí obtido. Enviando via WhatsApp...")
         await whatsapp_service.send_invoice_document(
             phone=phone,
             pdf_data=pdf_data,
@@ -661,4 +697,4 @@ async def process_pdf_and_whatsapp(codigo_solicitacao: str, phone: str, filename
             caption=caption
         )
     else:
-        logger.warning(f"Não foi possível obter o PDF do boleto {codigo_solicitacao} para envio via WhatsApp.")
+        logger.warning("Nao foi possivel obter o PDF Efí para envio via WhatsApp.")

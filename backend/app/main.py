@@ -25,7 +25,7 @@ from app.routers import (
 )
 from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
-from app.services.inter_api import inter_service
+from app.services.efi_api import efi_service
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.schema_bootstrap import ensure_runtime_schema
 
@@ -57,11 +57,11 @@ async def lifespan(app: FastAPI):
             logger.warning("Seed de startup falhou: %s", exc)
 
     logger.info("WhatsApp: %s", "ATIVADO" if settings.whatsapp_enabled else "DESATIVADO")
-    logger.info("Inter API: %s", "SANDBOX" if settings.inter_sandbox else "PRODUCAO")
+    logger.info("Efí API: %s", "HOMOLOGACAO" if settings.efi_sandbox else "PRODUCAO")
 
     yield
 
-    await inter_service.close()
+    await efi_service.close()
     await whatsapp_service.close()
     logger.info("AquaMoab encerrado.")
 
@@ -107,6 +107,8 @@ async def health_check():
         "version": settings.app_version,
         "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA") or "",
         "whatsapp_enabled": settings.whatsapp_enabled,
+        "payment_provider": "efi",
+        "efi_sandbox": settings.efi_sandbox,
         "inter_sandbox": settings.inter_sandbox,
         "cors_origins": settings.cors_origin_list,
     }

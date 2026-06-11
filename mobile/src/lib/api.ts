@@ -7,6 +7,7 @@ const apiUrlFromConfig =
   'http://localhost:8000/api';
 
 export const API_URL = apiUrlFromConfig.replace(/\/+$/, '');
+const REQUEST_TIMEOUT_MS = 15000;
 
 let cachedToken: string | null = null;
 
@@ -69,20 +70,26 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (token) headers.Authorization = `Bearer ${token}`;
 
   let res: Response;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  } catch {
+    res = await fetch(`${API_URL}${path}`, { ...options, headers, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('O servidor demorou para responder. Verifique sua conexao e tente novamente.');
+    }
     throw new Error('Nao foi possivel conectar ao servidor. Verifique a URL da API e sua internet.');
-  }
-
-  if (res.status === 401) {
-    await clearToken();
-    throw new Error('SESSION_EXPIRED');
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!res.ok) {
     const err = await res.json().catch(() => null);
     const message = extractErrorMessage(err) || `Erro ${res.status}`;
+    if (res.status === 401 || (res.status === 403 && /not authenticated|token/i.test(message))) {
+      await clearToken();
+      throw new Error('SESSION_EXPIRED');
+    }
     throw new Error(message);
   }
 
