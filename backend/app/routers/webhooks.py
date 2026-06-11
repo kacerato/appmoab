@@ -15,10 +15,164 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.whatsapp_message import WhatsAppMessage
 from app.services.efi_api import efi_service
+from app.services.whatsapp_api import whatsapp_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+
+
+def _normalize_evolution_event(event: str | None) -> str:
+    return (event or "").strip().lower().replace("_", ".")
+
+
+def _event_items(payload: dict) -> list[dict]:
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def _message_key(data: dict) -> dict:
+    key = data.get("key") or {}
+    return key if isinstance(key, dict) else {}
+
+
+def _message_id(data: dict) -> str | None:
+    key = _message_key(data)
+    value = key.get("id") or data.get("messageId") or data.get("id")
+    return str(value) if value else None
+
+
+def _remote_jid(data: dict) -> str:
+    key = _message_key(data)
+    return str(key.get("remoteJid") or data.get("remoteJid") or data.get("jid") or "")
+
+
+def _normalize_webhook_phone(remote_jid: str) -> str:
+    raw_phone = remote_jid.split("@", 1)[0]
+    return whatsapp_service.normalize_phone(raw_phone)
+
+
+def _from_me(data: dict) -> bool:
+    key = _message_key(data)
+    return bool(key.get("fromMe") or data.get("fromMe"))
+
+
+def _text_from_nested(value: object, *keys: str) -> str:
+    if not isinstance(value, dict):
+        return ""
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return ""
+
+
+def _extract_message_body(data: dict) -> str:
+    message_obj = data.get("message") or {}
+    if not isinstance(message_obj, dict):
+        return ""
+
+    direct = _text_from_nested(message_obj, "conversation")
+    if direct:
+        return direct
+
+    nested_text_sources = (
+        ("extendedTextMessage", "text"),
+        ("imageMessage", "caption"),
+        ("videoMessage", "caption"),
+        ("documentMessage", "caption"),
+        ("buttonsResponseMessage", "selectedDisplayText", "selectedButtonId"),
+        ("templateButtonReplyMessage", "selectedDisplayText", "selectedId"),
+        ("listResponseMessage", "title", "description"),
+        ("reactionMessage", "text"),
+    )
+    for source_key, *text_keys in nested_text_sources:
+        text = _text_from_nested(message_obj.get(source_key), *text_keys)
+        if text:
+            return text
+
+    document_name = _text_from_nested(message_obj.get("documentMessage"), "fileName")
+    if document_name:
+        return f"Documento recebido: {document_name}"
+    if "audioMessage" in message_obj:
+        return "Audio recebido"
+    if "imageMessage" in message_obj:
+        return "Imagem recebida"
+    if "videoMessage" in message_obj:
+        return "Video recebido"
+    if "stickerMessage" in message_obj:
+        return "Figurinha recebida"
+    return ""
+
+
+def _map_delivery_status(status_value: object) -> str | None:
+    if status_value is None:
+        return None
+    status = str(status_value).strip().lower()
+    status = status.replace("-", "_").replace(" ", "_")
+    status_map = {
+        "read": "read",
+        "played": "read",
+        "read_ack": "read",
+        "delivery_ack": "delivered",
+        "delivered": "delivered",
+        "server_ack": "sent",
+        "sent": "sent",
+        "pending": "sent",
+        "error": "failed",
+        "failed": "failed",
+    }
+    return status_map.get(status)
+
+
+def _status_from_data(data: dict) -> str | None:
+    update = data.get("update")
+    status = data.get("status") or data.get("ack") or data.get("messageStatus") or data.get("deliveryStatus")
+    if not status and isinstance(update, dict):
+        status = update.get("status") or update.get("ack")
+    return _map_delivery_status(status)
+
+
+async def _find_customer_for_phone(db: AsyncSession, phone: str) -> Customer | None:
+    digits = "".join(char for char in phone if char.isdigit())
+    if len(digits) < 8:
+        return None
+
+    result = await db.execute(
+        select(Customer)
+        .where(Customer.phone.is_not(None), Customer.phone.ilike(f"%{digits[-8:]}%"))
+        .order_by(Customer.name)
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _update_message_status(db: AsyncSession, data: dict, payload: dict) -> bool:
+    message_id = _message_id(data)
+    status = _status_from_data(data)
+    if not message_id or not status:
+        return False
+
+    result = await db.execute(
+        select(WhatsAppMessage).where(WhatsAppMessage.external_message_id == message_id).limit(1)
+    )
+    message = result.scalar_one_or_none()
+    if not message:
+        logger.info("Status WhatsApp sem mensagem local: id=%s status=%s", message_id, status)
+        return False
+
+    message.status = status
+    message.payload = {
+        **(message.payload or {}),
+        "status_webhook": payload,
+    }
+    await db.flush()
+    logger.info("Status WhatsApp atualizado: id=%s status=%s", message_id, status)
+    return True
 
 
 def _map_efi_status(status: str | None, invoice: Invoice) -> str:
@@ -95,60 +249,81 @@ async def whatsapp_webhook(
     """
     try:
         payload = await request.json()
-        
-        # O Evolution API envia vários eventos. Só queremos mensagens recebidas.
-        event = payload.get("event")
+        event = _normalize_evolution_event(payload.get("event"))
+        items = _event_items(payload)
+
+        if event in {"messages.update", "message.update", "messages.status", "message.status"}:
+            updated = 0
+            for data in items:
+                if await _update_message_status(db, data, payload):
+                    updated += 1
+            return {"status": "ok", "updated": updated}
+
         if event != "messages.upsert":
-            return {"status": "ignored", "reason": "not a message upsert"}
-            
-        data = payload.get("data", {})
-        key = data.get("key", {})
-        
-        if key.get("fromMe"):
-            return {"status": "ignored", "reason": "message sent by me"}
-            
-        remote_jid = key.get("remoteJid", "")
-        phone = remote_jid.split("@")[0]
-        
-        message_obj = data.get("message", {})
-        
-        # Pega texto simples ou estendido
-        body = ""
-        if "conversation" in message_obj:
-            body = message_obj["conversation"]
-        elif "extendedTextMessage" in message_obj:
-            body = message_obj["extendedTextMessage"].get("text", "")
-            
-        if not body:
-            return {"status": "ignored", "reason": "empty or unsupported message type"}
-        
-        logger.info(f"Nova mensagem (Evolution API) de {phone}: {body}")
+            logger.info("Webhook WhatsApp ignorado: event=%s", payload.get("event"))
+            return {"status": "ignored", "reason": "not_a_message_upsert", "event": payload.get("event")}
 
-        digits = "".join(char for char in phone if char.isdigit())
-        customer = None
-        if len(digits) >= 8:
-            customer_result = await db.execute(
-                select(Customer).where(Customer.phone.ilike(f"%{digits[-8:]}%")).limit(1)
+        saved = 0
+        duplicates = 0
+        ignored = 0
+        status_updates = 0
+        for data in items:
+            if _from_me(data):
+                if await _update_message_status(db, data, payload):
+                    status_updates += 1
+                else:
+                    ignored += 1
+                continue
+
+            remote_jid = _remote_jid(data)
+            phone = _normalize_webhook_phone(remote_jid)
+            body = _extract_message_body(data)
+            message_id = _message_id(data)
+
+            if not phone:
+                logger.info("Webhook WhatsApp ignorado sem telefone: event=%s message_id=%s", event, message_id)
+                ignored += 1
+                continue
+
+            if not body:
+                logger.info("Webhook WhatsApp ignorado sem corpo suportado: phone=%s message_id=%s", phone, message_id)
+                ignored += 1
+                continue
+
+            if message_id:
+                existing_result = await db.execute(
+                    select(WhatsAppMessage).where(WhatsAppMessage.external_message_id == message_id).limit(1)
+                )
+                if existing_result.scalar_one_or_none():
+                    duplicates += 1
+                    continue
+
+            customer = await _find_customer_for_phone(db, phone)
+
+            message = WhatsAppMessage(
+                customer_id=customer.id if customer else None,
+                phone=phone,
+                direction="inbound",
+                body=body,
+                external_message_id=message_id,
+                status="received",
+                payload=payload,
             )
-            customer = customer_result.scalar_one_or_none()
-        message_id = key.get("id") or data.get("messageId")
+            db.add(message)
+            saved += 1
+            logger.info("Nova mensagem WhatsApp: phone=%s customer=%s id=%s", phone, customer.id if customer else None, message_id)
 
-        message = WhatsAppMessage(
-            customer_id=customer.id if customer else None,
-            phone=digits or phone,
-            direction="inbound",
-            body=body,
-            external_message_id=message_id,
-            status="received",
-            payload=payload,
-        )
-        db.add(message)
+            # Aqui no futuro voce integrara com o Kimi (Moonshot AI)
+            # background_tasks.add_task(process_whatsapp_message_with_ai, phone, body)
+
         await db.flush()
-        
-        # Aqui no futuro você integrará com o Kimi (Moonshot AI)
-        # background_tasks.add_task(process_whatsapp_message_with_ai, phone, body)
-        
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "saved": saved,
+            "duplicates": duplicates,
+            "ignored": ignored,
+            "status_updates": status_updates,
+        }
     except Exception as e:
-        logger.error(f"Erro no webhook do WhatsApp: {e}")
+        logger.exception("Erro no webhook do WhatsApp: %s", e)
         return {"status": "error", "message": str(e)}
