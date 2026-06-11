@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { api } from '@/lib/api';
 import {
   AlertTriangle,
+  Check,
   CheckCheck,
   Loader2,
   MessageCircle,
@@ -90,6 +91,17 @@ function truncate(value: string, size = 92) {
   return value.length > size ? `${value.slice(0, size - 3)}...` : value;
 }
 
+function deliveryTitle(status: string) {
+  const map: Record<string, string> = {
+    sent: 'Enviada',
+    delivered: 'Entregue',
+    read: 'Visualizada',
+    failed: 'Falhou',
+    disabled: 'WhatsApp desativado',
+  };
+  return map[status] || status;
+}
+
 export default function ConversationsPage() {
   const { notify } = useAppFeedback();
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -107,23 +119,32 @@ export default function ConversationsPage() {
   const [newCustomerId, setNewCustomerId] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newText, setNewText] = useState('');
+  const selectedPhoneRef = useRef<string | null>(null);
 
-  const loadMessages = useCallback((phone: string) => {
-    setMessagesLoading(true);
-    api.get<WhatsAppMessage[]>(`/whatsapp/conversations/${encodeURIComponent(phone)}/messages`)
+  useEffect(() => {
+    selectedPhoneRef.current = selectedPhone;
+  }, [selectedPhone]);
+
+  const loadMessages = useCallback((phone: string, showLoading = true) => {
+    if (showLoading) setMessagesLoading(true);
+    api.get<WhatsAppMessage[]>(`/whatsapp/conversations/${encodeURIComponent(phone)}/messages`, { skipCache: true })
       .then(setMessages)
       .catch(err => notify('Falha ao carregar conversa', err instanceof Error ? err.message : 'Erro ao buscar mensagens.', 'error'))
-      .finally(() => setMessagesLoading(false));
+      .finally(() => {
+        if (showLoading) setMessagesLoading(false);
+      });
   }, [notify]);
 
-  const loadConversations = useCallback((phoneToSelect?: string) => {
-    api.get<Conversation[]>('/whatsapp/conversations')
+  const loadConversations = useCallback((phoneToSelect?: string, keepSelection = false, silentMessages = false) => {
+    api.get<Conversation[]>('/whatsapp/conversations', { skipCache: true })
       .then(items => {
         setConversations(items);
-        const nextPhone = phoneToSelect || items[0]?.phone || null;
+        const currentPhone = selectedPhoneRef.current;
+        const selectedStillExists = currentPhone ? items.some(item => item.phone === currentPhone) : false;
+        const nextPhone = phoneToSelect || (keepSelection && selectedStillExists ? currentPhone : items[0]?.phone || null);
         setSelectedPhone(nextPhone);
         if (nextPhone) {
-          loadMessages(nextPhone);
+          loadMessages(nextPhone, !silentMessages);
         } else {
           setMessages([]);
         }
@@ -134,6 +155,15 @@ export default function ConversationsPage() {
 
   useEffect(() => {
     loadConversations();
+  }, [loadConversations]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadConversations(undefined, true, true);
+      }
+    }, 6000);
+    return () => window.clearInterval(interval);
   }, [loadConversations]);
 
   useEffect(() => {
@@ -345,6 +375,8 @@ export default function ConversationsPage() {
                 {messages.map(message => {
                   const outbound = message.direction === 'outbound';
                   const failed = message.status === 'failed';
+                  const read = message.status === 'read';
+                  const delivered = message.status === 'delivered';
                   return (
                     <div key={message.id} style={{ alignSelf: outbound ? 'flex-end' : 'flex-start', maxWidth: '76%' }}>
                       <div
@@ -375,7 +407,11 @@ export default function ConversationsPage() {
                         <div style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{message.body}</div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, fontSize: 11, opacity: 0.72, marginTop: 8 }}>
                           <span>{formatDate(message.created_at)}</span>
-                          {outbound && (failed ? <AlertTriangle size={13} /> : <CheckCheck size={13} />)}
+                          {outbound && (
+                            <span title={deliveryTitle(message.status)} style={{ display: 'inline-flex', color: read ? '#7dd3fc' : 'inherit' }}>
+                              {failed ? <AlertTriangle size={13} /> : delivered || read ? <CheckCheck size={13} /> : <Check size={13} />}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <button
