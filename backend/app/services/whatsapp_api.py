@@ -157,6 +157,26 @@ class WhatsAppService:
             logger.error(f"Erro geral ao enviar doc: {e}")
             return {"status": "failed", "error": str(e)}
 
+    async def get_media_base64(self, message: dict, convert_to_mp4: bool = False) -> dict | None:
+        if not self.is_enabled:
+            return {"status": "disabled", "error": "WhatsApp desabilitado"}
+
+        client = await self._get_client()
+        try:
+            response = await client.post(
+                f"/chat/getBase64FromMediaMessage/{settings.evolution_instance_name}",
+                json={"message": message, "convertToMp4": convert_to_mp4},
+            )
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            return {"status": "ok", "payload": payload}
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Erro Evolution API ao buscar midia: {e.response.text}")
+            return {"status": "failed", "error": e.response.text}
+        except Exception as e:
+            logger.error(f"Erro ao buscar midia na Evolution API: {e}")
+            return {"status": "failed", "error": str(e)}
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()

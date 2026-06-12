@@ -4,7 +4,12 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from app.models.whatsapp_message import WhatsAppMessage
-from app.routers.whatsapp_messages import _build_evolution_quote
+from app.routers.whatsapp_messages import (
+    _build_evolution_quote,
+    _extract_media_entry,
+    _find_media_base64,
+    _media_data_uri,
+)
 from app.schemas.whatsapp_message import WhatsAppSendMessageRequest
 
 
@@ -53,6 +58,27 @@ class WhatsAppMessageFlowTest(unittest.TestCase):
         self.assertEqual(quote["key"]["remoteJid"], "5587981327592@s.whatsapp.net")
         self.assertFalse(quote["key"]["fromMe"])
         self.assertEqual(quote["message"], {"conversation": "Mensagem original"})
+
+    def test_extracts_sticker_media_entry(self):
+        media_entry = _extract_media_entry({
+            "stickerMessage": {
+                "mimetype": "image/webp",
+                "fileName": "figurinha.webp",
+            }
+        })
+
+        self.assertIsNotNone(media_entry)
+        media_type, fallback_mime, media = media_entry
+        self.assertEqual(media_type, "sticker")
+        self.assertEqual(fallback_mime, "image/webp")
+        self.assertEqual(media["fileName"], "figurinha.webp")
+
+    def test_finds_nested_media_base64_and_builds_data_uri(self):
+        encoded = "a" * 120
+        payload = {"payload": {"message": {"stickerMessage": {"base64": encoded}}}}
+
+        self.assertEqual(_find_media_base64(payload), encoded)
+        self.assertEqual(_media_data_uri(encoded, "image/webp"), f"data:image/webp;base64,{encoded}")
 
 
 if __name__ == "__main__":
