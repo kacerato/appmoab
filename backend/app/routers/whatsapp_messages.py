@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,14 @@ from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
+
+MEDIA_MESSAGE_TYPES = {
+    "stickerMessage": ("sticker", "image/webp"),
+    "imageMessage": ("image", "image/jpeg"),
+    "videoMessage": ("video", "video/mp4"),
+    "audioMessage": ("audio", "audio/ogg"),
+    "documentMessage": ("document", "application/octet-stream"),
+}
 
 
 def _phone_suffix(phone: str, size: int = 8) -> str:
@@ -72,6 +82,57 @@ def _build_evolution_quote(message: WhatsAppMessage) -> dict | None:
         },
         "message": _extract_stored_message_object(message),
     }
+
+
+def _extract_media_entry(stored_message: dict) -> tuple[str, str, dict] | None:
+    for key, (media_type, fallback_mime) in MEDIA_MESSAGE_TYPES.items():
+        media = stored_message.get(key)
+        if isinstance(media, dict):
+            return media_type, fallback_mime, media
+    return None
+
+
+def _looks_like_base64(value: str) -> bool:
+    stripped = value.strip()
+    if stripped.startswith("data:"):
+        return True
+    if len(stripped) < 80:
+        return False
+    return all(char.isalnum() or char in "+/=\r\n" for char in stripped)
+
+
+def _find_media_base64(value: object) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped if _looks_like_base64(stripped) else ""
+
+    if isinstance(value, list):
+        for item in value:
+            found = _find_media_base64(item)
+            if found:
+                return found
+        return ""
+
+    if not isinstance(value, dict):
+        return ""
+
+    for key in ("base64", "media", "file", "data"):
+        item = value.get(key)
+        if isinstance(item, str) and _looks_like_base64(item):
+            return item.strip()
+
+    for item in value.values():
+        found = _find_media_base64(item)
+        if found:
+            return found
+
+    return ""
+
+
+def _media_data_uri(base64_value: str, mime_type: str) -> str:
+    if base64_value.startswith("data:"):
+        return base64_value
+    return f"data:{mime_type};base64,{base64_value}"
 
 
 async def _find_customer_by_phone(db: AsyncSession, phone: str) -> Customer | None:
@@ -146,6 +207,62 @@ async def list_conversation_messages(
         .limit(limit)
     )
     return list(reversed(result.scalars().all()))
+
+
+@router.get("/messages/{message_id}/media")
+async def get_message_media(
+    message_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(WhatsAppMessage).where(WhatsAppMessage.id == message_id))
+    message = result.scalar_one_or_none()
+    if not message:
+        raise HTTPException(status_code=404, detail="Mensagem nao encontrada")
+
+    stored_message = _extract_stored_message_object(message)
+    media_entry = _extract_media_entry(stored_message)
+    if not media_entry:
+        raise HTTPException(status_code=400, detail="Mensagem sem midia suportada")
+
+    media_type, fallback_mime, media = media_entry
+    mime_type = str(media.get("mimetype") or media.get("mimeType") or fallback_mime)
+    direct_base64 = _find_media_base64({"message": stored_message, "payload": message.payload})
+    if direct_base64:
+        return {
+            "message_id": str(message.id),
+            "media_type": media_type,
+            "mime_type": mime_type,
+            "file_name": media.get("fileName") or media.get("filename") or media.get("title"),
+            "data_uri": _media_data_uri(direct_base64, mime_type),
+        }
+
+    evolution_message = _build_evolution_quote(message)
+    if not evolution_message:
+        raise HTTPException(status_code=400, detail="Mensagem sem ID externo para buscar midia")
+
+    result_payload = await whatsapp_service.get_media_base64(
+        evolution_message,
+        convert_to_mp4=media_type == "video",
+    )
+    if not result_payload or result_payload.get("status") != "ok":
+        raise HTTPException(
+            status_code=502,
+            detail=(result_payload or {}).get("error") or "Nao foi possivel buscar a midia na Evolution API",
+        )
+
+    payload = result_payload.get("payload")
+    fetched_base64 = _find_media_base64(payload)
+    if not fetched_base64:
+        raise HTTPException(status_code=502, detail="Evolution API nao retornou a midia em base64")
+
+    return {
+        "message_id": str(message.id),
+        "media_type": media_type,
+        "mime_type": mime_type,
+        "file_name": media.get("fileName") or media.get("filename") or media.get("title"),
+        "data_uri": _media_data_uri(fetched_base64, mime_type),
+    }
 
 
 @router.post("/messages", response_model=WhatsAppSendMessageResponse, status_code=201)

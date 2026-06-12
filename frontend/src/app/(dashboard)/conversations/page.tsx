@@ -37,14 +37,32 @@ interface WhatsAppMessage {
   body: string;
   status: string;
   external_message_id: string | null;
-  payload: {
-    quoted_message_id?: string;
-    quoted_body?: string;
-    quoted_direction?: string;
-    quoted_created_at?: string;
-    sent_text?: string;
-  } | null;
+  payload: WhatsAppPayload | null;
   created_at: string;
+}
+
+type WhatsAppPayload = {
+  quoted_message_id?: string;
+  quoted_body?: string;
+  quoted_direction?: string;
+  quoted_created_at?: string;
+  sent_text?: string;
+  [key: string]: unknown;
+};
+
+interface MessageMedia {
+  type: 'sticker' | 'image' | 'video' | 'audio' | 'document';
+  label: string;
+  src?: string;
+  fileName?: string;
+  mimeType: string;
+  isAnimated?: boolean;
+}
+
+interface WhatsAppMediaResponse {
+  data_uri?: string;
+  mime_type?: string;
+  base64?: string;
 }
 
 interface SendMessageResponse {
@@ -100,6 +118,155 @@ function deliveryTitle(status: string) {
     disabled: 'WhatsApp desativado',
   };
   return map[status] || status;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function payloadData(payload: WhatsAppPayload | null): Record<string, unknown> {
+  if (!isRecord(payload)) return {};
+  const data = payload.data;
+  return isRecord(data) ? data : payload;
+}
+
+function stringValue(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function normalizeMediaSource(value: string, mimeType: string) {
+  const source = value.trim();
+  if (!source) return undefined;
+  if (/^(https?:|blob:|data:)/i.test(source)) return source;
+  if (source.length > 80 && /^[A-Za-z0-9+/]+={0,2}$/.test(source)) {
+    return `data:${mimeType};base64,${source}`;
+  }
+  return undefined;
+}
+
+function mediaSource(
+  data: Record<string, unknown>,
+  message: Record<string, unknown>,
+  media: Record<string, unknown>,
+  mimeType: string,
+) {
+  const candidates = [media, message, data];
+  for (const source of candidates) {
+    const value = stringValue(source, ['base64', 'media', 'url', 'mediaUrl', 'downloadUrl', 'fileUrl', 'jpegThumbnail']);
+    const normalized = normalizeMediaSource(value, mimeType);
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function messageMedia(message: WhatsAppMessage): MessageMedia | null {
+  const data = payloadData(message.payload);
+  const messageObject = isRecord(data.message) ? data.message : {};
+  const configs: Array<{ key: string; type: MessageMedia['type']; label: string; fallbackMime: string }> = [
+    { key: 'stickerMessage', type: 'sticker', label: 'Figurinha recebida', fallbackMime: 'image/webp' },
+    { key: 'imageMessage', type: 'image', label: 'Imagem recebida', fallbackMime: 'image/jpeg' },
+    { key: 'videoMessage', type: 'video', label: 'Video recebido', fallbackMime: 'video/mp4' },
+    { key: 'audioMessage', type: 'audio', label: 'Audio recebido', fallbackMime: 'audio/ogg' },
+    { key: 'documentMessage', type: 'document', label: 'Documento recebido', fallbackMime: 'application/octet-stream' },
+  ];
+
+  for (const config of configs) {
+    const media = messageObject[config.key];
+    if (!isRecord(media)) continue;
+
+    const mimeType = stringValue(media, ['mimetype', 'mimeType']) || config.fallbackMime;
+    return {
+      type: config.type,
+      label: config.label,
+      src: mediaSource(data, messageObject, media, mimeType),
+      fileName: stringValue(media, ['fileName', 'filename', 'title']),
+      mimeType,
+      isAnimated: Boolean(media.isAnimated),
+    };
+  }
+
+  return null;
+}
+
+function mediaResponseSource(response: WhatsAppMediaResponse, fallbackMime: string) {
+  if (response.data_uri) return response.data_uri;
+  if (response.base64) return normalizeMediaSource(response.base64, response.mime_type || fallbackMime);
+  return undefined;
+}
+
+function MessageMediaPreview({ media, outbound, messageId }: { media: MessageMedia; outbound: boolean; messageId: string }) {
+  const canFetchRemoteMedia = media.type !== 'document';
+  const [loadedSrc, setLoadedSrc] = useState(media.src);
+  const [failed, setFailed] = useState(false);
+  const fetchAttemptedRef = useRef(false);
+  const softColor = outbound ? 'rgba(255,255,255,0.78)' : 'var(--text-secondary)';
+
+  useEffect(() => {
+    let cancelled = false;
+    if (loadedSrc || fetchAttemptedRef.current || !canFetchRemoteMedia) return undefined;
+
+    fetchAttemptedRef.current = true;
+    api.get<WhatsAppMediaResponse>(`/whatsapp/messages/${messageId}/media`, { skipCache: true })
+      .then(response => {
+        if (cancelled) return;
+        const source = mediaResponseSource(response, media.mimeType);
+        if (source) {
+          setLoadedSrc(source);
+          setFailed(false);
+        } else {
+          setFailed(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canFetchRemoteMedia, loadedSrc, media.mimeType, messageId]);
+
+  const handleMediaError = () => {
+    if (loadedSrc && !fetchAttemptedRef.current && canFetchRemoteMedia) {
+      setLoadedSrc(undefined);
+      setFailed(false);
+      return;
+    }
+    setFailed(true);
+  };
+
+  if (loadedSrc && !failed && (media.type === 'sticker' || media.type === 'image')) {
+    return (
+      <div className={`whatsapp-media-frame ${media.type === 'sticker' ? 'sticker' : ''}`}>
+        {/* eslint-disable-next-line @next/next/no-img-element -- WhatsApp media can arrive as data URLs or dynamic webhook URLs. */}
+        <img
+          src={loadedSrc}
+          alt={media.label}
+          className={`whatsapp-media-image ${media.type === 'sticker' ? 'sticker' : ''}`}
+          onError={handleMediaError}
+        />
+      </div>
+    );
+  }
+
+  if (loadedSrc && !failed && media.type === 'video') {
+    return <video className="whatsapp-media-video" src={loadedSrc} controls onError={handleMediaError} />;
+  }
+
+  if (loadedSrc && !failed && media.type === 'audio') {
+    return <audio className="whatsapp-media-audio" src={loadedSrc} controls onError={handleMediaError} />;
+  }
+
+  return (
+    <div className="whatsapp-media-fallback" style={{ color: softColor }}>
+      <span>{media.label}{media.isAnimated ? ' animada' : ''}</span>
+      {media.fileName && <small>{media.fileName}</small>}
+    </div>
+  );
 }
 
 export default function ConversationsPage() {
@@ -251,8 +418,8 @@ export default function ConversationsPage() {
     <>
       <Header title="Conversas" subtitle="Atendimento WhatsApp com historico, cliente e respostas" />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 380px) minmax(0, 1fr)', gap: 16, alignItems: 'stretch' }}>
-        <div className="card" style={{ padding: 0, overflow: 'hidden', minHeight: 640 }}>
+      <div className="whatsapp-conversation-layout">
+        <div className="card whatsapp-list-card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: 20, borderBottom: '1px solid var(--border)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
               <div>
@@ -287,7 +454,7 @@ export default function ConversationsPage() {
               </button>
             </div>
           ) : (
-            <div style={{ display: 'grid', maxHeight: 560, overflowY: 'auto' }}>
+            <div className="whatsapp-list-scroll">
               {filteredConversations.map(item => {
                 const active = selectedPhone === item.phone;
                 return (
@@ -328,7 +495,7 @@ export default function ConversationsPage() {
                         <span style={{ fontSize: 10.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{formatDate(item.last_at)}</span>
                       </span>
                       <span style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{formatPhone(item.phone)}</span>
-                      <span style={{ display: 'block', fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span className="whatsapp-message-preview" style={{ display: 'block', fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {item.last_direction === 'outbound' ? 'Voce: ' : ''}{item.last_message}
                       </span>
                     </span>
@@ -339,7 +506,7 @@ export default function ConversationsPage() {
           )}
         </div>
 
-        <div className="card" style={{ padding: 0, minHeight: 640, overflow: 'hidden', display: 'grid', gridTemplateRows: 'auto 1fr auto' }}>
+        <div className="card whatsapp-chat-card" style={{ padding: 0 }}>
           <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14 }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 16, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -355,7 +522,7 @@ export default function ConversationsPage() {
             <MessageCircle size={22} style={{ color: 'var(--accent)' }} />
           </div>
 
-          <div style={{ padding: 20, overflowY: 'auto', background: 'linear-gradient(180deg, var(--blue-50), transparent 170px)' }}>
+          <div className="whatsapp-messages-scroll">
             {messagesLoading ? (
               <div className="loading-page" style={{ minHeight: 300 }}>
                 <Loader2 size={18} className="spinner" />
@@ -377,6 +544,8 @@ export default function ConversationsPage() {
                   const failed = message.status === 'failed';
                   const read = message.status === 'read';
                   const delivered = message.status === 'delivered';
+                  const media = messageMedia(message);
+                  const mediaOnlyBody = media && message.body.trim().toLowerCase() === media.label.toLowerCase();
                   return (
                     <div key={message.id} style={{ alignSelf: outbound ? 'flex-end' : 'flex-start', maxWidth: '76%' }}>
                       <div
@@ -404,7 +573,8 @@ export default function ConversationsPage() {
                             {truncate(message.payload.quoted_body, 160)}
                           </div>
                         )}
-                        <div style={{ fontSize: 14, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>{message.body}</div>
+                        {media && <MessageMediaPreview media={media} outbound={outbound} messageId={message.id} />}
+                        {!mediaOnlyBody && <div className="whatsapp-message-text">{message.body}</div>}
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, fontSize: 11, opacity: 0.72, marginTop: 8 }}>
                           <span>{formatDate(message.created_at)}</span>
                           {outbound && (
@@ -447,7 +617,7 @@ export default function ConversationsPage() {
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 10, alignItems: 'end' }}>
               <textarea
-                className="form-textarea"
+                className="form-textarea whatsapp-composer"
                 value={composer}
                 onChange={event => setComposer(event.target.value)}
                 placeholder={selectedPhone ? 'Digite uma mensagem' : 'Selecione uma conversa para responder'}
@@ -511,7 +681,7 @@ export default function ConversationsPage() {
                 <label className="form-label" htmlFor="message">Mensagem</label>
                 <textarea
                   id="message"
-                  className="form-textarea"
+                  className="form-textarea whatsapp-composer"
                   value={newText}
                   onChange={event => setNewText(event.target.value)}
                   placeholder="Digite a primeira mensagem"
