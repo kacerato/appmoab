@@ -5,12 +5,13 @@ Recebe requisições de serviços externos, como o nosso microserviço de WhatsA
 
 from datetime import datetime
 
-from fastapi import APIRouter, Request, BackgroundTasks, Depends
+from fastapi import APIRouter, Request, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from app.database import get_db
+from app.config import get_settings
 from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.whatsapp_message import WhatsAppMessage
@@ -18,8 +19,18 @@ from app.services.efi_api import efi_service
 from app.services.whatsapp_api import whatsapp_service
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
+
+
+def _require_webhook_secret(request: Request) -> None:
+    if not settings.webhook_shared_secret:
+        return
+
+    provided = request.headers.get("x-aquamoab-webhook-secret") or request.query_params.get("secret")
+    if provided != settings.webhook_shared_secret:
+        raise HTTPException(status_code=401, detail="Webhook nao autorizado")
 
 
 def _normalize_evolution_event(event: str | None) -> str:
@@ -193,6 +204,7 @@ async def efi_webhook(
     db: AsyncSession = Depends(get_db),
 ):
     """Recebe token de notificacao da Efí, consulta detalhes e atualiza fatura."""
+    _require_webhook_secret(request)
     content_type = request.headers.get("content-type", "")
     notification_token = None
     if "application/json" in content_type:
@@ -247,6 +259,7 @@ async def whatsapp_webhook(
     """
     Recebe mensagens do microserviço Evolution API.
     """
+    _require_webhook_secret(request)
     try:
         payload = await request.json()
         event = _normalize_evolution_event(payload.get("event"))

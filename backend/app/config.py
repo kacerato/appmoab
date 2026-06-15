@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000,https://appmoab.vercel.app"
 
     database_url: str
+    database_pool_size: int = 10
+    database_max_overflow: int = 20
+    database_pool_timeout_seconds: int = 30
     redis_url: str = "redis://localhost:6379/0"
 
     jwt_secret: str = Field(validation_alias=AliasChoices("JWT_SECRET", "SECRET_KEY"))
@@ -54,6 +57,22 @@ class Settings(BaseSettings):
 
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 10
+    storage_backend: str = "local"
+    public_upload_base_url: str = ""
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = ""
+    r2_public_base_url: str = ""
+    r2_presigned_url_expire_seconds: int = 900
+
+    performance_log_slow_ms: int = 800
+    api_private_cache_seconds: int = 20
+    rate_limit_enabled: bool = True
+    rate_limit_window_seconds: int = 60
+    rate_limit_mutation_requests: int = 90
+    rate_limit_login_requests: int = 12
+    webhook_shared_secret: str = ""
 
     @property
     def cors_origin_list(self) -> list[str]:

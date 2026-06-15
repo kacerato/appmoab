@@ -14,7 +14,15 @@ from app.models.hydrometer import Hydrometer
 from app.models.invoice import Invoice
 from app.models.system_setting import SystemSetting
 from app.models.user import User
-from app.schemas.customer import CustomerCreate, CustomerDetailResponse, CustomerListResponse, CustomerResponse, CustomerUpdate
+from app.schemas.customer import (
+    CustomerCreate,
+    CustomerDetailResponse,
+    CustomerListResponse,
+    CustomerOptionListResponse,
+    CustomerOptionResponse,
+    CustomerResponse,
+    CustomerUpdate,
+)
 from app.schemas.customer_attachment import CustomerAttachmentCreate, CustomerAttachmentResponse
 from app.services.hydrometer_codes import get_next_hydrometer_code
 from app.utils.security import get_current_user, require_admin
@@ -292,6 +300,41 @@ async def update_all_customers_due_day(
     updated_ids = result.scalars().all()
     await db.flush()
     return {"updated": len(updated_ids), "due_day": data.due_day}
+
+
+@router.get("/options", response_model=CustomerOptionListResponse)
+async def list_customer_options(
+    limit: int = Query(500, ge=1, le=2000),
+    search: str | None = None,
+    has_phone: bool | None = None,
+    has_hydrometer: bool | None = None,
+    status: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    query = select(Customer)
+    if search:
+        query = query.where(
+            or_(
+                Customer.name.ilike(f"%{search}%"),
+                Customer.cpf_cnpj.ilike(f"%{search}%"),
+                Customer.phone.ilike(f"%{search}%"),
+            )
+        )
+    if has_phone is True:
+        query = query.where(Customer.phone.is_not(None), Customer.phone != "")
+    if has_hydrometer is not None:
+        query = query.where(Customer.has_hydrometer == has_hydrometer)
+    if status:
+        query = query.where(Customer.status == status)
+
+    count_q = select(func.count()).select_from(query.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+    result = await db.execute(query.order_by(Customer.name).limit(limit))
+    return CustomerOptionListResponse(
+        items=[CustomerOptionResponse.model_validate(customer) for customer in result.scalars().all()],
+        total=total,
+    )
 
 
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)

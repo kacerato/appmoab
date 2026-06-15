@@ -81,8 +81,6 @@ interface CustomerOption {
 interface CustomerListResponse {
   items: CustomerOption[];
   total: number;
-  page: number;
-  per_page: number;
 }
 
 function formatDate(value: string) {
@@ -287,10 +285,15 @@ export default function ConversationsPage() {
   const [newPhone, setNewPhone] = useState('');
   const [newText, setNewText] = useState('');
   const selectedPhoneRef = useRef<string | null>(null);
+  const conversationsRef = useRef<Conversation[]>([]);
 
   useEffect(() => {
     selectedPhoneRef.current = selectedPhone;
   }, [selectedPhone]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   const loadMessages = useCallback((phone: string, showLoading = true) => {
     if (showLoading) setMessagesLoading(true);
@@ -307,11 +310,20 @@ export default function ConversationsPage() {
       .then(items => {
         setConversations(items);
         const currentPhone = selectedPhoneRef.current;
+        const previousSelected = currentPhone ? conversationsRef.current.find(item => item.phone === currentPhone) : null;
         const selectedStillExists = currentPhone ? items.some(item => item.phone === currentPhone) : false;
         const nextPhone = phoneToSelect || (keepSelection && selectedStillExists ? currentPhone : items[0]?.phone || null);
+        const nextSelected = nextPhone ? items.find(item => item.phone === nextPhone) : null;
         setSelectedPhone(nextPhone);
         if (nextPhone) {
-          loadMessages(nextPhone, !silentMessages);
+          const shouldReloadMessages =
+            !silentMessages ||
+            nextPhone !== currentPhone ||
+            previousSelected?.last_at !== nextSelected?.last_at ||
+            previousSelected?.total_messages !== nextSelected?.total_messages;
+          if (shouldReloadMessages) {
+            loadMessages(nextPhone, !silentMessages);
+          }
         } else {
           setMessages([]);
         }
@@ -334,7 +346,7 @@ export default function ConversationsPage() {
   }, [loadConversations]);
 
   useEffect(() => {
-    api.get<CustomerListResponse>('/customers?per_page=2000')
+    api.get<CustomerListResponse>('/customers/options?has_phone=true&limit=2000')
       .then(response => setCustomers(response.items))
       .catch(err => notify('Falha ao carregar clientes', err instanceof Error ? err.message : 'Erro ao buscar clientes.', 'error'))
       .finally(() => setCustomersLoading(false));

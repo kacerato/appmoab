@@ -128,6 +128,22 @@ class CustomerListResponse(BaseModel):
     per_page: int
 
 
+class CustomerOptionResponse(BaseModel):
+    id: UUID
+    name: str
+    cpf_cnpj: str
+    phone: str | None = None
+    has_hydrometer: bool
+    status: str
+
+    model_config = {"from_attributes": True}
+
+
+class CustomerOptionListResponse(BaseModel):
+    items: list[CustomerOptionResponse]
+    total: int
+
+
 from app.schemas.customer_attachment import CustomerAttachmentResponse  # noqa: E402
 from app.schemas.hydrometer import HydrometerResponse  # noqa: E402
 
