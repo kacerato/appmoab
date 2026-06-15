@@ -64,8 +64,8 @@ export default function HydrometersPage() {
   };
 
   const loadCustomers = () => {
-    api.get<{ items: Customer[] }>('/customers?per_page=1000')
-      .then(r => setCustomers(r.items.filter(c => (c as Customer & { has_hydrometer?: boolean }).has_hydrometer)))
+    api.get<{ items: Customer[] }>('/customers/options?has_hydrometer=true&limit=1000')
+      .then(r => setCustomers(r.items))
       .catch(console.error);
   };
 

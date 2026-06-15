@@ -27,6 +27,7 @@ from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
 from app.services.efi_api import efi_service
 from app.services.whatsapp_api import whatsapp_service
+from app.utils.middleware import performance_and_security_middleware
 from app.utils.schema_bootstrap import ensure_runtime_schema
 
 settings = get_settings()
@@ -82,6 +83,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(performance_and_security_middleware)
 
 os.makedirs(settings.upload_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")

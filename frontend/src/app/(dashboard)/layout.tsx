@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import Sidebar from '@/components/Sidebar';
+import { api } from '@/lib/api';
 
 function ProtectedShell({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -25,7 +26,22 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
         '/configuracoes',
       ].forEach(route => router.prefetch(route));
 
-      // As paginas carregam seus proprios dados. Evita disputar rede no primeiro acesso.
+      const warmup = () => api.prefetch([
+        '/dashboard?scope=month',
+        '/customers?page=1&per_page=20',
+        '/invoices?page=1&per_page=20',
+        '/readings?status=pending&per_page=50',
+        '/tariffs',
+        '/system-settings',
+      ]);
+
+      if ('requestIdleCallback' in window) {
+        const id = window.requestIdleCallback(warmup, { timeout: 1800 });
+        return () => window.cancelIdleCallback(id);
+      }
+
+      const id = globalThis.setTimeout(warmup, 700);
+      return () => globalThis.clearTimeout(id);
     }
   }, [loading, user, router]);
 
