@@ -6,7 +6,7 @@ import { useEffect, useState, FormEvent } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { Droplets, Pencil, Plus, Search, Loader2, X, Download, Power, RotateCcw } from 'lucide-react';
+import { Droplets, Pencil, Plus, Search, Loader2, X, Download, Power, RotateCcw, FileText } from 'lucide-react';
 
 interface Customer {
   id: string;
@@ -156,6 +156,84 @@ export default function HydrometersPage() {
     }
   };
 
+  const escapeHtml = (value: string) => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+  const generateQrPdf = async () => {
+    const hydrometers = filteredItems.length ? filteredItems : items;
+    if (!hydrometers.length) {
+      notify('Nenhum QR para gerar', 'Cadastre ou carregue hidrômetros antes de gerar o PDF.', 'warning');
+      return;
+    }
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      notify('Pop-up bloqueado', 'Permita pop-ups para gerar a folha de QR Codes.', 'warning');
+      return;
+    }
+
+    printWindow.document.write('<!doctype html><html><head><title>QR Codes AquaMoab</title></head><body><p>Gerando QR Codes...</p></body></html>');
+    try {
+      const QRCode = await import('qrcode');
+      const cards = await Promise.all(hydrometers.map(async hydrometer => {
+        const qrValue = hydrometer.qr_code_token || hydrometer.code;
+        const dataUrl = await QRCode.toDataURL(qrValue, {
+          margin: 1,
+          width: 126,
+          errorCorrectionLevel: 'M',
+        });
+        return `
+          <article class="qr-card">
+            <img src="${dataUrl}" alt="QR ${escapeHtml(hydrometer.code)}" />
+            <div class="qr-code">QR ${escapeHtml(hydrometer.code)}</div>
+            <div class="qr-name">${escapeHtml(hydrometer.customer?.name || 'Cliente')}</div>
+          </article>
+        `;
+      }));
+
+      printWindow.document.open();
+      printWindow.document.write(`
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>QR Codes AquaMoab</title>
+            <style>
+              @page { size: A4; margin: 7mm; }
+              * { box-sizing: border-box; }
+              body { margin: 0; font-family: Arial, sans-serif; color: #0f172a; }
+              .sheet { display: grid; grid-template-columns: repeat(5, 1fr); gap: 5mm 4mm; align-items: start; }
+              .qr-card { min-height: 36mm; break-inside: avoid; border: 0.4pt solid #cbd5e1; border-radius: 3mm; padding: 2.5mm; text-align: center; overflow: hidden; }
+              .qr-card img { width: 23mm; height: 23mm; display: block; margin: 0 auto 1.5mm; }
+              .qr-code { font-size: 8pt; font-weight: 800; line-height: 1.1; }
+              .qr-name { margin-top: 1mm; font-size: 6.5pt; line-height: 1.15; color: #475569; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+              @media print {
+                body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              }
+            </style>
+          </head>
+          <body>
+            <main class="sheet">${cards.join('')}</main>
+            <script>
+              window.onload = () => {
+                window.focus();
+                window.print();
+              };
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } catch (err: unknown) {
+      printWindow.close();
+      notify('Falha ao gerar PDF', err instanceof Error ? err.message : 'Nao foi possivel montar a folha de QR Codes.', 'error');
+    }
+  };
+
   const disconnectHydrometer = async (hydrometer: Hydrometer) => {
     setSaving(true);
     try {
@@ -197,6 +275,9 @@ export default function HydrometersPage() {
         </div>
         <button className="btn btn-primary" onClick={() => setShowAdd(true)}>
           <Plus size={16} /> Associar Novo Hidrômetro
+        </button>
+        <button className="btn btn-secondary" onClick={generateQrPdf} disabled={loading || !items.length}>
+          <FileText size={16} /> PDF de QRs
         </button>
       </div>
 
