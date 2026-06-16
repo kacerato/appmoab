@@ -51,6 +51,8 @@ interface Hydrometer {
   code: string;
   last_reading_value: number;
   last_reading_date: string | null;
+  red_digits: number | null;
+  black_digits: number | null;
   is_active: boolean;
 }
 
@@ -65,6 +67,32 @@ interface Invoice {
 
 function fmt(value: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
+}
+
+function parseMeterReadingInput(input: string, redDigits: number) {
+  const trimmed = input.trim().replace(',', '.');
+  if (!trimmed) return null;
+
+  if (trimmed.includes('.')) {
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+
+  const rawValue = Number(digits);
+  if (!Number.isFinite(rawValue)) return null;
+
+  return redDigits > 0 ? rawValue / (10 ** redDigits) : rawValue;
+}
+
+function formatM3(value: number | null | undefined) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '--';
+  return value.toLocaleString('pt-BR', {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  });
 }
 
 export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -96,6 +124,15 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   });
 
   const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
+  const adjustingHydrometer = useMemo(
+    () => customer?.hydrometers.find(hydrometer => hydrometer.id === adjustingHydrometerId) || null,
+    [adjustingHydrometerId, customer],
+  );
+  const adjustingRedDigits = adjustingHydrometer?.red_digits || 3;
+  const adjustedBaseValue = useMemo(
+    () => parseMeterReadingInput(adjustingHydrometerValue, adjustingRedDigits),
+    [adjustingHydrometerValue, adjustingRedDigits],
+  );
 
   const load = useCallback(() => {
     Promise.all([
@@ -207,8 +244,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
     setSavingHydrometer(true);
     try {
+      if (adjustedBaseValue === null) {
+        notify('Leitura inválida', 'Informe a leitura completa do visor ou o valor em m³.', 'warning');
+        return;
+      }
       await api.patch(`/hydrometers/${adjustingHydrometerId}`, {
-        last_reading_value: parseFloat(adjustingHydrometerValue),
+        last_reading_value: adjustedBaseValue,
       });
       setAdjustingHydrometerId(null);
       setAdjustingHydrometerValue('');
@@ -302,7 +343,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{hydrometer.code}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                  Base atual: {hydrometer.last_reading_value.toFixed(2)} m³
+                  Base atual: {formatM3(hydrometer.last_reading_value)} m³
                   {hydrometer.last_reading_date && ` • ${new Date(hydrometer.last_reading_date).toLocaleDateString('pt-BR')}`}
                 </div>
               </div>
@@ -467,8 +508,20 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             </div>
             <form onSubmit={handleHydrometerAdjust}>
               <div className="form-group" style={{ marginBottom: 24 }}>
-                <label className="form-label">Leitura atual do hidrômetro (m³)</label>
-                <input className="form-input" type="number" step="0.001" min="0" value={adjustingHydrometerValue} onChange={e => setAdjustingHydrometerValue(e.target.value)} required />
+                <label className="form-label">Leitura atual do hidrômetro</label>
+                <input
+                  className="form-input"
+                  type="text"
+                  inputMode="decimal"
+                  value={adjustingHydrometerValue}
+                  onChange={e => setAdjustingHydrometerValue(e.target.value)}
+                  placeholder="Ex: 0090600"
+                  required
+                />
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.5 }}>
+                  Formato cadastrado: {adjustingRedDigits} vermelhos
+                  {adjustingHydrometer?.black_digits ? ` · ${adjustingHydrometer.black_digits} pretos` : ''}. Interpretado como {formatM3(adjustedBaseValue)} m³.
+                </div>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-ghost" onClick={() => setAdjustingHydrometerId(null)}>Cancelar</button>
