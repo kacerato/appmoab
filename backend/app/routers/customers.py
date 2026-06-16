@@ -85,6 +85,7 @@ def _attachment_response(attachment: CustomerAttachment) -> CustomerAttachmentRe
 
 
 OPEN_INVOICE_STATUSES = ("pending", "sent", "overdue")
+BILLING_CYCLE_CHARGE_TYPES = ("water", "installation")
 
 
 def _next_due_date(customer: Customer, today: date) -> date:
@@ -180,6 +181,7 @@ async def _build_customer_response(db: AsyncSession, customer_id: uuid.UUID) -> 
         select(func.min(Invoice.due_date)).where(
             Invoice.customer_id == customer.id,
             Invoice.status.in_(OPEN_INVOICE_STATUSES),
+            Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
             Invoice.due_date < today,
         )
     )
@@ -189,6 +191,7 @@ async def _build_customer_response(db: AsyncSession, customer_id: uuid.UUID) -> 
         select(func.max(Invoice.paid_date)).where(
             Invoice.customer_id == customer.id,
             Invoice.status == "paid",
+            Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
             Invoice.paid_date.is_not(None),
         )
     )
@@ -255,6 +258,7 @@ async def list_customers(
             .where(
                 Invoice.customer_id.in_(customer_ids),
                 Invoice.status.in_(OPEN_INVOICE_STATUSES),
+                Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
                 Invoice.due_date < today,
             )
             .group_by(Invoice.customer_id)
@@ -265,6 +269,7 @@ async def list_customers(
             .where(
                 Invoice.customer_id.in_(customer_ids),
                 Invoice.status == "paid",
+                Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
                 Invoice.paid_date.is_not(None),
             )
             .group_by(Invoice.customer_id)
@@ -360,14 +365,21 @@ async def get_customer(
             func.count(Invoice.id),
             func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
             func.coalesce(func.sum(case((
-                (Invoice.status.in_(OPEN_INVOICE_STATUSES)) & (Invoice.due_date < date.today()),
+                (Invoice.status.in_(OPEN_INVOICE_STATUSES))
+                & (Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES))
+                & (Invoice.due_date < date.today()),
                 Invoice.amount,
             ), else_=0)), 0),
             func.min(case((
-                (Invoice.status.in_(OPEN_INVOICE_STATUSES)) & (Invoice.due_date < date.today()),
+                (Invoice.status.in_(OPEN_INVOICE_STATUSES))
+                & (Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES))
+                & (Invoice.due_date < date.today()),
                 Invoice.due_date,
             ), else_=None)),
-            func.max(case((Invoice.status == "paid", Invoice.paid_date), else_=None)),
+            func.max(case((
+                (Invoice.status == "paid") & (Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES)),
+                Invoice.paid_date,
+            ), else_=None)),
         ).where(Invoice.customer_id == customer.id)
     )
     total_inv, pending, overdue, oldest_overdue_due_date, last_paid_date = inv_result.one()
