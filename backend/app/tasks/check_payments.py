@@ -30,6 +30,7 @@ async def _check_payments_async():
     from app.database import async_session_factory
     from app.models.invoice import Invoice
     from app.services.efi_api import efi_service
+    from app.services.payment_receipts import store_efi_payment_receipt
     from sqlalchemy import select
 
     logger.info("Verificando pagamentos recebidos...")
@@ -52,8 +53,11 @@ async def _check_payments_async():
                 invoice = result.scalar_one_or_none()
                 if invoice:
                     invoice.status = "paid"
+                    invoice.efi_status = cob.get("status") or invoice.efi_status
+                    invoice.efi_raw_response = cob
                     paid_at = ((cob.get("payment") or {}).get("paid_at") or cob.get("paid_at") or "")[:10]
                     invoice.paid_date = date.fromisoformat(paid_at) if paid_at else date.today()
+                    invoice.efi_payment_receipt_url = store_efi_payment_receipt(invoice, cob)
                     logger.info(f"Fatura {invoice.id} marcada como PAGA")
 
             await db.commit()

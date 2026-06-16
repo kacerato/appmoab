@@ -6,6 +6,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { AuthProvider, useAuth } from './src/lib/auth';
 import { FeedbackProvider } from './src/lib/feedback';
+import { MobileThemeProvider, useMobileTheme } from './src/lib/mobile-theme';
 import { colors } from './src/styles/theme';
 
 import LoginScreen from './src/screens/LoginScreen';
@@ -20,6 +21,7 @@ const Stack = createNativeStackNavigator();
 
 function AppNavigator() {
   const { user, loading } = useAuth();
+  const { mode } = useMobileTheme();
 
   if (loading) {
     return (
@@ -30,7 +32,7 @@ function AppNavigator() {
   }
 
   return (
-    <Stack.Navigator screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
+    <Stack.Navigator key={mode} screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
       {!user ? (
         <Stack.Screen name="Login" component={LoginScreen} />
       ) : (
@@ -44,6 +46,18 @@ function AppNavigator() {
         </>
       )}
     </Stack.Navigator>
+  );
+}
+
+function AppShell() {
+  const { mode } = useMobileTheme();
+  return (
+    <FeedbackProvider>
+      <NavigationContainer>
+        <StatusBar hidden style={mode === 'dark' ? 'light' : 'dark'} translucent />
+        <AppNavigator />
+      </NavigationContainer>
+    </FeedbackProvider>
   );
 }
 
@@ -74,13 +88,10 @@ export default function App() {
   }, []);
 
   return (
-    <AuthProvider>
-      <FeedbackProvider>
-        <NavigationContainer>
-          <StatusBar hidden style="light" translucent />
-          <AppNavigator />
-        </NavigationContainer>
-      </FeedbackProvider>
-    </AuthProvider>
+    <MobileThemeProvider>
+      <AuthProvider>
+        <AppShell />
+      </AuthProvider>
+    </MobileThemeProvider>
   );
 }

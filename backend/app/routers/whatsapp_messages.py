@@ -16,6 +16,7 @@ from app.schemas.whatsapp_message import (
 )
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user
+from app.utils.storage import build_public_upload_url, save_binary_from_base64
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
 
@@ -133,6 +134,17 @@ def _media_data_uri(base64_value: str, mime_type: str) -> str:
     if base64_value.startswith("data:"):
         return base64_value
     return f"data:{mime_type};base64,{base64_value}"
+
+
+def _media_message_key(mime_type: str | None) -> tuple[str, str]:
+    normalized = (mime_type or "").lower()
+    if normalized.startswith("image/"):
+        return "image", "imageMessage"
+    if normalized.startswith("video/"):
+        return "video", "videoMessage"
+    if normalized.startswith("audio/"):
+        return "audio", "audioMessage"
+    return "document", "documentMessage"
 
 
 async def _find_customer_by_phone(db: AsyncSession, phone: str) -> Customer | None:
@@ -309,25 +321,56 @@ async def send_message(
             detail="Nao foi possivel responder nativamente essa mensagem porque ela nao tem ID do WhatsApp",
         )
 
-    sent_text = data.text
-    if quoted:
-        sent_text = data.text
+    sent_text = data.text.strip()
+    stored_file_path: str | None = None
+    public_file_url: str | None = None
+    media_payload: dict | None = None
 
-    result = await whatsapp_service.send_text(phone, sent_text, quoted=quoted_payload)
+    if data.file_base64:
+        mediatype, message_key = _media_message_key(data.mime_type)
+        stored_file_path = save_binary_from_base64(data.file_base64, prefix="whatsapp", fallback_ext="bin")
+        public_file_url = build_public_upload_url(stored_file_path)
+        result = await whatsapp_service.send_media(
+            phone=phone,
+            media_base64=data.file_base64,
+            filename=data.file_name or "arquivo",
+            caption=sent_text,
+            mediatype=mediatype,
+            mimetype=data.mime_type,
+            quoted=quoted_payload,
+        )
+        media_payload = {
+            message_key: {
+                "fileName": data.file_name,
+                "mimetype": data.mime_type,
+                "url": public_file_url,
+            }
+        }
+    else:
+        result = await whatsapp_service.send_text(phone, sent_text, quoted=quoted_payload)
+
     status = (result or {}).get("status") or "disabled"
     detail = (result or {}).get("error")
+    body = sent_text or f"Arquivo enviado: {data.file_name}"
 
     message = WhatsAppMessage(
         customer_id=customer.id if customer else None,
         phone=phone,
         direction="outbound",
-        body=data.text,
+        body=body,
         external_message_id=(result or {}).get("message_id"),
         status=status,
         payload={
             **(_build_quoted_payload(quoted, sent_text) or {}),
             "quoted": quoted_payload,
             "evolution_response": (result or {}).get("payload"),
+            "message": media_payload,
+            "media": {
+                "file_name": data.file_name,
+                "mime_type": data.mime_type,
+                "stored_file_path": stored_file_path,
+                "public_file_url": public_file_url,
+            } if media_payload else None,
         },
     )
     db.add(message)

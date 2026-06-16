@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Modal,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -12,12 +11,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as SecureStore from 'expo-secure-store';
 import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
+import { useMobileTheme } from '../lib/mobile-theme';
 import { formatMeterReading } from '../lib/meter-reading';
 import { ROUTE_CACHE_KEY } from '../lib/route-cache';
 import { colors, shared } from '../styles/theme';
@@ -65,6 +65,8 @@ export default function RouteScreen() {
   const navigation = useNavigation<any>();
   const { user, logout } = useAuth();
   const { showToast } = useFeedback();
+  const { mode, setMode } = useMobileTheme();
+  styles = useMemo(() => createRouteStyles(), [mode]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('home');
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [todayReadings, setTodayReadings] = useState<ReadingItem[]>([]);
@@ -73,7 +75,6 @@ export default function RouteScreen() {
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [taskFilter, setTaskFilter] = useState<'pending' | 'done' | 'all'>('pending');
-  const [createOpen, setCreateOpen] = useState(false);
 
   const openManualScan = useCallback(() => {
     navigation.navigate('Camera', { stage: 'code' });
@@ -150,6 +151,12 @@ export default function RouteScreen() {
       mounted = false;
     };
   }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void load(true);
+    }, [load]),
+  );
 
   const routeItems = useMemo(() => {
     const byHydrometer = new Map<string, ReadingItem>();
@@ -296,7 +303,15 @@ export default function RouteScreen() {
 
         {activeTab === 'profile' && (
           <ScrollView contentContainerStyle={styles.listContent} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}>
-            <ProfileView name={user?.name || 'Colaborador'} email={user?.email || ''} role={user?.role || ''} stats={stats} onLogout={logout} />
+            <ProfileView
+              name={user?.name || 'Colaborador'}
+              email={user?.email || ''}
+              role={user?.role || ''}
+              stats={stats}
+              themeMode={mode}
+              onThemeChange={nextMode => void setMode(nextMode)}
+              onLogout={logout}
+            />
           </ScrollView>
         )}
 
@@ -304,23 +319,10 @@ export default function RouteScreen() {
           active={activeTab}
           onTabPress={tab => {
             if (tab === 'create') {
-              setCreateOpen(true);
+              openManualScan();
               return;
             }
             setActiveTab(tab);
-          }}
-        />
-
-        <CreateModal
-          visible={createOpen}
-          onClose={() => setCreateOpen(false)}
-          onOpenCamera={() => {
-            setCreateOpen(false);
-            openManualScan();
-          }}
-          onOpenHistory={() => {
-            setCreateOpen(false);
-            setActiveTab('history');
           }}
         />
       </View>
@@ -429,7 +431,23 @@ function HistoryCard({ item }: { item: ReadingItem }) {
   );
 }
 
-function ProfileView({ name, email, role, stats, onLogout }: { name: string; email: string; role: string; stats: { pending: number; completed: number; total: number; installations: number }; onLogout: () => void }) {
+function ProfileView({
+  name,
+  email,
+  role,
+  stats,
+  themeMode,
+  onThemeChange,
+  onLogout,
+}: {
+  name: string;
+  email: string;
+  role: string;
+  stats: { pending: number; completed: number; total: number; installations: number };
+  themeMode: 'light' | 'dark';
+  onThemeChange: (mode: 'light' | 'dark') => void;
+  onLogout: () => void;
+}) {
   return (
     <>
       <View style={styles.profileHero}>
@@ -445,7 +463,21 @@ function ProfileView({ name, email, role, stats, onLogout }: { name: string; ema
       <View style={styles.customerCard}>
         <Text style={shared.sectionTitle}>Configuracoes</Text>
         <SettingRow label="Notificacoes" value="Ativas no painel" />
-        <SettingRow label="Tema" value="AquaMoab web" />
+        <Text style={styles.settingLabel}>Tema</Text>
+        <View style={styles.themeSwitch}>
+          <TouchableOpacity
+            style={[styles.themeOption, themeMode === 'light' && styles.themeOptionActive]}
+            onPress={() => onThemeChange('light')}
+          >
+            <Text style={[styles.themeOptionText, themeMode === 'light' && styles.themeOptionTextActive]}>Claro</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.themeOption, themeMode === 'dark' && styles.themeOptionActive]}
+            onPress={() => onThemeChange('dark')}
+          >
+            <Text style={[styles.themeOptionText, themeMode === 'dark' && styles.themeOptionTextActive]}>Escuro</Text>
+          </TouchableOpacity>
+        </View>
         <TouchableOpacity style={[shared.btnSecondary, { marginTop: 12 }]} onPress={onLogout}>
           <Text style={shared.btnSecondaryText}>Sair da conta</Text>
         </TouchableOpacity>
@@ -565,37 +597,10 @@ function TabSvgIcon({ name, active }: { name: TabIconName; active: boolean }) {
   );
 }
 
-function CreateModal({ visible, onClose, onOpenCamera, onOpenHistory }: { visible: boolean; onClose: () => void; onOpenCamera: () => void; onOpenHistory: () => void }) {
-  return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
-          <View style={styles.cardTopRow}>
-            <Text style={styles.modalTitle}>Nova acao</Text>
-            <TouchableOpacity onPress={onClose}><Text style={styles.backText}>Fechar</Text></TouchableOpacity>
-          </View>
-          <View style={styles.actionGrid}>
-            <ActionTile title="Scan manual" subtitle="Foto, codigo, leitura" onPress={onOpenCamera} />
-            <ActionTile title="Historico" subtitle="Ver envios do dia" onPress={onOpenHistory} />
-            <ActionTile title="Checklist" subtitle="Pendencias da rota" onPress={onClose} />
-            <ActionTile title="Sincronizar" subtitle="Atualize puxando a tela" onPress={onClose} />
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-}
+let styles = createRouteStyles();
 
-function ActionTile({ title, subtitle, onPress }: { title: string; subtitle: string; onPress: () => void }) {
-  return (
-    <TouchableOpacity style={styles.actionTile} onPress={onPress}>
-      <Text style={styles.actionTitle}>{title}</Text>
-      <Text style={styles.actionSubtitle}>{subtitle}</Text>
-    </TouchableOpacity>
-  );
-}
-
-const styles = StyleSheet.create({
+function createRouteStyles() {
+  return StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.navy950 },
   loadingWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.navy950 },
   loadingText: { marginTop: 14, color: colors.textMuted, fontSize: 13 },
@@ -722,6 +727,11 @@ const styles = StyleSheet.create({
   settingRow: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.border, flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   settingLabel: { color: colors.textPrimary, fontWeight: '800' },
   settingValue: { color: colors.textMuted, fontSize: 12 },
+  themeSwitch: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  themeOption: { flex: 1, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.abyss, borderRadius: 10, paddingVertical: 11, alignItems: 'center' },
+  themeOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  themeOptionText: { color: colors.textMuted, fontWeight: '800', fontSize: 12 },
+  themeOptionTextActive: { color: colors.accent },
   tabBar: {
     position: 'absolute',
     left: 0,
@@ -752,4 +762,5 @@ const styles = StyleSheet.create({
   actionTile: { width: '48%', backgroundColor: colors.abyss, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14, minHeight: 92 },
   actionTitle: { color: colors.textPrimary, fontWeight: '800', fontSize: 15 },
   actionSubtitle: { color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 8 },
-});
+  });
+}

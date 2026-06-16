@@ -32,6 +32,7 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS efi_payment_url TEXT"))
     await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS efi_pdf_url TEXT"))
     await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS efi_pix_qrcode TEXT"))
+    await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS efi_payment_receipt_url TEXT"))
     await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS efi_raw_response JSONB"))
 
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS daily_interest_percent DOUBLE PRECISION NOT NULL DEFAULT 0.033"))

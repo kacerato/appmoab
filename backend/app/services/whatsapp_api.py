@@ -157,6 +157,53 @@ class WhatsAppService:
             logger.error(f"Erro geral ao enviar doc: {e}")
             return {"status": "failed", "error": str(e)}
 
+    async def send_media(
+        self,
+        *,
+        phone: str,
+        media_base64: str,
+        filename: str,
+        caption: str = "",
+        mediatype: str = "document",
+        mimetype: str | None = None,
+        quoted: dict | None = None,
+    ) -> dict | None:
+        if not self.is_enabled:
+            return None
+
+        digits = self.normalize_phone(phone)
+        payload: dict = {
+            "number": digits,
+            "mediatype": mediatype,
+            "media": media_base64.split(",", 1)[1] if media_base64.startswith("data:") and "," in media_base64 else media_base64,
+            "fileName": filename,
+            "caption": caption,
+        }
+        if mimetype:
+            payload["mimetype"] = mimetype
+        if quoted:
+            payload["quoted"] = quoted
+
+        client = await self._get_client()
+        try:
+            response = await client.post(
+                f"/message/sendMedia/{settings.evolution_instance_name}",
+                json=payload,
+            )
+            response.raise_for_status()
+            response_payload = response.json() if response.content else {}
+            return {
+                "status": "sent",
+                "message_id": response_payload.get("key", {}).get("id"),
+                "payload": response_payload,
+            }
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Erro ao enviar midia Evolution API: {e.response.text}")
+            return {"status": "failed", "error": e.response.text}
+        except Exception as e:
+            logger.error(f"Erro geral ao enviar midia: {e}")
+            return {"status": "failed", "error": str(e)}
+
     async def get_media_base64(self, message: dict, convert_to_mp4: bool = False) -> dict | None:
         if not self.is_enabled:
             return {"status": "disabled", "error": "WhatsApp desabilitado"}
