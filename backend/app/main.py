@@ -76,6 +76,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+app.middleware("http")(performance_and_security_middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -83,7 +84,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.middleware("http")(performance_and_security_middleware)
 
 os.makedirs(settings.upload_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")

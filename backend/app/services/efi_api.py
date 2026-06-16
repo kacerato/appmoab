@@ -31,12 +31,18 @@ class EfiAPIService:
     def _assert_configured(self) -> None:
         if not settings.efi_client_id or not settings.efi_client_secret:
             raise EfiAPIError("Credenciais da Efí nao configuradas")
+        if bool(settings.efi_cert_path) != bool(settings.efi_key_path):
+            raise EfiAPIError("Configure EFI_CERT_PATH e EFI_KEY_PATH juntos ou deixe ambos vazios")
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            cert = None
+            if settings.efi_cert_path and settings.efi_key_path:
+                cert = (settings.efi_cert_path, settings.efi_key_path)
             self._client = httpx.AsyncClient(
                 base_url=settings.efi_cobrancas_base_url,
                 timeout=30.0,
+                cert=cert,
             )
         return self._client
 
@@ -66,7 +72,10 @@ class EfiAPIService:
             ) from exc
 
         data = response.json()
-        self._access_token = data["access_token"]
+        access_token = data.get("access_token")
+        if not access_token:
+            raise EfiAPIError("Resposta de autenticacao da Efí sem access_token", detail=data)
+        self._access_token = access_token
         self._token_expires_at = time.time() + int(data.get("expires_in") or 600)
         return self._access_token
 
@@ -88,7 +97,18 @@ class EfiAPIService:
                 status_code=exc.response.status_code,
                 detail=_safe_json(exc.response),
             ) from exc
-        return response.json() if response.content else {}
+        return _safe_json(response) if response.content else {}
+
+    async def validar_autenticacao(self) -> dict:
+        """Valida credenciais/base URL sem emitir cobranca."""
+        token = await self._get_token()
+        return {
+            "ok": True,
+            "environment": "sandbox" if settings.efi_sandbox else "production",
+            "base_url": settings.efi_cobrancas_base_url,
+            "token_preview": f"{token[:8]}..." if token else "",
+            "expires_at": int(self._token_expires_at),
+        }
 
     async def emitir_cobranca(
         self,
@@ -141,7 +161,7 @@ class EfiAPIService:
             "customer": customer,
             "expire_at": data_vencimento.isoformat(),
             "configurations": configurations,
-            "message": _limit_message(mensagem),
+            "message": _format_billet_message(mensagem),
         }
         payload: dict[str, Any] = {
             "items": [
@@ -181,7 +201,7 @@ class EfiAPIService:
         end = end_date or date.today()
         begin = begin_date or (end - timedelta(days=90))
         params: dict[str, str] = {
-            "charge_type": "banking_billet",
+            "charge_type": "billet",
             "begin_date": begin.isoformat(),
             "end_date": end.isoformat(),
         }
@@ -211,15 +231,24 @@ class EfiAPIService:
 
     def _build_customer(self, **data) -> dict:
         digits = "".join(c for c in data["cpf_cnpj"] if c.isdigit())
+        if len(digits) not in (11, 14):
+            raise EfiAPIError("CPF/CNPJ do cliente invalido para emissao da cobranca Efí")
+        zipcode = "".join(c for c in data["cep"] if c.isdigit())
+        if len(zipcode) != 8:
+            raise EfiAPIError("CEP do cliente invalido para emissao da cobranca Efí")
+        uf = (data["uf"] or "").strip().upper()
+        if len(uf) != 2:
+            raise EfiAPIError("UF do cliente invalida para emissao da cobranca Efí")
+
         customer: dict[str, Any] = {
             "address": {
-                "street": data["endereco"],
+                "street": _required_text(data["endereco"], "endereco"),
                 "number": data["numero"] or "S/N",
-                "neighborhood": data["bairro"],
-                "zipcode": "".join(c for c in data["cep"] if c.isdigit()),
-                "city": data["cidade"],
+                "neighborhood": _required_text(data["bairro"], "bairro"),
+                "zipcode": zipcode,
+                "city": _required_text(data["cidade"], "cidade"),
                 "complement": "",
-                "state": data["uf"],
+                "state": uf,
             },
         }
         if data["email"]:
@@ -228,25 +257,29 @@ class EfiAPIService:
         if len(phone) >= 10:
             customer["phone_number"] = phone
         if len(digits) == 14:
-            customer["juridical_person"] = {"corporate_name": data["nome"], "cnpj": digits}
+            customer["juridical_person"] = {"corporate_name": _required_text(data["nome"], "nome"), "cnpj": digits}
         else:
-            customer["name"] = data["nome"]
+            customer["name"] = _required_text(data["nome"], "nome")
             customer["cpf"] = digits
         return customer
 
     def _normalize_charge_response(self, result: dict) -> dict:
         data = result.get("data") if isinstance(result.get("data"), dict) else result
-        payment = data.get("payment") or {}
-        billet = payment.get("banking_billet") or {}
-        pix = billet.get("pix") or data.get("pix") or {}
-        pdf = billet.get("pdf") or data.get("pdf") or {}
+        payment_value = data.get("payment") or {}
+        payment = payment_value if isinstance(payment_value, dict) else {}
+        billet_value = payment.get("banking_billet") or data.get("banking_billet") or {}
+        billet = billet_value if isinstance(billet_value, dict) else {}
+        pix_value = billet.get("pix") or data.get("pix") or {}
+        pix = pix_value if isinstance(pix_value, dict) else {}
+        pdf_value = billet.get("pdf") or data.get("pdf") or {}
+        pdf = pdf_value if isinstance(pdf_value, dict) else {}
         return {
             "charge_id": str(data.get("charge_id") or data.get("id") or ""),
             "status": data.get("status"),
             "barcode": data.get("barcode") or billet.get("barcode"),
-            "payment_url": data.get("billet_link") or data.get("link") or billet.get("link"),
-            "pdf_url": pdf.get("charge") if isinstance(pdf, dict) else None,
-            "pix_qrcode": pix.get("qrcode") if isinstance(pix, dict) else None,
+            "payment_url": data.get("payment_url") or data.get("billet_link") or data.get("link") or billet.get("link"),
+            "pdf_url": pdf.get("charge") or data.get("pdf_url"),
+            "pix_qrcode": pix.get("qrcode") or data.get("pix_qrcode") or data.get("pixCopiaECola"),
             "expire_at": data.get("expire_at") or billet.get("expire_at"),
             "raw": result,
         }
@@ -262,6 +295,22 @@ def _safe_json(response: httpx.Response) -> Any:
 def _limit_message(value: str | None, limit: int = 400) -> str:
     text = (value or "").strip()
     return text[:limit]
+
+
+def _format_billet_message(value: str | None) -> str:
+    """Efí aceita ate 4 linhas com 100 caracteres por linha no boleto."""
+    text = " ".join((value or "").split())
+    if not text:
+        return ""
+    lines = [text[index:index + 100] for index in range(0, min(len(text), 400), 100)]
+    return "\n".join(lines[:4])
+
+
+def _required_text(value: str | None, field: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise EfiAPIError(f"Campo obrigatorio ausente para Efí: {field}")
+    return text
 
 
 efi_service = EfiAPIService()
