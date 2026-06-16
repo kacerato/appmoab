@@ -20,7 +20,7 @@ class SystemSetting(Base):
     reconnection_fee_amount: Mapped[float] = mapped_column(Float, nullable=False, default=160.0)
     cut_notice_days_after_due: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     default_due_day: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
-    auto_send_invoice_on_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    auto_send_invoice_on_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notification_flows: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

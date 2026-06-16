@@ -110,7 +110,7 @@ export default function NotificationsPage() {
     api.get<SystemSetting>('/system-settings')
       .then(data => setSettings({
         ...data,
-        auto_send_invoice_on_approval: data.auto_send_invoice_on_approval ?? false,
+        auto_send_invoice_on_approval: data.auto_send_invoice_on_approval ?? true,
         notification_flows: {
           ...DEFAULT_NOTIFICATION_FLOWS,
           ...(data.notification_flows || {}),
@@ -255,12 +255,12 @@ export default function NotificationsPage() {
         <div className="card-header">
           <span className="card-title">Automação de faturas</span>
           <button
-            className={`btn btn-sm ${settings?.auto_send_invoice_on_approval ? 'btn-primary' : 'btn-secondary'}`}
+            className={`btn btn-sm ${settings?.auto_send_invoice_on_approval ?? true ? 'btn-primary' : 'btn-secondary'}`}
             type="button"
             onClick={() => setSettings(current => current ? ({ ...current, auto_send_invoice_on_approval: !current.auto_send_invoice_on_approval }) : current)}
             disabled={!settings}
           >
-            {settings?.auto_send_invoice_on_approval ? 'Ligado' : 'Desligado'}
+            {settings?.auto_send_invoice_on_approval ?? true ? 'Ligado' : 'Desligado'}
           </button>
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 720 }}>
