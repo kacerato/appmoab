@@ -13,7 +13,7 @@ class SystemSettingResponse(BaseModel):
     reconnection_fee_amount: float
     cut_notice_days_after_due: int
     default_due_day: int
-    auto_send_invoice_on_approval: bool = False
+    auto_send_invoice_on_approval: bool = True
     notification_flows: dict = {}
     updated_at: datetime | None = None
 
@@ -30,7 +30,7 @@ class SystemSettingUpdate(BaseModel):
     reconnection_fee_amount: float = 160.0
     cut_notice_days_after_due: int = 5
     default_due_day: int = 10
-    auto_send_invoice_on_approval: bool = False
+    auto_send_invoice_on_approval: bool = True
     notification_flows: dict = {}
 
     @field_validator("route_window_days_before_due", "route_window_days_after_due", "cut_notice_days_after_due")
