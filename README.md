@@ -82,10 +82,13 @@ docker-compose up -d
 | `EFI_SANDBOX` | `true` para homologacao, `false` para producao |
 | `EFI_NOTIFICATION_URL` | URL publica do webhook `/api/webhooks/efi` |
 | `EFI_BOLETO_DAYS_TO_WRITE_OFF` | Dias para baixa automatica da cobranca apos vencimento |
+| `EFI_CERT_PATH` / `EFI_KEY_PATH` | Certificado cliente em PEM, opcional para Cobranças/Bolix e obrigatorio apenas se o ambiente Efí exigir mTLS |
 | `KIMI_API_KEY` | OCR do Kimi |
 | `EVOLUTION_API_URL` | URL base da Evolution API |
 | `EVOLUTION_API_KEY` | Chave enviada no header `apikey` |
 | `EVOLUTION_INSTANCE_NAME` | Nome da instancia usada para envio |
+
+> Variaveis legadas `INTER_CLIENT_ID`, `INTER_CLIENT_SECRET` e `INTER_SANDBOX` ainda sao aceitas pelo backend para compatibilidade, mas novos ambientes devem usar `EFI_*`. Certificados devem ser configurados somente com `EFI_CERT_PATH` e `EFI_KEY_PATH`.
 
 ## WhatsApp via Evolution API
 

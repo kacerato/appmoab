@@ -35,11 +35,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 43200
 
-    efi_client_id: str = ""
-    efi_client_secret: str = ""
-    efi_sandbox: bool = True
+    efi_client_id: str = Field(default="", validation_alias=AliasChoices("EFI_CLIENT_ID", "INTER_CLIENT_ID"))
+    efi_client_secret: str = Field(default="", validation_alias=AliasChoices("EFI_CLIENT_SECRET", "INTER_CLIENT_SECRET"))
+    efi_sandbox: bool = Field(default=True, validation_alias=AliasChoices("EFI_SANDBOX", "INTER_SANDBOX"))
     efi_notification_url: str = ""
     efi_boleto_days_to_write_off: int = 30
+    efi_cert_path: str = ""
+    efi_key_path: str = ""
 
     whatsapp_enabled: bool = False
     evolution_api_url: str = Field(
