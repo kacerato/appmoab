@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app.config import get_settings
 from app.database import Base, async_session_factory, engine
@@ -28,7 +29,7 @@ from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
 from app.services.efi_api import efi_service
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.middleware import performance_and_security_middleware
-from app.utils.schema_bootstrap import ensure_runtime_schema
+from app.utils.schema_startup import STARTUP_DATA_LOCK_ID, run_schema_bootstrap
 
 settings = get_settings()
 
@@ -43,12 +44,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("%s v%s iniciando...", settings.app_name, settings.app_version)
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await ensure_runtime_schema(conn)
+    await run_schema_bootstrap(engine, Base.metadata.create_all, logger)
 
     async with async_session_factory() as session:
         try:
+            await session.execute(text("SELECT pg_advisory_xact_lock(:lock_id)"), {"lock_id": STARTUP_DATA_LOCK_ID})
             await seed_default_tariffs(session)
             updated_hydrometers = await ensure_numeric_hydrometer_codes(session)
             if updated_hydrometers:
