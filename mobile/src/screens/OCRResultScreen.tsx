@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   ScrollView,
   Text,
@@ -40,6 +41,7 @@ export default function OCRResultScreen() {
     photoUri,
     latitude,
     longitude,
+    locationAccuracyMeters,
     capturedAt,
     hydrometerId,
     hydrometerCode,
@@ -75,6 +77,16 @@ export default function OCRResultScreen() {
 
   const confirmReading = async () => {
     if (normalizedCurrentValue === null) return;
+    const rolloverLimit = 10 ** (blackDigits || 4);
+    const isRollover = normalizedCurrentValue < lastReading && lastReading >= rolloverLimit * 0.9;
+    if (!isInstallation && normalizedCurrentValue < lastReading && !isRollover) {
+      Alert.alert(
+        'Leitura menor que a anterior',
+        'Confira se o QR e o hidrômetro estão corretos. Essa leitura não será enviada como leitura normal.',
+      );
+      return;
+    }
+
     setSubmitting(true);
     try {
       const result = await api.post<OCRData>('/readings', {
@@ -82,6 +94,7 @@ export default function OCRResultScreen() {
         photo_base64: photoBase64,
         latitude,
         longitude,
+        location_accuracy_meters: locationAccuracyMeters,
         captured_at: capturedAt,
         current_value: normalizedCurrentValue,
         confirmed_code: hydrometerCode || null,
@@ -117,7 +130,14 @@ export default function OCRResultScreen() {
     }
   };
 
-  const consumption = normalizedCurrentValue !== null ? Math.max(0, normalizedCurrentValue - lastReading) : 0;
+  const consumption = useMemo(() => {
+    if (normalizedCurrentValue === null) return 0;
+    const rolloverLimit = 10 ** (blackDigits || 4);
+    if (!isInstallation && normalizedCurrentValue < lastReading && lastReading >= rolloverLimit * 0.9) {
+      return (rolloverLimit - lastReading) + normalizedCurrentValue;
+    }
+    return Math.max(0, normalizedCurrentValue - lastReading);
+  }, [blackDigits, isInstallation, lastReading, normalizedCurrentValue]);
   const locationLabel = useMemo(() => {
     if (latitude && longitude) {
       return `${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;

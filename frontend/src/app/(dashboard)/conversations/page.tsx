@@ -406,6 +406,8 @@ export default function ConversationsPage() {
         setMessages(current => [...current, response.message]);
         loadConversations(response.message.phone);
         loadMessages(response.message.phone, false);
+        window.setTimeout(() => loadMessages(response.message.phone, false), 800);
+        window.setTimeout(() => loadMessages(response.message.phone, false), 2200);
         notify(
           response.whatsapp_status === 'sent' ? 'Mensagem enviada' : 'Mensagem registrada',
           response.detail || 'O historico da conversa foi atualizado.',
@@ -452,6 +454,8 @@ export default function ConversationsPage() {
         setQuoted(null);
         loadConversations(response.message.phone);
         loadMessages(response.message.phone, false);
+        window.setTimeout(() => loadMessages(response.message.phone, false), 800);
+        window.setTimeout(() => loadMessages(response.message.phone, false), 2200);
         notify(
           response.whatsapp_status === 'sent' ? 'Conversa iniciada' : 'Conversa registrada',
           response.detail || 'A mensagem foi adicionada ao historico.',

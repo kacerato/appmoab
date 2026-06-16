@@ -9,6 +9,41 @@ import { api } from '../lib/api';
 import { findCachedHydrometerByQr, matchesHydrometerQr, normalizeScannedQrValue } from '../lib/route-cache';
 import { colors } from '../styles/theme';
 
+const GPS_TARGET_ACCURACY_METERS = 25;
+const GPS_MAX_WAIT_MS = 4200;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>(resolve => setTimeout(() => resolve(null), timeoutMs)),
+  ]);
+}
+
+async function getBestLocationSample() {
+  const { status } = await Location.requestForegroundPermissionsAsync();
+  if (status !== 'granted') return null;
+
+  const startedAt = Date.now();
+  let bestLocation: Location.LocationObject | null = null;
+
+  while (Date.now() - startedAt < GPS_MAX_WAIT_MS) {
+    const remainingMs = Math.max(GPS_MAX_WAIT_MS - (Date.now() - startedAt), 600);
+    const location = await withTimeout(
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }),
+      remainingMs,
+    );
+    if (!location) break;
+    const currentAccuracy = location.coords.accuracy ?? Number.POSITIVE_INFINITY;
+    const bestAccuracy = bestLocation?.coords.accuracy ?? Number.POSITIVE_INFINITY;
+    if (!bestLocation || currentAccuracy < bestAccuracy) {
+      bestLocation = location;
+    }
+    if (currentAccuracy <= GPS_TARGET_ACCURACY_METERS) break;
+  }
+
+  return bestLocation;
+}
+
 interface QrResolveResult {
   matched: boolean;
   hydrometer_id?: string | null;
@@ -240,12 +275,7 @@ export default function CameraScreen() {
 
       let location = null;
       try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status === 'granted') {
-          location = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.High,
-          });
-        }
+        location = await getBestLocationSample();
       } catch (error) {
         console.warn('GPS indisponivel:', error);
       }
@@ -255,6 +285,7 @@ export default function CameraScreen() {
         photoUri: photo.uri,
         latitude: location?.coords.latitude || null,
         longitude: location?.coords.longitude || null,
+        locationAccuracyMeters: location?.coords.accuracy || null,
         capturedAt: new Date().toISOString(),
         hydrometerId: activeHydrometerId,
         hydrometerCode: activeHydrometerCode,

@@ -458,6 +458,9 @@ async def create_hydrometer(
         location_description=data.location_description,
         latitude=data.latitude,
         longitude=data.longitude,
+        allowed_radius_meters=data.allowed_radius_meters,
+        location_required=data.location_required,
+        location_source="manual" if data.latitude is not None and data.longitude is not None else None,
         last_reading_value=data.initial_reading,
     )
     db.add(hydrometer)
@@ -496,8 +499,16 @@ async def update_hydrometer(
         raise HTTPException(status_code=400, detail="Digitos vermelhos devem ser 2 ou 3")
     if "black_digits" in update_data and update_data["black_digits"] is not None and update_data["black_digits"] < 1:
         raise HTTPException(status_code=400, detail="Digitos pretos deve ser maior que zero")
+    if "allowed_radius_meters" in update_data and update_data["allowed_radius_meters"] is not None and update_data["allowed_radius_meters"] < 10:
+        raise HTTPException(status_code=400, detail="Raio permitido deve ser pelo menos 10 metros")
     if "last_reading_value" in update_data and update_data["last_reading_value"] is not None:
         hydrometer.last_reading_date = datetime.now(timezone.utc)
+    if (
+        ("latitude" in update_data or "longitude" in update_data)
+        and update_data.get("latitude", hydrometer.latitude) is not None
+        and update_data.get("longitude", hydrometer.longitude) is not None
+    ):
+        update_data["location_source"] = "manual"
 
     for field, value in update_data.items():
         setattr(hydrometer, field, value)

@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ReadingCreate(BaseModel):
@@ -14,7 +14,9 @@ class ReadingCreate(BaseModel):
     confirmed_code: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    location_accuracy_meters: float | None = None
     captured_at: datetime
+    anomaly_override_reason: str | None = None
 
 
 class ReadingOCRResult(BaseModel):
@@ -56,7 +58,12 @@ class ReadingResponse(BaseModel):
     ocr_confidence: float | None
     latitude: float | None
     longitude: float | None
+    location_accuracy_meters: float | None = None
+    distance_from_hydrometer_meters: float | None = None
+    location_status: str = "unchecked"
     captured_at: datetime
+    validation_flags: list[dict] = Field(default_factory=list)
+    anomaly_override_reason: str | None = None
     status: str
     rejection_reason: str | None
     approved_by: UUID | None
