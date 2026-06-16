@@ -13,6 +13,15 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS disconnected_at TIMESTAMP WITH TIME ZONE"))
     await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS reconnected_at TIMESTAMP WITH TIME ZONE"))
     await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS disconnection_reason TEXT"))
+    await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS allowed_radius_meters DOUBLE PRECISION NOT NULL DEFAULT 80"))
+    await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS location_required BOOLEAN NOT NULL DEFAULT true"))
+    await conn.execute(text("ALTER TABLE hydrometers ADD COLUMN IF NOT EXISTS location_source VARCHAR(40)"))
+
+    await conn.execute(text("ALTER TABLE readings ADD COLUMN IF NOT EXISTS location_accuracy_meters DOUBLE PRECISION"))
+    await conn.execute(text("ALTER TABLE readings ADD COLUMN IF NOT EXISTS distance_from_hydrometer_meters DOUBLE PRECISION"))
+    await conn.execute(text("ALTER TABLE readings ADD COLUMN IF NOT EXISTS location_status VARCHAR(30) NOT NULL DEFAULT 'unchecked'"))
+    await conn.execute(text("ALTER TABLE readings ADD COLUMN IF NOT EXISTS validation_flags JSONB NOT NULL DEFAULT '[]'::jsonb"))
+    await conn.execute(text("ALTER TABLE readings ADD COLUMN IF NOT EXISTS anomaly_override_reason TEXT"))
 
     await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS original_amount DOUBLE PRECISION"))
     await conn.execute(text("UPDATE invoices SET original_amount = amount WHERE original_amount IS NULL"))

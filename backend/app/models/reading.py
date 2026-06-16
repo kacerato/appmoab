@@ -12,7 +12,7 @@ Fluxo: pending → approved/rejected
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import String, Float, DateTime, ForeignKey, Text, Enum as SAEnum
+from sqlalchemy import String, Float, DateTime, ForeignKey, Text, Enum as SAEnum, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,9 +46,14 @@ class Reading(Base):
     # ── Geolocalização da Captura ──────────────────────────────
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    location_accuracy_meters: Mapped[float | None] = mapped_column(Float, nullable=True)
+    distance_from_hydrometer_meters: Mapped[float | None] = mapped_column(Float, nullable=True)
+    location_status: Mapped[str] = mapped_column(String(30), nullable=False, default="unchecked")
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    validation_flags: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    anomaly_override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ── Fluxo de Aprovação ─────────────────────────────────────
     status: Mapped[str] = mapped_column(

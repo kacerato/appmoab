@@ -4,6 +4,7 @@ Router de Leituras — Upload de foto, OCR, validação e aprovação.
 
 import asyncio
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 
@@ -44,6 +45,126 @@ from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
 router = APIRouter(prefix="/readings", tags=["Leituras"])
 logger = logging.getLogger(__name__)
+
+DEFAULT_ALLOWED_RADIUS_METERS = 80.0
+CRITICAL_DISTANCE_MULTIPLIER = 4
+LOW_ACCURACY_THRESHOLD_METERS = 50.0
+ROLLOVER_PREVIOUS_THRESHOLD = 0.90
+
+
+def _flag(code: str, label: str, message: str, severity: str = "warning") -> dict:
+    return {"code": code, "label": label, "message": message, "severity": severity}
+
+
+def _distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius = 6371000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    value = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return radius * 2 * math.atan2(math.sqrt(value), math.sqrt(1 - value))
+
+
+def _rollover_limit(hydrometer: Hydrometer) -> float:
+    black_digits = hydrometer.black_digits or 4
+    return float(10 ** black_digits)
+
+
+def _evaluate_reading(
+    *,
+    hydrometer: Hydrometer,
+    current_value: float,
+    previous_value: float,
+    latitude: float | None,
+    longitude: float | None,
+    location_accuracy_meters: float | None,
+    anomaly_override_reason: str | None = None,
+) -> tuple[float, str, float | None, list[dict]]:
+    flags: list[dict] = []
+    distance: float | None = None
+    location_status = "ok"
+
+    if latitude is None or longitude is None:
+        location_status = "missing_capture" if hydrometer.location_required else "unchecked"
+        if hydrometer.location_required:
+            flags.append(_flag(
+                "location_missing",
+                "Sem GPS",
+                "A leitura chegou sem coordenadas de coleta.",
+                "warning",
+            ))
+    elif hydrometer.latitude is None or hydrometer.longitude is None:
+        location_status = "missing_reference"
+        flags.append(_flag(
+            "location_reference_created",
+            "Base de local criada",
+            "Esta leitura definiu a localização-base do hidrômetro.",
+            "info",
+        ))
+    else:
+        allowed_radius = hydrometer.allowed_radius_meters or DEFAULT_ALLOWED_RADIUS_METERS
+        distance = _distance_meters(hydrometer.latitude, hydrometer.longitude, latitude, longitude)
+        if distance > allowed_radius * CRITICAL_DISTANCE_MULTIPLIER:
+            location_status = "blocked_review"
+            flags.append(_flag(
+                "location_far",
+                "Muito fora do raio",
+                f"Coleta a {distance:.0f}m da base do hidrômetro; raio permitido {allowed_radius:.0f}m.",
+                "danger",
+            ))
+        elif distance > allowed_radius:
+            location_status = "warning"
+            flags.append(_flag(
+                "location_outside_radius",
+                "Fora do raio",
+                f"Coleta a {distance:.0f}m da base do hidrômetro; raio permitido {allowed_radius:.0f}m.",
+                "warning",
+            ))
+
+    if location_accuracy_meters and location_accuracy_meters > LOW_ACCURACY_THRESHOLD_METERS:
+        if location_status == "ok":
+            location_status = "low_accuracy"
+        flags.append(_flag(
+            "location_low_accuracy",
+            "GPS impreciso",
+            f"Precisão informada pelo aparelho: {location_accuracy_meters:.0f}m.",
+            "warning",
+        ))
+
+    consumption = current_value - previous_value
+    if consumption < 0:
+        limit = _rollover_limit(hydrometer)
+        rollover_allowed = previous_value >= limit * ROLLOVER_PREVIOUS_THRESHOLD
+        if rollover_allowed:
+            consumption = (limit - previous_value) + current_value
+            flags.append(_flag(
+                "meter_rollover",
+                "Virada do hidrômetro",
+                f"Leitura anterior próxima do limite {limit:.0f}; consumo calculado por virada.",
+                "info",
+            ))
+        elif anomaly_override_reason:
+            flags.append(_flag(
+                "reading_regression_override",
+                "Leitura menor que anterior",
+                "Leitura enviada como exceção e precisa de conferência manual.",
+                "danger",
+            ))
+            consumption = 0.0
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Leitura atual menor que a anterior. Confira se o QR/hidrômetro está correto "
+                    "ou registre uma exceção justificada."
+                ),
+            )
+
+    return max(consumption, 0.0), location_status, distance, flags
 
 
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
@@ -136,19 +257,52 @@ async def create_reading(
     if current_value is None:
         current_value = ocr_result.get("leitura_m3") or 0.0
 
+    created_location_reference = (
+        hydrometer.latitude is None
+        and hydrometer.longitude is None
+        and data.latitude is not None
+        and data.longitude is not None
+    )
+    if created_location_reference:
+        hydrometer.latitude = data.latitude
+        hydrometer.longitude = data.longitude
+        hydrometer.location_source = "first_reading"
+
+    consumption, location_status, distance, flags = _evaluate_reading(
+        hydrometer=hydrometer,
+        current_value=current_value,
+        previous_value=hydrometer.last_reading_value,
+        latitude=data.latitude,
+        longitude=data.longitude,
+        location_accuracy_meters=data.location_accuracy_meters,
+        anomaly_override_reason=data.anomaly_override_reason,
+    )
+    if created_location_reference:
+        flags.append(_flag(
+            "location_reference_created",
+            "Base de local criada",
+            "Esta leitura definiu a localização-base do hidrômetro.",
+            "info",
+        ))
+
     # Cria leitura (status=pending, aguarda confirmação do colaborador)
     reading = Reading(
         hydrometer_id=data.hydrometer_id,
         collaborator_id=user.id,
         current_value=current_value,
         previous_value=hydrometer.last_reading_value,
-        consumption=max(0, current_value - hydrometer.last_reading_value),
+        consumption=consumption,
         photo_url=photo_url,
         photo_extracted_code=data.confirmed_code or ocr_result.get("codigo"),
         photo_extracted_value=ocr_result.get("leitura_m3"),
         ocr_confidence=ocr_result.get("confianca"),
         latitude=data.latitude,
         longitude=data.longitude,
+        location_accuracy_meters=data.location_accuracy_meters,
+        distance_from_hydrometer_meters=distance,
+        location_status=location_status,
+        validation_flags=flags,
+        anomaly_override_reason=data.anomaly_override_reason,
         captured_at=data.captured_at,
         status="pending",
     )
@@ -183,8 +337,20 @@ async def confirm_reading(
     if not reading:
         raise HTTPException(status_code=404, detail="Leitura não encontrada")
 
+    consumption, location_status, distance, flags = _evaluate_reading(
+        hydrometer=reading.hydrometer,
+        current_value=data.current_value,
+        previous_value=reading.previous_value,
+        latitude=reading.latitude,
+        longitude=reading.longitude,
+        location_accuracy_meters=reading.location_accuracy_meters,
+        anomaly_override_reason=reading.anomaly_override_reason,
+    )
     reading.current_value = data.current_value
-    reading.consumption = max(0, data.current_value - reading.previous_value)
+    reading.consumption = consumption
+    reading.location_status = location_status
+    reading.distance_from_hydrometer_meters = distance
+    reading.validation_flags = flags
     if data.confirmed_code:
         reading.photo_extracted_code = data.confirmed_code
 

@@ -37,6 +37,9 @@ class Hydrometer(Base):
     location_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    allowed_radius_meters: Mapped[float] = mapped_column(Float, nullable=False, default=80.0)
+    location_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    location_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # ── Última Leitura Registrada ──────────────────────────────
     last_reading_value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

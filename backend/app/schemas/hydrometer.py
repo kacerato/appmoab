@@ -15,6 +15,9 @@ class HydrometerBase(BaseModel):
     location_description: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    allowed_radius_meters: float = 80.0
+    location_required: bool = True
+    location_source: str | None = None
 
 
 class HydrometerCreate(HydrometerBase):
@@ -31,6 +34,8 @@ class HydrometerUpdate(BaseModel):
     location_description: str | None = None
     latitude: float | None = None
     longitude: float | None = None
+    allowed_radius_meters: float | None = None
+    location_required: bool | None = None
     is_active: bool | None = None
     last_reading_value: float | None = None
 
