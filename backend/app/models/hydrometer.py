@@ -2,7 +2,7 @@
 Modelo de Hidrômetro — Equipamento de medição vinculado a um cliente.
 
 Cada hidrômetro possui um código único gravado no corpo do equipamento,
-que é utilizado pelo Kimi K2.6 para associação automática via OCR.
+que é utilizado pelo GLM-OCR para associação automática via OCR.
 """
 
 import uuid

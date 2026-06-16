@@ -101,7 +101,7 @@ export default function ManualCodeScreen() {
           <Text style={shared.sectionTitle}>Codigo do hidrometro</Text>
           <Text style={styles.title}>Digite o codigo fotografado</Text>
           <Text style={styles.subtitle}>
-            A foto fica salva para o Kimi avaliar por baixo dos panos, mas quem confirma o codigo agora e voce.
+            A foto fica salva para o GLM-OCR avaliar por baixo dos panos, mas quem confirma o codigo agora e voce.
           </Text>
           <TextInput
             style={styles.codeInput}

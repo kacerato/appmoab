@@ -40,6 +40,7 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS reconnection_fee_amount DOUBLE PRECISION NOT NULL DEFAULT 160"))
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS cut_notice_days_after_due INTEGER NOT NULL DEFAULT 5"))
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS default_due_day INTEGER NOT NULL DEFAULT 10"))
+    await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS auto_send_invoice_on_approval BOOLEAN NOT NULL DEFAULT false"))
     await conn.execute(text("ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS notification_flows JSONB NOT NULL DEFAULT '{}'::jsonb"))
 
     await conn.execute(text("""

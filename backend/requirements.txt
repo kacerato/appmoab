@@ -14,7 +14,7 @@ python-jose[cryptography]==3.4.0
 passlib[bcrypt]==1.7.4
 bcrypt==4.3.0
 
-# HTTP Client (Efí API, Kimi API)
+# HTTP Client (Efí API, GLM-OCR)
 httpx==0.28.1
 boto3==1.35.99
 
@@ -26,9 +26,6 @@ email-validator==2.2.0
 # Celery & Redis
 celery[redis]==5.5.2
 redis==5.3.0
-
-# OpenAI SDK (Kimi K2.6 compatible)
-openai==1.82.0
 
 # File handling
 python-magic==0.4.27

@@ -4,7 +4,7 @@ Modelo de Leitura — Registro de medição do hidrômetro em campo.
 Capturada pelo colaborador via app mobile com:
 - Foto do hidrômetro
 - GPS + timestamp
-- OCR via Kimi K2.6 (código + leitura)
+- OCR via GLM-OCR (código + leitura)
 
 Fluxo: pending → approved/rejected
 """

@@ -341,8 +341,13 @@ export default function ConversationsPage() {
       if (document.visibilityState === 'visible') {
         loadConversations(undefined, true, true);
       }
-    }, 6000);
-    return () => window.clearInterval(interval);
+    }, 3000);
+    const handleFocus = () => loadConversations(undefined, true, true);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [loadConversations]);
 
   useEffect(() => {
@@ -383,6 +388,7 @@ export default function ConversationsPage() {
         setQuoted(null);
         setMessages(current => [...current, response.message]);
         loadConversations(response.message.phone);
+        loadMessages(response.message.phone, false);
         notify(
           response.whatsapp_status === 'sent' ? 'Mensagem enviada' : 'Mensagem registrada',
           response.detail || 'O historico da conversa foi atualizado.',
@@ -416,6 +422,7 @@ export default function ConversationsPage() {
         setNewText('');
         setQuoted(null);
         loadConversations(response.message.phone);
+        loadMessages(response.message.phone, false);
         notify(
           response.whatsapp_status === 'sent' ? 'Conversa iniciada' : 'Conversa registrada',
           response.detail || 'A mensagem foi adicionada ao historico.',
