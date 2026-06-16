@@ -12,7 +12,7 @@ from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
-from app.utils.schema_bootstrap import ensure_runtime_schema
+from app.utils.schema_startup import run_schema_bootstrap
 from app.utils.security import hash_password
 
 logging.basicConfig(level=logging.INFO)
@@ -23,9 +23,7 @@ ADMIN_PASSWORD = "admin123"
 
 
 async def main():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await ensure_runtime_schema(conn)
+    await run_schema_bootstrap(engine, Base.metadata.create_all, logger)
     logger.info("Tabelas criadas/verificadas")
 
     async with async_session_factory() as db:
