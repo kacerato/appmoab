@@ -31,15 +31,16 @@ class WhatsAppMessageResponse(BaseModel):
 class WhatsAppSendMessageRequest(BaseModel):
     customer_id: UUID | None = None
     phone: str | None = None
-    text: str
+    text: str = ""
     quoted_message_id: UUID | None = None
+    file_base64: str | None = None
+    file_name: str | None = None
+    mime_type: str | None = None
 
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str) -> str:
         value = value.strip()
-        if not value:
-            raise ValueError("Informe a mensagem")
         if len(value) > 4000:
             raise ValueError("Mensagem muito longa")
         return value
@@ -55,6 +56,10 @@ class WhatsAppSendMessageRequest(BaseModel):
     def require_destination(self) -> "WhatsAppSendMessageRequest":
         if not self.customer_id and not self.phone:
             raise ValueError("Informe um cliente ou telefone")
+        if not self.text and not self.file_base64:
+            raise ValueError("Informe a mensagem ou um arquivo")
+        if self.file_base64 and not self.file_name:
+            raise ValueError("Informe o nome do arquivo")
         return self
 
 

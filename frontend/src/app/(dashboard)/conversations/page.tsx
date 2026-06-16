@@ -4,12 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { api } from '@/lib/api';
+import { fileToDataUrl } from '@/lib/file-base64';
 import {
   AlertTriangle,
   Check,
   CheckCheck,
+  FileText,
   Loader2,
   MessageCircle,
+  Paperclip,
   Phone,
   Plus,
   Reply,
@@ -279,11 +282,13 @@ export default function ConversationsPage() {
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [composer, setComposer] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [quoted, setQuoted] = useState<WhatsAppMessage | null>(null);
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [newCustomerId, setNewCustomerId] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [newText, setNewText] = useState('');
+  const [newFile, setNewFile] = useState<File | null>(null);
   const selectedPhoneRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
 
@@ -375,16 +380,28 @@ export default function ConversationsPage() {
     loadMessages(phone);
   };
 
-  const handleSend = () => {
-    if (!selectedPhone || !composer.trim()) return;
+  const handleSend = async () => {
+    if (!selectedPhone || (!composer.trim() && !selectedFile)) return;
     setSending(true);
+    let fileBase64: string | null = null;
+    try {
+      fileBase64 = selectedFile ? await fileToDataUrl(selectedFile) : null;
+    } catch (err) {
+      setSending(false);
+      notify('Falha ao ler arquivo', err instanceof Error ? err.message : 'Nao foi possivel preparar o anexo.', 'error');
+      return;
+    }
     api.post<SendMessageResponse>('/whatsapp/messages', {
       phone: selectedPhone,
       text: composer,
+      file_base64: fileBase64,
+      file_name: selectedFile?.name || null,
+      mime_type: selectedFile?.type || null,
       quoted_message_id: quoted?.id || null,
     })
       .then(response => {
         setComposer('');
+        setSelectedFile(null);
         setQuoted(null);
         setMessages(current => [...current, response.message]);
         loadConversations(response.message.phone);
@@ -399,9 +416,9 @@ export default function ConversationsPage() {
       .finally(() => setSending(false));
   };
 
-  const handleStartConversation = () => {
-    if (!newText.trim()) {
-      notify('Mensagem vazia', 'Escreva a primeira mensagem da conversa.', 'warning');
+  const handleStartConversation = async () => {
+    if (!newText.trim() && !newFile) {
+      notify('Conteudo vazio', 'Escreva a primeira mensagem ou anexe um arquivo.', 'warning');
       return;
     }
     if (!newCustomerId && !newPhone.trim()) {
@@ -410,16 +427,28 @@ export default function ConversationsPage() {
     }
 
     setSending(true);
+    let fileBase64: string | null = null;
+    try {
+      fileBase64 = newFile ? await fileToDataUrl(newFile) : null;
+    } catch (err) {
+      setSending(false);
+      notify('Falha ao ler arquivo', err instanceof Error ? err.message : 'Nao foi possivel preparar o anexo.', 'error');
+      return;
+    }
     api.post<SendMessageResponse>('/whatsapp/messages', {
       customer_id: newCustomerId || null,
       phone: newCustomerId ? null : newPhone,
       text: newText,
+      file_base64: fileBase64,
+      file_name: newFile?.name || null,
+      mime_type: newFile?.type || null,
     })
       .then(response => {
         setShowNewConversation(false);
         setNewCustomerId('');
         setNewPhone('');
         setNewText('');
+        setNewFile(null);
         setQuoted(null);
         loadConversations(response.message.phone);
         loadMessages(response.message.phone, false);
@@ -634,6 +663,18 @@ export default function ConversationsPage() {
                 </button>
               </div>
             )}
+            {selectedFile && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 10, borderRadius: 12, background: 'var(--bg-muted)', marginBottom: 10, border: '1px solid var(--border)' }}>
+                <FileText size={15} style={{ color: 'var(--accent)' }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedFile.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{selectedFile.type || 'Arquivo'}</div>
+                </div>
+                <button className="btn btn-ghost btn-icon" type="button" onClick={() => setSelectedFile(null)} aria-label="Remover anexo">
+                  <X size={14} />
+                </button>
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 10, alignItems: 'end' }}>
               <textarea
                 className="form-textarea whatsapp-composer"
@@ -643,10 +684,21 @@ export default function ConversationsPage() {
                 disabled={!selectedPhone || sending}
                 style={{ minHeight: 54, maxHeight: 140 }}
               />
-              <button className="btn btn-primary" type="button" onClick={handleSend} disabled={!selectedPhone || !composer.trim() || sending}>
-                {sending ? <Loader2 size={16} className="spinner" /> : <Send size={16} />}
-                Enviar
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <label className="btn btn-secondary btn-icon" title="Anexar arquivo" aria-label="Anexar arquivo">
+                  <Paperclip size={16} />
+                  <input
+                    type="file"
+                    style={{ display: 'none' }}
+                    disabled={!selectedPhone || sending}
+                    onChange={event => setSelectedFile(event.target.files?.[0] || null)}
+                  />
+                </label>
+                <button className="btn btn-primary" type="button" onClick={handleSend} disabled={!selectedPhone || (!composer.trim() && !selectedFile) || sending}>
+                  {sending ? <Loader2 size={16} className="spinner" /> : <Send size={16} />}
+                  Enviar
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -707,11 +759,22 @@ export default function ConversationsPage() {
                   style={{ minHeight: 130 }}
                 />
               </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="new_file">Arquivo/documento</label>
+                <input
+                  id="new_file"
+                  className="form-input"
+                  type="file"
+                  onChange={event => setNewFile(event.target.files?.[0] || null)}
+                />
+                {newFile && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{newFile.name}</div>}
+              </div>
             </div>
 
             <div className="modal-footer">
               <button className="btn btn-secondary" type="button" onClick={() => setShowNewConversation(false)}>Cancelar</button>
-              <button className="btn btn-primary" type="button" onClick={handleStartConversation} disabled={sending || !newText.trim() || (!newCustomerId && !newPhone.trim())}>
+              <button className="btn btn-primary" type="button" onClick={handleStartConversation} disabled={sending || (!newText.trim() && !newFile) || (!newCustomerId && !newPhone.trim())}>
                 {sending ? <Loader2 size={16} className="spinner" /> : <Send size={16} />}
                 Enviar
               </button>

@@ -67,6 +67,7 @@ class Invoice(Base):
     efi_payment_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     efi_pdf_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     efi_pix_qrcode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    efi_payment_receipt_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     efi_raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # ── PDF do Boleto ──────────────────────────────────────────

@@ -16,6 +16,7 @@ from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.whatsapp_message import WhatsAppMessage
 from app.services.efi_api import efi_service
+from app.services.payment_receipts import store_efi_payment_receipt
 from app.services.whatsapp_api import whatsapp_service
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,7 @@ async def efi_webhook(
         except ValueError:
             from datetime import date
             invoice.paid_date = date.today()
+        invoice.efi_payment_receipt_url = store_efi_payment_receipt(invoice, detail)
 
     await db.flush()
     logger.info("Notificacao Efí aplicada na fatura %s: %s", invoice.id, current_status)

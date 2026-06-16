@@ -1,6 +1,6 @@
 import { StyleSheet } from 'react-native';
 
-export const colors = {
+export const lightColors = {
   navy950: '#F8FAFC',
   abyss: '#EFF6FF',
   navy900: '#FFFFFF',
@@ -25,6 +25,38 @@ export const colors = {
   border: '#E2E8F0',
   borderHover: '#CBD5E1',
 };
+
+export const darkColors: typeof lightColors = {
+  navy950: '#07111F',
+  abyss: '#0B1728',
+  navy900: '#0F1B2D',
+  navy800: '#142238',
+  navy700: '#1D3351',
+  navy600: '#334B6B',
+  sidebarNavy: '#0B1728',
+  accent: '#38BDF8',
+  accentHover: '#7DD3FC',
+  accentSoft: 'rgba(56, 189, 248, 0.14)',
+  cyan: '#22D3EE',
+  coral: '#FB7185',
+  success: '#34D399',
+  successSoft: 'rgba(52, 211, 153, 0.14)',
+  warning: '#FBBF24',
+  warningSoft: 'rgba(251, 191, 36, 0.14)',
+  danger: '#FB7185',
+  dangerSoft: 'rgba(251, 113, 133, 0.14)',
+  textPrimary: '#E5F0FF',
+  textSecondary: '#B7C7DA',
+  textMuted: '#7F95AE',
+  border: '#213653',
+  borderHover: '#335273',
+};
+
+export const colors = { ...lightColors };
+
+export function applyColorMode(mode: 'light' | 'dark') {
+  Object.assign(colors, mode === 'dark' ? darkColors : lightColors);
+}
 
 export const shared = StyleSheet.create({
   container: {

@@ -136,8 +136,8 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
   const load = useCallback(() => {
     Promise.all([
-      api.get<Customer>(`/customers/${id}`),
-      api.get<{ items: Invoice[] }>(`/invoices?customer_id=${id}&per_page=10`),
+      api.get<Customer>(`/customers/${id}`, { skipCache: true }),
+      api.get<{ items: Invoice[] }>(`/invoices?customer_id=${id}&per_page=10`, { skipCache: true }),
     ])
       .then(([c, inv]) => {
         setCustomer(c);
@@ -248,12 +248,16 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         notify('Leitura inválida', 'Informe a leitura completa do visor ou o valor em m³.', 'warning');
         return;
       }
-      await api.patch(`/hydrometers/${adjustingHydrometerId}`, {
+      const updated = await api.patch<Hydrometer>(`/hydrometers/${adjustingHydrometerId}`, {
         last_reading_value: adjustedBaseValue,
       });
+      setCustomer(current => current ? ({
+        ...current,
+        hydrometers: current.hydrometers.map(hydrometer => hydrometer.id === updated.id ? { ...hydrometer, ...updated } : hydrometer),
+      }) : current);
       setAdjustingHydrometerId(null);
       setAdjustingHydrometerValue('');
-      load();
+      await load();
       notify('Leitura-base atualizada', 'O ponto de partida do hidrometro foi ajustado com sucesso.', 'success');
     } catch (err: unknown) {
       notify('Falha ao ajustar leitura-base', err instanceof Error ? err.message : 'Nao foi possivel atualizar a leitura-base.', 'error');

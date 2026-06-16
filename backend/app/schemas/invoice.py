@@ -32,6 +32,7 @@ class InvoiceResponse(BaseModel):
     efi_payment_url: str | None = None
     efi_pdf_url: str | None = None
     efi_pix_qrcode: str | None = None
+    efi_payment_receipt_url: str | None = None
     paid_date: date | None
     status: str
     has_pdf: bool = False
