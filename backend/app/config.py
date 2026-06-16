@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     whatsapp_phone_id: str = ""
     whatsapp_api_version: str = "v17.0"
 
-    kimi_api_key: str = ""
+    glm_api_key: str = ""
 
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 10

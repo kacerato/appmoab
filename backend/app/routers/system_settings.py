@@ -47,6 +47,7 @@ async def update_system_settings(
     settings.reconnection_fee_amount = data.reconnection_fee_amount
     settings.cut_notice_days_after_due = data.cut_notice_days_after_due
     settings.default_due_day = data.default_due_day
+    settings.auto_send_invoice_on_approval = data.auto_send_invoice_on_approval
     settings.notification_flows = data.notification_flows
     await db.flush()
     await db.refresh(settings)

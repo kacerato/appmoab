@@ -1,4 +1,4 @@
-"""Memoria operacional dos vereditos do Kimi Vision."""
+"""Memoria operacional dos vereditos de OCR."""
 
 import uuid
 from datetime import datetime, timezone

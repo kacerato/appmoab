@@ -46,6 +46,7 @@ interface SystemSetting {
   reconnection_fee_amount: number;
   cut_notice_days_after_due: number;
   default_due_day: number;
+  auto_send_invoice_on_approval: boolean;
   notification_flows: Record<string, NotificationFlowSetting>;
 }
 
@@ -102,6 +103,7 @@ export default function SettingsPage() {
     reconnection_fee_amount: 160,
     cut_notice_days_after_due: 5,
     default_due_day: 10,
+    auto_send_invoice_on_approval: false,
     notification_flows: DEFAULT_NOTIFICATION_FLOWS,
   });
   const [systemSaving, setSystemSaving] = useState(false);
@@ -138,6 +140,7 @@ export default function SettingsPage() {
         setHealth(healthData);
         setSystemSettings({
           ...systemData,
+          auto_send_invoice_on_approval: systemData.auto_send_invoice_on_approval ?? false,
           notification_flows: {
             ...DEFAULT_NOTIFICATION_FLOWS,
             ...(systemData.notification_flows || {}),
@@ -308,6 +311,7 @@ export default function SettingsPage() {
       const updated = await api.patch<SystemSetting>('/system-settings', systemSettings);
       setSystemSettings({
         ...updated,
+        auto_send_invoice_on_approval: updated.auto_send_invoice_on_approval ?? false,
         notification_flows: {
           ...DEFAULT_NOTIFICATION_FLOWS,
           ...(updated.notification_flows || {}),

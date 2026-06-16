@@ -1,6 +1,6 @@
 # AquaMoab - Sistema de Gestao de Distribuicao de Agua
 
-Sistema completo para gestao de clientes, leitura de hidrometros via OCR (Kimi K2.6), faturamento automatico e geracao de cobrancas via Efi Pay.
+Sistema completo para gestao de clientes, leitura de hidrometros via OCR (GLM-OCR), faturamento automatico e geracao de cobrancas via Efi Pay.
 
 ## Arquitetura
 
@@ -22,7 +22,7 @@ appmoab/
 | Frontend | Next.js 16, TypeScript, CSS |
 | Mobile | Expo SDK 54, React Native, TypeScript |
 | Pagamentos | Efi Pay API Cobrancas |
-| OCR | Kimi K2.6 Vision (Moonshot AI) |
+| OCR | GLM-OCR (Z.AI) |
 | Filas | Celery + Redis |
 | Notificacoes | Evolution API (WhatsApp) |
 
@@ -83,7 +83,7 @@ docker-compose up -d
 | `EFI_NOTIFICATION_URL` | URL publica do webhook `/api/webhooks/efi` |
 | `EFI_BOLETO_DAYS_TO_WRITE_OFF` | Dias para baixa automatica da cobranca apos vencimento |
 | `EFI_CERT_PATH` / `EFI_KEY_PATH` | Certificado cliente em PEM, opcional para Cobranças/Bolix e obrigatorio apenas se o ambiente Efí exigir mTLS |
-| `KIMI_API_KEY` | OCR do Kimi |
+| `GLM_API_KEY` | OCR de hidrometros via GLM-OCR |
 | `EVOLUTION_API_URL` | URL base da Evolution API |
 | `EVOLUTION_API_KEY` | Chave enviada no header `apikey` |
 | `EVOLUTION_INSTANCE_NAME` | Nome da instancia usada para envio |
@@ -123,7 +123,7 @@ docker-compose up -d
 
 ```text
 Colaborador tira foto
--> backend envia para Kimi
+-> backend envia para GLM-OCR
 -> gestor aprova leitura
 -> sistema calcula fatura
 -> Efi Pay gera boleto/Bolix

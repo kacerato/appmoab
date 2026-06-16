@@ -47,7 +47,7 @@ export default function ReadingsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`);
+      const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`, { skipCache: true });
       setData(res);
     } catch (e) {
       console.error(e);
@@ -60,12 +60,26 @@ export default function ReadingsPage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void load();
+      }
+    }, 5000);
+    const handleFocus = () => void load();
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [load]);
+
   const approve = async (id: string) => {
     setActionLoading(id);
     try {
       await api.post(`/readings/${id}/approve`);
       notify('Leitura aprovada', 'A leitura foi enviada para o próximo fluxo de faturamento.', 'success');
-      load();
+      await load();
     } catch (e) {
       notify('Falha ao aprovar leitura', e instanceof Error ? e.message : 'Erro ao aprovar leitura.', 'error');
     } finally {
@@ -84,7 +98,7 @@ export default function ReadingsPage() {
     try {
       await api.post(`/readings/${id}/reject`, { reason });
       notify('Leitura rejeitada', 'O motivo foi salvo para revisão posterior.', 'warning');
-      load();
+      await load();
     } catch (e) {
       notify('Falha ao rejeitar leitura', e instanceof Error ? e.message : 'Erro ao rejeitar leitura.', 'error');
     } finally {

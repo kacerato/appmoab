@@ -326,7 +326,7 @@ async def whatsapp_webhook(
             saved += 1
             logger.info("Nova mensagem WhatsApp: phone=%s customer=%s id=%s", phone, customer.id if customer else None, message_id)
 
-            # Aqui no futuro voce integrara com o Kimi (Moonshot AI)
+            # Aqui no futuro voce integrara com uma triagem automatica de atendimento.
             # background_tasks.add_task(process_whatsapp_message_with_ai, phone, body)
 
         await db.flush()

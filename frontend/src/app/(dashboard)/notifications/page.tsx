@@ -3,14 +3,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
-import { CheckCircle2, Loader2, MessageCircle, Send, ToggleLeft } from 'lucide-react';
+import { BrainCircuit, CheckCircle2, Loader2, MessageCircle, Send, ToggleLeft, Zap } from 'lucide-react';
 
 interface HealthData {
   status: string;
   whatsapp_enabled: boolean;
 }
 
-interface KimiMemorySummary {
+interface OcrMemorySummary {
   total: number;
   correct: number;
   wrong: number;
@@ -79,6 +79,7 @@ interface SystemSetting {
   reconnection_fee_amount: number;
   cut_notice_days_after_due: number;
   default_due_day: number;
+  auto_send_invoice_on_approval: boolean;
   notification_flows: Record<string, NotificationFlowSetting>;
 }
 
@@ -92,8 +93,8 @@ const DEFAULT_NOTIFICATION_FLOWS: Record<string, NotificationFlowSetting> = {
 
 export default function NotificationsPage() {
   const [health, setHealth] = useState<HealthData | null>(null);
-  const [kimiMemory, setKimiMemory] = useState<KimiMemorySummary | null>(null);
-  const [showKimiMemory, setShowKimiMemory] = useState(false);
+  const [ocrMemory, setOcrMemory] = useState<OcrMemorySummary | null>(null);
+  const [showOcrMemory, setShowOcrMemory] = useState(false);
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<SystemSetting | null>(null);
   const [saving, setSaving] = useState(false);
@@ -103,12 +104,13 @@ export default function NotificationsPage() {
       .then(setHealth)
       .catch(console.error)
       .finally(() => setLoading(false));
-    api.get<KimiMemorySummary>('/hydrometers/kimi-memory/summary')
-      .then(setKimiMemory)
+    api.get<OcrMemorySummary>('/hydrometers/ocr-memory/summary')
+      .then(setOcrMemory)
       .catch(console.error);
     api.get<SystemSetting>('/system-settings')
       .then(data => setSettings({
         ...data,
+        auto_send_invoice_on_approval: data.auto_send_invoice_on_approval ?? false,
         notification_flows: {
           ...DEFAULT_NOTIFICATION_FLOWS,
           ...(data.notification_flows || {}),
@@ -195,57 +197,76 @@ export default function NotificationsPage() {
       <button
         className="card"
         type="button"
-        onClick={() => setShowKimiMemory(current => !current)}
+        onClick={() => setShowOcrMemory(current => !current)}
         style={{
           marginBottom: 20,
           width: '100%',
           textAlign: 'left',
           cursor: 'pointer',
-          borderColor: showKimiMemory ? 'var(--accent)' : undefined,
+          borderColor: showOcrMemory ? 'var(--accent)' : undefined,
         }}
       >
         <div className="card-header">
-          <span className="card-title">Kimi K2.6 Vision</span>
-          <span className="badge active">{kimiMemory ? `${kimiMemory.accuracy}% acerto` : 'Carregando'}</span>
+          <span className="card-title">GLM-OCR</span>
+          <span className="badge active">{ocrMemory ? `${ocrMemory.accuracy}% acerto` : 'Carregando'}</span>
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
           OCR de hidrômetros e validação de consumo
         </div>
       </button>
 
-      {showKimiMemory && (
+      {showOcrMemory && (
         <div className="card" style={{ marginBottom: 20 }}>
           <div className="card-header">
             <span className="card-title">Memória de aprendizado operacional</span>
           </div>
-          <div className="kpi-grid" style={{ marginBottom: 16 }}>
-            <MiniStat label="Amostras" value={kimiMemory?.total ?? 0} />
-            <MiniStat label="Acertos" value={kimiMemory?.correct ?? 0} />
-            <MiniStat label="Divergências" value={kimiMemory?.wrong ?? 0} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) minmax(180px, 1fr) minmax(180px, 1fr)', gap: 12, marginBottom: 16 }}>
+            <MemoryStat icon={<BrainCircuit size={18} />} label="Amostras" value={ocrMemory?.total ?? 0} tone="blue" />
+            <MemoryStat icon={<CheckCircle2 size={18} />} label="Acertos" value={ocrMemory?.correct ?? 0} tone="green" />
+            <MemoryStat icon={<Zap size={18} />} label="Divergências" value={ocrMemory?.wrong ?? 0} tone="orange" />
           </div>
           <div style={{ display: 'grid', gap: 10 }}>
-            {(kimiMemory?.recent || []).map(item => (
-              <div key={item.id} style={{ padding: 12, borderRadius: 'var(--radius-md)', background: 'var(--navy-900)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-                  <strong style={{ fontSize: 13 }}>{item.stage === 'code' ? 'Código' : 'Leitura'}</strong>
+            {(ocrMemory?.recent || []).map(item => (
+              <div key={item.id} style={{ padding: 14, borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
+                  <div>
+                    <strong style={{ fontSize: 13 }}>{item.stage === 'code' ? 'Código do hidrômetro' : 'Leitura do visor'}</strong>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
+                      {item.red_digits || 'n/i'} vermelhos{item.black_digits ? ` · ${item.black_digits} pretos` : ''}{item.hydrometer_brand ? ` · ${[item.hydrometer_brand, item.hydrometer_model].filter(Boolean).join(' ')}` : ''}
+                    </div>
+                  </div>
                   <span className={`badge ${item.was_correct ? 'active' : item.was_correct === false ? 'rejected' : 'pending'}`}>
                     {item.was_correct ? 'Acertou' : item.was_correct === false ? 'Revisar' : 'Pendente'}
                   </span>
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                  Kimi: {item.predicted_code || item.predicted_value || 'sem leitura'} · Humano: {item.confirmed_code || item.confirmed_value || 'sem confirmacao'}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                  <Readout label="GLM-OCR" value={item.predicted_code || item.predicted_value || 'sem leitura'} />
+                  <Readout label="Humano" value={item.confirmed_code || item.confirmed_value || 'sem confirmação'} />
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                  Formato: {item.red_digits || 'n/i'} vermelhos{item.black_digits ? ` · ${item.black_digits} pretos` : ''}{item.hydrometer_brand ? ` · ${[item.hydrometer_brand, item.hydrometer_model].filter(Boolean).join(' ')}` : ''}
-                </div>
-                {item.lesson && <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>{item.lesson}</div>}
-                {item.reasoning_log && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6 }}>Log: {item.reasoning_log}</div>}
-                {item.divergence_reason && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 6 }}>Possivel causa: {item.divergence_reason}</div>}
+                {item.lesson && <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 10 }}>{item.lesson}</div>}
+                {item.divergence_reason && <div style={{ fontSize: 12, color: 'var(--danger)', marginTop: 8 }}>Possível causa: {item.divergence_reason}</div>}
               </div>
             ))}
           </div>
         </div>
       )}
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div className="card-header">
+          <span className="card-title">Automação de faturas</span>
+          <button
+            className={`btn btn-sm ${settings?.auto_send_invoice_on_approval ? 'btn-primary' : 'btn-secondary'}`}
+            type="button"
+            onClick={() => setSettings(current => current ? ({ ...current, auto_send_invoice_on_approval: !current.auto_send_invoice_on_approval }) : current)}
+            disabled={!settings}
+          >
+            {settings?.auto_send_invoice_on_approval ? 'Ligado' : 'Desligado'}
+          </button>
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 720 }}>
+          Quando ligado, a aprovação da leitura gera a cobrança Efí e envia automaticamente o link da fatura por WhatsApp, sem esperar o dia do vencimento.
+        </div>
+      </div>
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div className="card-header">
@@ -330,11 +351,24 @@ export default function NotificationsPage() {
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: number }) {
+function MemoryStat({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: number; tone: 'blue' | 'green' | 'orange' }) {
+  const color = tone === 'green' ? 'var(--success)' : tone === 'orange' ? 'var(--warning)' : 'var(--accent)';
   return (
-    <div className="kpi-card">
-      <div className="kpi-value">{value}</div>
-      <div className="kpi-sub">{label}</div>
+    <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div className={`kpi-icon ${tone === 'orange' ? 'orange' : 'blue'}`} style={{ width: 38, height: 38, color }}>{icon}</div>
+      <div>
+        <div style={{ fontSize: 22, fontWeight: 800 }}>{value}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{label}</div>
+      </div>
+    </div>
+  );
+}
+
+function Readout({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div style={{ padding: 10, borderRadius: 'var(--radius-sm)', background: 'var(--blue-50)' }}>
+      <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 800 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2 }}>{value}</div>
     </div>
   );
 }

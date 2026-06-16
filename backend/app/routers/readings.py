@@ -2,26 +2,30 @@
 Router de Leituras — Upload de foto, OCR, validação e aprovação.
 """
 
+import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.database import get_db
+from app.database import async_session_factory, get_db
+from app.models.notification import Notification
 from app.models.reading import Reading
 from app.models.hydrometer import Hydrometer
 from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.system_setting import SystemSetting
+from app.models.whatsapp_message import WhatsAppMessage
 from app.models.user import User
 from app.schemas.reading import (
     ReadingCreate, ReadingOCRResult, ReadingConfirm,
     ReadingApprove, ReadingReject, ReadingResponse, ReadingListResponse,
 )
-from app.services.kimi_vision import kimi_service
+from app.services.glm_ocr import glm_ocr_service
 from app.services.billing import calculate_billing
 from app.services.billing_policy import (
     payment_due_date_for_provider,
@@ -29,10 +33,17 @@ from app.services.billing_policy import (
     should_block_overdue_charges_for_late_reading,
 )
 from app.services.efi_api import efi_service
+from app.services.notification_templates import (
+    FLOW_NOTIFICATION_TYPES,
+    notification_flow_enabled,
+    render_notification_message,
+)
+from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
 router = APIRouter(prefix="/readings", tags=["Leituras"])
+logger = logging.getLogger(__name__)
 
 
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
@@ -96,7 +107,7 @@ async def create_reading(
 ):
     """
     Upload de foto do hidrômetro pelo app mobile.
-    Envia para Kimi K2.6 OCR e retorna dados extraídos.
+    Envia para GLM-OCR e retorna dados extraídos.
     """
     # Busca hidrômetro
     result = await db.execute(
@@ -111,16 +122,15 @@ async def create_reading(
     # Salva foto
     photo_url = save_photo_from_base64(data.photo_base64, prefix="reading")
 
-    # OCR via Kimi K2.6 fica como veredito interno. Quando o colaborador digitou
+    # OCR via GLM-OCR fica como veredito interno. Quando o colaborador digitou
     # a leitura, a resposta nao depende mais do OCR para seguir o fluxo.
     ocr_result = {"codigo": None, "leitura_m3": None, "confianca": 0.0}
     if data.current_value is None:
         try:
-            ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
+            ocr_result = await glm_ocr_service.extract_hydrometer_data(data.photo_base64)
         except Exception as e:
             # OCR falhou, mas a leitura ainda pode ser registrada manualmente
-            import logging
-            logging.getLogger(__name__).warning(f"OCR falhou: {e}")
+            logger.warning("OCR falhou: %s", e)
 
     current_value = data.current_value
     if current_value is None:
@@ -186,6 +196,7 @@ async def confirm_reading(
 @router.post("/{reading_id}/approve")
 async def approve_reading(
     reading_id: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -226,9 +237,9 @@ async def approve_reading(
     due_date = resolve_invoice_due_date(today, customer.due_day)
     ref_month = f"{due_date.year}-{due_date.month:02d}"
 
+    system_settings = await _get_system_settings(db)
     if is_installation_capture:
-        settings = await _get_system_settings(db)
-        amount = settings.installation_fee_amount
+        amount = system_settings.installation_fee_amount
         consumption_m3 = 0.0
         tariff_rate = 0.0
         charge_type = "installation"
@@ -270,7 +281,6 @@ async def approve_reading(
 
     # Gera cobranca Efí
     try:
-        settings = await _get_system_settings(db)
         payment_due_date = payment_due_date_for_provider(invoice.due_date, today)
         boleto = await efi_service.emitir_cobranca(
             valor=amount,
@@ -287,8 +297,8 @@ async def approve_reading(
             data_vencimento=payment_due_date,
             seu_numero=f"AQ-{str(invoice.id)[:8].upper()}",
             mensagem=boleto_message,
-            multa_percentual=settings.late_fee_percent if invoice.overdue_charges_allowed else 0.0,
-            juros_diario_percentual=settings.daily_interest_percent if invoice.overdue_charges_allowed else 0.0,
+            multa_percentual=system_settings.late_fee_percent if invoice.overdue_charges_allowed else 0.0,
+            juros_diario_percentual=system_settings.daily_interest_percent if invoice.overdue_charges_allowed else 0.0,
         )
 
         invoice.payment_provider = "efi"
@@ -302,18 +312,13 @@ async def approve_reading(
         invoice.efi_raw_response = boleto.get("raw")
         invoice.status = "sent"
 
-        # Busca PDF
-        if invoice.efi_pdf_url:
-            pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url)
-            if pdf_data:
-                invoice.pdf_data = pdf_data
-
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Erro ao gerar cobranca Efí: {e}")
+        logger.error("Erro ao gerar cobranca Efí: %s", e)
         # Fatura criada mas sem cobranca — pode ser gerada depois
 
     await db.flush()
+    if system_settings.auto_send_invoice_on_approval and invoice.efi_payment_url:
+        background_tasks.add_task(_send_invoice_generated_whatsapp, str(invoice.id))
 
     return {
         "message": "Leitura aprovada e fatura gerada",
@@ -328,6 +333,66 @@ async def approve_reading(
         "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
         "overdue_charges_allowed": invoice.overdue_charges_allowed,
     }
+
+
+async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
+    await asyncio.sleep(0.5)
+    async with async_session_factory() as db:
+        result = await db.execute(
+            select(Invoice)
+            .options(selectinload(Invoice.customer))
+            .where(Invoice.id == uuid.UUID(invoice_id))
+        )
+        invoice = result.scalar_one_or_none()
+        if not invoice or not invoice.customer or not invoice.customer.phone:
+            return
+
+        settings = await _get_system_settings(db)
+        if not notification_flow_enabled(settings, "invoice_generated"):
+            return
+
+        base_message = render_notification_message(settings, "invoice_generated", {
+            "nome": invoice.customer.name,
+            "valor": f"R$ {invoice.amount:.2f}",
+            "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
+        })
+        text = base_message
+        if invoice.efi_payment_url and invoice.efi_payment_url not in text:
+            text = f"{text}\n\nLink de pagamento: {invoice.efi_payment_url}"
+
+        notification = Notification(
+            customer_id=invoice.customer_id,
+            invoice_id=invoice.id,
+            channel="whatsapp",
+            type=FLOW_NOTIFICATION_TYPES["invoice_generated"],
+            status="queued",
+            payload={"flow_key": "invoice_generated", "message": text, "mode": "payment_link"},
+        )
+        db.add(notification)
+
+        try:
+            wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
+            notification.status = (wa_result or {}).get("status") or "failed"
+            notification.external_message_id = (wa_result or {}).get("message_id")
+            notification.sent_at = datetime.now(timezone.utc)
+            if (wa_result or {}).get("error"):
+                notification.error_message = str(wa_result["error"])[:500]
+            if notification.status == "sent":
+                db.add(WhatsAppMessage(
+                    customer_id=invoice.customer_id,
+                    phone=invoice.customer.phone,
+                    direction="outbound",
+                    body=text,
+                    external_message_id=notification.external_message_id,
+                    status="sent",
+                    payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "payment_link"},
+                ))
+        except Exception as exc:
+            notification.status = "failed"
+            notification.error_message = str(exc)[:500]
+            logger.warning("Falha no envio automatico da fatura %s: %s", invoice.id, exc)
+
+        await db.commit()
 
 
 @router.post("/{reading_id}/reject")

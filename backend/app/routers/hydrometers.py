@@ -30,7 +30,7 @@ from app.schemas.hydrometer import (
     HydrometerUpdate,
 )
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
-from app.services.kimi_vision import KimiVisionError, kimi_service
+from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.utils.security import get_current_user, require_admin
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
@@ -68,8 +68,8 @@ async def identify_hydrometer_from_photo(
 ):
     """Extrai o codigo do hidrometro pela foto e tenta associar ao cadastro."""
     try:
-        ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
-    except KimiVisionError as exc:
+        ocr_result = await glm_ocr_service.extract_hydrometer_data(data.photo_base64)
+    except GlmOcrError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     extracted_code = normalize_hydrometer_code(ocr_result.get("codigo"))
@@ -220,7 +220,7 @@ async def store_kimi_vision_feedback(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Registra o veredito interno do Kimi contra o valor digitado pelo colaborador."""
+    """Registra o veredito interno do GLM-OCR contra o valor digitado pelo colaborador."""
     predicted_code = normalize_hydrometer_code(data.predicted_code)
     confirmed_code = normalize_hydrometer_code(data.confirmed_code)
     was_correct = None
@@ -259,7 +259,7 @@ async def store_kimi_vision_feedback(
         was_correct=was_correct,
         lesson=lesson,
         reasoning_log=data.reasoning_log
-        or f"Etapa {data.stage}: Kimi={predicted_code or data.predicted_value}; humano={confirmed_code or data.confirmed_value}; correto={was_correct}.",
+        or f"Etapa {data.stage}: GLM={predicted_code or data.predicted_value}; humano={confirmed_code or data.confirmed_value}; correto={was_correct}.",
         divergence_reason=divergence_reason,
         payload={"has_photo": bool(data.photo_base64)},
     )
@@ -273,9 +273,9 @@ async def kimi_vision_verdict(
     data: HydrometerIdentifyRequest,
     user: User = Depends(get_current_user),
 ):
-    """Executa o Kimi nos bastidores. O app nao bloqueia o colaborador neste retorno."""
+    """Executa o GLM-OCR nos bastidores. O app nao bloqueia o colaborador neste retorno."""
     try:
-        ocr_result = await kimi_service.extract_hydrometer_data(data.photo_base64)
+        ocr_result = await glm_ocr_service.extract_hydrometer_data(data.photo_base64)
         return {
             "predicted_code": normalize_hydrometer_code(ocr_result.get("codigo")),
             "predicted_value": ocr_result.get("leitura_m3"),
@@ -283,10 +283,11 @@ async def kimi_vision_verdict(
             "red_digits": ocr_result.get("digitos_vermelhos"),
             "black_digits": ocr_result.get("digitos_pretos"),
         }
-    except KimiVisionError as exc:
+    except GlmOcrError as exc:
         return {"predicted_code": None, "predicted_value": None, "confidence": 0.0, "error": str(exc)}
 
 
+@router.get("/ocr-memory/summary")
 @router.get("/kimi-memory/summary")
 async def kimi_memory_summary(
     db: AsyncSession = Depends(get_db),
