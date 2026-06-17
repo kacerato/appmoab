@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.models.whatsapp_message import WhatsAppMessage
 from app.routers.whatsapp_messages import (
     _build_evolution_quote,
+    _build_quoted_payload,
     _conversation_phone,
     _extract_media_entry,
     _extract_media_entry_with_key,
@@ -62,6 +63,33 @@ class WhatsAppMessageFlowTest(unittest.TestCase):
         self.assertEqual(quote["key"]["remoteJid"], "5587981327592@s.whatsapp.net")
         self.assertFalse(quote["key"]["fromMe"])
         self.assertEqual(quote["message"], {"conversation": "Mensagem original"})
+
+    def test_builds_quoted_payload_with_media_summary(self):
+        message = WhatsAppMessage(
+            id=uuid4(),
+            phone="5587981327592",
+            direction="outbound",
+            body="Arquivo enviado: audio.ogg",
+            external_message_id="3EB0AUDIO",
+            status="sent",
+            payload={
+                "message": {
+                    "audioMessage": {
+                        "mimetype": "audio/ogg",
+                        "fileName": "audio.ogg",
+                    }
+                }
+            },
+            created_at=datetime.now(timezone.utc),
+        )
+
+        payload = _build_quoted_payload(message, "Respondendo")
+
+        self.assertEqual(payload["quoted_body"], "Arquivo enviado: audio.ogg")
+        self.assertEqual(payload["quoted_media"]["type"], "audio")
+        self.assertEqual(payload["quoted_media"]["mime_type"], "audio/ogg")
+        self.assertEqual(payload["quoted_media"]["file_name"], "audio.ogg")
+        self.assertEqual(payload["sent_text"], "Respondendo")
 
     def test_extracts_sticker_media_entry(self):
         media_entry = _extract_media_entry({
