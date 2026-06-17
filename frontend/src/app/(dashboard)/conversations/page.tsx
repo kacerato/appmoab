@@ -66,6 +66,7 @@ interface WhatsAppMediaResponse {
   data_uri?: string;
   mime_type?: string;
   base64?: string;
+  url?: string;
 }
 
 interface SendMessageResponse {
@@ -143,6 +144,10 @@ function normalizeMediaSource(value: string, mimeType: string) {
   const source = value.trim();
   if (!source) return undefined;
   if (/^(https?:|blob:|data:)/i.test(source)) return source;
+  if (source.startsWith('/')) {
+    const apiBase = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api').replace(/\/api\/?$/, '');
+    return `${apiBase}${source}`;
+  }
   if (source.length > 80 && /^[A-Za-z0-9+/]+={0,2}$/.test(source)) {
     return `data:${mimeType};base64,${source}`;
   }
@@ -155,9 +160,10 @@ function mediaSource(
   media: Record<string, unknown>,
   mimeType: string,
 ) {
-  const candidates = [media, message, data];
+  const payloadMedia = isRecord(data.media) ? data.media : {};
+  const candidates = [media, payloadMedia, message, data];
   for (const source of candidates) {
-    const value = stringValue(source, ['base64', 'media', 'url', 'mediaUrl', 'downloadUrl', 'fileUrl', 'jpegThumbnail']);
+    const value = stringValue(source, ['public_file_url', 'base64', 'media', 'url', 'mediaUrl', 'downloadUrl', 'fileUrl', 'jpegThumbnail']);
     const normalized = normalizeMediaSource(value, mimeType);
     if (normalized) return normalized;
   }
@@ -194,13 +200,14 @@ function messageMedia(message: WhatsAppMessage): MessageMedia | null {
 }
 
 function mediaResponseSource(response: WhatsAppMediaResponse, fallbackMime: string) {
+  if (response.url) return normalizeMediaSource(response.url, response.mime_type || fallbackMime);
   if (response.data_uri) return response.data_uri;
   if (response.base64) return normalizeMediaSource(response.base64, response.mime_type || fallbackMime);
   return undefined;
 }
 
 function MessageMediaPreview({ media, outbound, messageId }: { media: MessageMedia; outbound: boolean; messageId: string }) {
-  const canFetchRemoteMedia = media.type !== 'document';
+  const canFetchRemoteMedia = true;
   const [loadedSrc, setLoadedSrc] = useState(media.src);
   const [failed, setFailed] = useState(false);
   const fetchAttemptedRef = useRef(false);
@@ -259,7 +266,28 @@ function MessageMediaPreview({ media, outbound, messageId }: { media: MessageMed
   }
 
   if (loadedSrc && !failed && media.type === 'audio') {
-    return <audio className="whatsapp-media-audio" src={loadedSrc} controls onError={handleMediaError} />;
+    return (
+      <div className="whatsapp-audio-card">
+        <div className="whatsapp-audio-meta">
+          <span>{media.label}</span>
+          {media.fileName && <small>{media.fileName}</small>}
+        </div>
+        <audio className="whatsapp-media-audio" src={loadedSrc} controls onError={handleMediaError} />
+      </div>
+    );
+  }
+
+  if (loadedSrc && !failed && media.type === 'document') {
+    return (
+      <a className="whatsapp-document-card" href={loadedSrc} target="_blank" rel="noreferrer">
+        <FileText size={18} />
+        <span>
+          <strong>{media.fileName || media.label}</strong>
+          <small>{media.mimeType || 'Documento'}</small>
+        </span>
+        <em>Abrir</em>
+      </a>
+    );
   }
 
   return (

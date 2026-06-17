@@ -68,6 +68,21 @@ function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 }
 
+function routeWindowPreview(settings: Pick<SystemSetting, 'default_due_day' | 'route_window_days_before_due' | 'route_window_days_after_due' | 'route_window_enabled'>) {
+  const today = new Date();
+  const dueDay = Math.min(Math.max(settings.default_due_day || 10, 1), 28);
+  const dueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+  const start = new Date(dueDate);
+  start.setDate(start.getDate() - (settings.route_window_days_before_due || 0));
+  const end = new Date(dueDate);
+  end.setDate(end.getDate() + (settings.route_window_days_after_due || 0));
+  const format = (value: Date) => value.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  if (!settings.route_window_enabled) {
+    return 'Com a janela desativada, a rota fica liberada para clientes sem leitura/fatura no ciclo atual.';
+  }
+  return `Clientes com vencimento dia ${dueDay} aparecem de ${format(start)} ate ${format(end)} neste mes.`;
+}
+
 export default function SettingsPage() {
   const { user, setCurrentUser } = useAuth();
   const { confirm, notify } = useAppFeedback();
@@ -595,6 +610,10 @@ export default function SettingsPage() {
                 </button>
               </div>
             </form>
+            <div style={{ marginTop: 12, padding: 12, borderRadius: 'var(--radius-md)', background: 'var(--accent-soft)', border: '1px solid var(--border)', fontSize: 12, color: 'var(--text-secondary)' }}>
+              <strong style={{ display: 'block', color: 'var(--text-primary)', fontSize: 13, marginBottom: 4 }}>Previa da rota</strong>
+              {routeWindowPreview(systemSettings)}
+            </div>
             <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, padding: 12, borderRadius: 'var(--radius-md)', background: 'var(--blue-50)' }}>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 13 }}>Aplicar vencimento para todos</div>

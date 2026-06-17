@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   RefreshControl,
   ScrollView,
@@ -97,7 +98,7 @@ export default function RouteScreen() {
     }
 
     if (!force && !lastLoadedAt) setLoading(true);
-    const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=100&route_scope=true');
+    const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=2000&route_scope=true');
     const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
     const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);
 
@@ -118,7 +119,7 @@ export default function RouteScreen() {
       setTodayReadings(nextReadings);
     } else {
       setTodayReadings([]);
-      showToast('Historico parcial', getMessage(readingsResult.reason, 'Nao foi possivel carregar as leituras de hoje.'), 'warning');
+      showToast('Historico parcial', getMessage(readingsResult.reason, 'Nao foi possivel carregar as leituras deste ciclo.'), 'warning');
     }
 
     if (nextCustomers && nextReadings) {
@@ -157,6 +158,15 @@ export default function RouteScreen() {
       void load(true);
     }, [load]),
   );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') {
+        void load(true);
+      }
+    });
+    return () => subscription.remove();
+  }, [load]);
 
   const routeItems = useMemo(() => {
     const byHydrometer = new Map<string, ReadingItem>();
@@ -527,8 +537,9 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
 }
 
 function StatusBadge({ status, mode = 'reading' }: { status: string; mode?: 'reading' | 'installation' }) {
-  let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Pendente' };
+  let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Disponivel' };
   if (mode === 'installation') palette = { backgroundColor: colors.accentSoft, color: colors.accent, label: 'Instalar' };
+  if (status === 'open') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Disponivel' };
   if (status === 'pending') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Revisao' };
   if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
   if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };

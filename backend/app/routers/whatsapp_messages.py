@@ -35,6 +35,20 @@ def _phone_suffix(phone: str, size: int = 8) -> str:
     return digits[-size:] if len(digits) >= size else digits
 
 
+def _conversation_phone(phone: str) -> str:
+    return whatsapp_service.normalize_phone(phone)
+
+
+def _phone_match_filter(phone: str):
+    normalized = _conversation_phone(phone)
+    suffix = _phone_suffix(normalized)
+    return or_(
+        WhatsAppMessage.phone == phone,
+        WhatsAppMessage.phone == normalized,
+        WhatsAppMessage.phone.ilike(f"%{suffix}") if suffix else WhatsAppMessage.phone == normalized,
+    )
+
+
 def _build_quoted_payload(quoted: WhatsAppMessage | None, sent_text: str) -> dict | None:
     if not quoted:
         return None
@@ -191,6 +205,12 @@ def _persist_fetched_media(
     return public_file_url
 
 
+def _message_response(message: WhatsAppMessage) -> WhatsAppMessageResponse:
+    response = WhatsAppMessageResponse.model_validate(message)
+    response.phone = _conversation_phone(response.phone)
+    return response
+
+
 async def _find_customer_by_phone(db: AsyncSession, phone: str) -> Customer | None:
     suffix = _phone_suffix(phone)
     if len(suffix) < 8:
@@ -217,36 +237,36 @@ async def list_conversations(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    latest = (
-        select(
-            WhatsAppMessage.phone.label("phone"),
-            func.max(WhatsAppMessage.created_at).label("last_at"),
-            func.count(WhatsAppMessage.id).label("total_messages"),
-        )
-        .group_by(WhatsAppMessage.phone)
-        .subquery()
-    )
-
     result = await db.execute(
-        select(WhatsAppMessage, latest.c.total_messages, Customer.name)
-        .join(latest, (WhatsAppMessage.phone == latest.c.phone) & (WhatsAppMessage.created_at == latest.c.last_at))
+        select(WhatsAppMessage, Customer.name)
         .outerjoin(Customer, Customer.id == WhatsAppMessage.customer_id)
         .order_by(desc(WhatsAppMessage.created_at))
-        .limit(limit)
+        .limit(limit * 8)
     )
 
-    return [
-        WhatsAppConversationResponse(
-            phone=message.phone,
+    conversations: dict[str, WhatsAppConversationResponse] = {}
+    for message, customer_name in result.all():
+        phone = _conversation_phone(message.phone)
+        current = conversations.get(phone)
+        if current:
+            current.total_messages += 1
+            if not current.customer_id and message.customer_id:
+                current.customer_id = message.customer_id
+            if not current.customer_name and customer_name:
+                current.customer_name = customer_name
+            continue
+
+        conversations[phone] = WhatsAppConversationResponse(
+            phone=phone,
             customer_id=message.customer_id,
             customer_name=customer_name,
             last_message=message.body,
             last_direction=message.direction,
             last_at=message.created_at,
-            total_messages=total_messages,
+            total_messages=1,
         )
-        for message, total_messages, customer_name in result.all()
-    ]
+
+    return list(conversations.values())[:limit]
 
 
 @router.get("/conversations/{phone}/messages", response_model=list[WhatsAppMessageResponse])
@@ -258,11 +278,11 @@ async def list_conversation_messages(
 ):
     result = await db.execute(
         select(WhatsAppMessage)
-        .where(WhatsAppMessage.phone == phone)
+        .where(_phone_match_filter(phone))
         .order_by(WhatsAppMessage.created_at.desc())
         .limit(limit)
     )
-    return list(reversed(result.scalars().all()))
+    return [_message_response(message) for message in reversed(result.scalars().all())]
 
 
 @router.get("/messages/{message_id}/media")
@@ -286,12 +306,26 @@ async def get_message_media(
     file_name = media.get("fileName") or media.get("filename") or media.get("title")
     direct_base64 = _find_media_base64({"message": stored_message, "payload": message.payload})
     if direct_base64:
+        data_uri = _media_data_uri(direct_base64, mime_type)
+        if not (isinstance(media.get("url"), str) and str(media.get("url")).strip()):
+            public_file_url = _persist_fetched_media(
+                message,
+                media_key=media_key,
+                media_type=media_type,
+                mime_type=mime_type,
+                file_name=str(file_name) if file_name else None,
+                data_uri=data_uri,
+            )
+            await db.flush()
+        else:
+            public_file_url = str(media.get("url"))
         return {
             "message_id": str(message.id),
             "media_type": media_type,
             "mime_type": mime_type,
             "file_name": file_name,
-            "data_uri": _media_data_uri(direct_base64, mime_type),
+            "data_uri": data_uri,
+            "url": public_file_url,
         }
 
     evolution_message = _build_evolution_quote(message)
@@ -368,7 +402,7 @@ async def send_message(
         quoted = quoted_result.scalar_one_or_none()
         if not quoted:
             raise HTTPException(status_code=404, detail="Mensagem citada nao encontrada")
-        if quoted.phone != phone:
+        if _conversation_phone(quoted.phone) != phone:
             raise HTTPException(status_code=400, detail="Mensagem citada pertence a outra conversa")
 
     quoted_payload = _build_evolution_quote(quoted) if quoted else None
@@ -435,7 +469,7 @@ async def send_message(
     await db.refresh(message)
 
     return WhatsAppSendMessageResponse(
-        message=WhatsAppMessageResponse.model_validate(message),
+        message=_message_response(message),
         whatsapp_status=status,
         detail=detail,
     )

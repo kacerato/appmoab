@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -6,8 +7,11 @@ from pydantic import ValidationError
 from app.models.whatsapp_message import WhatsAppMessage
 from app.routers.whatsapp_messages import (
     _build_evolution_quote,
+    _conversation_phone,
     _extract_media_entry,
+    _extract_media_entry_with_key,
     _find_media_base64,
+    _message_response,
     _media_data_uri,
 )
 from app.schemas.whatsapp_message import WhatsAppSendMessageRequest
@@ -73,12 +77,50 @@ class WhatsAppMessageFlowTest(unittest.TestCase):
         self.assertEqual(fallback_mime, "image/webp")
         self.assertEqual(media["fileName"], "figurinha.webp")
 
+    def test_extracts_document_media_entry_with_key(self):
+        media_entry = _extract_media_entry_with_key({
+            "documentMessage": {
+                "mimetype": "application/pdf",
+                "fileName": "boleto.pdf",
+                "url": "/uploads/boleto.pdf",
+            }
+        })
+
+        self.assertIsNotNone(media_entry)
+        media_key, media_type, fallback_mime, media = media_entry
+        self.assertEqual(media_key, "documentMessage")
+        self.assertEqual(media_type, "document")
+        self.assertEqual(fallback_mime, "application/octet-stream")
+        self.assertEqual(media["url"], "/uploads/boleto.pdf")
+
     def test_finds_nested_media_base64_and_builds_data_uri(self):
         encoded = "a" * 120
         payload = {"payload": {"message": {"stickerMessage": {"base64": encoded}}}}
 
         self.assertEqual(_find_media_base64(payload), encoded)
         self.assertEqual(_media_data_uri(encoded, "image/webp"), f"data:image/webp;base64,{encoded}")
+
+    def test_conversation_phone_normalizes_to_single_thread_key(self):
+        self.assertEqual(_conversation_phone("(87) 98132-7592"), "5587981327592")
+        self.assertEqual(_conversation_phone("87981327592"), "5587981327592")
+        self.assertEqual(_conversation_phone("5587981327592"), "5587981327592")
+
+    def test_message_response_returns_normalized_phone(self):
+        message = WhatsAppMessage(
+            id=uuid4(),
+            phone="87981327592",
+            direction="outbound",
+            body="Arquivo enviado: boleto.pdf",
+            external_message_id="MSG123",
+            status="sent",
+            payload={"message": {"documentMessage": {"fileName": "boleto.pdf"}}},
+            created_at=datetime.now(timezone.utc),
+        )
+
+        response = _message_response(message)
+
+        self.assertEqual(response.phone, "5587981327592")
+        self.assertEqual(response.body, "Arquivo enviado: boleto.pdf")
 
 
 if __name__ == "__main__":
