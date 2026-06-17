@@ -2,11 +2,16 @@
 
 import base64
 import logging
+import os
+import tempfile
 import time
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 from app.config import get_settings
 
@@ -27,24 +32,79 @@ class EfiAPIService:
         self._access_token: str | None = None
         self._token_expires_at = 0.0
         self._client: httpx.AsyncClient | None = None
+        self._generated_cert_path: str | None = None
 
     def _assert_configured(self) -> None:
         if not settings.efi_client_id or not settings.efi_client_secret:
             raise EfiAPIError("Credenciais da Efí nao configuradas")
         if bool(settings.efi_cert_path) != bool(settings.efi_key_path):
             raise EfiAPIError("Configure EFI_CERT_PATH e EFI_KEY_PATH juntos ou deixe ambos vazios")
+        if settings.efi_p12_path and (settings.efi_cert_path or settings.efi_key_path):
+            raise EfiAPIError("Use EFI_P12_PATH ou EFI_CERT_PATH/EFI_KEY_PATH, nao ambos")
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            cert = None
-            if settings.efi_cert_path and settings.efi_key_path:
-                cert = (settings.efi_cert_path, settings.efi_key_path)
+            cert = self._client_cert()
             self._client = httpx.AsyncClient(
                 base_url=settings.efi_cobrancas_base_url,
                 timeout=30.0,
                 cert=cert,
             )
         return self._client
+
+    def _client_cert(self) -> str | tuple[str, str] | None:
+        if settings.efi_p12_path:
+            return self._p12_to_pem(settings.efi_p12_path, settings.efi_p12_password)
+        if settings.efi_cert_path and settings.efi_key_path:
+            return (settings.efi_cert_path, settings.efi_key_path)
+        return None
+
+    def _p12_to_pem(self, p12_path: str, password: str | None) -> str:
+        if self._generated_cert_path and Path(self._generated_cert_path).exists():
+            return self._generated_cert_path
+
+        path = Path(p12_path)
+        if not path.exists():
+            raise EfiAPIError(f"Certificado .p12 da Efí nao encontrado: {p12_path}")
+
+        p12_bytes = path.read_bytes()
+        password_options = [password.encode()] if password else [None, b""]
+        last_error: Exception | None = None
+        for password_value in password_options:
+            try:
+                private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+                    p12_bytes,
+                    password_value,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - erro de senha/formato precisa virar mensagem operacional.
+                last_error = exc
+        else:
+            raise EfiAPIError("Nao foi possivel abrir o certificado .p12 da Efí. Verifique caminho e senha.") from last_error
+
+        if not private_key or not certificate:
+            raise EfiAPIError("Certificado .p12 da Efí sem chave privada ou certificado cliente")
+
+        pem_parts = [
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            ),
+            certificate.public_bytes(serialization.Encoding.PEM),
+        ]
+        for extra in additional_certificates or []:
+            pem_parts.append(extra.public_bytes(serialization.Encoding.PEM))
+
+        fd, cert_path = tempfile.mkstemp(prefix="aquamoab-efi-", suffix=".pem")
+        with os.fdopen(fd, "wb") as cert_file:
+            cert_file.write(b"".join(pem_parts))
+        try:
+            os.chmod(cert_path, 0o600)
+        except OSError:
+            pass
+        self._generated_cert_path = cert_path
+        return cert_path
 
     async def _get_token(self) -> str:
         self._assert_configured()
@@ -106,6 +166,7 @@ class EfiAPIService:
             "ok": True,
             "environment": "sandbox" if settings.efi_sandbox else "production",
             "base_url": settings.efi_cobrancas_base_url,
+            "certificate_mode": "p12" if settings.efi_p12_path else "pem" if settings.efi_cert_path else "none",
             "token_preview": f"{token[:8]}..." if token else "",
             "expires_at": int(self._token_expires_at),
         }
@@ -228,6 +289,13 @@ class EfiAPIService:
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+        if self._generated_cert_path:
+            try:
+                Path(self._generated_cert_path).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Nao foi possivel remover certificado temporario Efí: %s", self._generated_cert_path)
+            finally:
+                self._generated_cert_path = None
 
     def _build_customer(self, **data) -> dict:
         digits = "".join(c for c in data["cpf_cnpj"] if c.isdigit())

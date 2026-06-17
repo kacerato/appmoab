@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     efi_boleto_days_to_write_off: int = 30
     efi_cert_path: str = ""
     efi_key_path: str = ""
+    efi_p12_path: str = ""
+    efi_p12_password: str = ""
 
     whatsapp_enabled: bool = False
     evolution_api_url: str = Field(

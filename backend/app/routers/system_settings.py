@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.schemas.system_setting import SystemSettingResponse, SystemSettingUpdate
+from app.services.efi_api import EfiAPIError, efi_service
 from app.utils.security import get_current_user, require_admin
 
 router = APIRouter(prefix="/system-settings", tags=["Configuracoes do Sistema"])
@@ -52,3 +53,18 @@ async def update_system_settings(
     await db.flush()
     await db.refresh(settings)
     return settings
+
+
+@router.post("/efi/validate")
+async def validate_efi_credentials(admin: User = Depends(require_admin)):
+    try:
+        return await efi_service.validar_autenticacao()
+    except EfiAPIError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": exc.message,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            },
+        ) from exc
