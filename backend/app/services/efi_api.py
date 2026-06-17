@@ -37,10 +37,12 @@ class EfiAPIService:
     def _assert_configured(self) -> None:
         if not settings.efi_client_id or not settings.efi_client_secret:
             raise EfiAPIError("Credenciais da Efí nao configuradas")
+        if settings.efi_p12_base64 or settings.efi_p12_path:
+            return
         if bool(settings.efi_cert_path) != bool(settings.efi_key_path):
-            raise EfiAPIError("Configure EFI_CERT_PATH e EFI_KEY_PATH juntos ou deixe ambos vazios")
-        if settings.efi_p12_path and (settings.efi_cert_path or settings.efi_key_path):
-            raise EfiAPIError("Use EFI_P12_PATH ou EFI_CERT_PATH/EFI_KEY_PATH, nao ambos")
+            raise EfiAPIError(
+                "Configure EFI_P12_BASE64/EFI_P12_PATH para usar certificado .p12 ou configure EFI_CERT_PATH e EFI_KEY_PATH juntos"
+            )
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -53,6 +55,8 @@ class EfiAPIService:
         return self._client
 
     def _client_cert(self) -> str | tuple[str, str] | None:
+        if settings.efi_p12_base64:
+            return self._p12_bytes_to_pem(_decode_p12_base64(settings.efi_p12_base64), settings.efi_p12_password)
         if settings.efi_p12_path:
             return self._p12_to_pem(settings.efi_p12_path, settings.efi_p12_password)
         if settings.efi_cert_path and settings.efi_key_path:
@@ -67,7 +71,12 @@ class EfiAPIService:
         if not path.exists():
             raise EfiAPIError(f"Certificado .p12 da Efí nao encontrado: {p12_path}")
 
-        p12_bytes = path.read_bytes()
+        return self._p12_bytes_to_pem(path.read_bytes(), password)
+
+    def _p12_bytes_to_pem(self, p12_bytes: bytes, password: str | None) -> str:
+        if self._generated_cert_path and Path(self._generated_cert_path).exists():
+            return self._generated_cert_path
+
         password_options = [password.encode()] if password else [None, b""]
         last_error: Exception | None = None
         for password_value in password_options:
@@ -166,7 +175,7 @@ class EfiAPIService:
             "ok": True,
             "environment": "sandbox" if settings.efi_sandbox else "production",
             "base_url": settings.efi_cobrancas_base_url,
-            "certificate_mode": "p12" if settings.efi_p12_path else "pem" if settings.efi_cert_path else "none",
+            "certificate_mode": "p12_base64" if settings.efi_p12_base64 else "p12" if settings.efi_p12_path else "pem" if settings.efi_cert_path else "none",
             "token_preview": f"{token[:8]}..." if token else "",
             "expires_at": int(self._token_expires_at),
         }
@@ -358,6 +367,16 @@ def _safe_json(response: httpx.Response) -> Any:
         return response.json()
     except ValueError:
         return response.text
+
+
+def _decode_p12_base64(value: str) -> bytes:
+    cleaned = "".join(value.strip().split())
+    if cleaned.startswith("data:"):
+        cleaned = cleaned.split(",", 1)[1]
+    try:
+        return base64.b64decode(cleaned, validate=True)
+    except Exception as exc:  # noqa: BLE001 - erro precisa virar mensagem operacional.
+        raise EfiAPIError("EFI_P12_BASE64 invalido. Envie o conteudo do .p12 codificado em base64.") from exc
 
 
 def _limit_message(value: str | None, limit: int = 400) -> str:

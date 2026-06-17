@@ -32,6 +32,8 @@ interface Reading {
   hydrometer_code: string;
   customer_name: string;
   customer_id: string;
+  is_installation: boolean;
+  charge_type: string | null;
 }
 
 function alertTone(flags: Reading['validation_flags']) {
@@ -159,8 +161,17 @@ export default function ReadingsPage() {
                       <Camera size={11} /> {r.hydrometer_code || 'N/A'}
                     </div>
                   </div>
-                  <span className={`badge ${r.status}`}>{r.status === 'pending' ? 'Pendente' : r.status === 'approved' ? 'Aprovada' : 'Rejeitada'}</span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    {r.is_installation && <span className="badge upcoming">Instalação</span>}
+                    <span className={`badge ${r.status}`}>{r.status === 'pending' ? 'Pendente' : r.status === 'approved' ? 'Aprovada' : 'Rejeitada'}</span>
+                  </div>
                 </div>
+
+                {r.is_installation && (
+                  <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, background: 'var(--accent-soft)', color: 'var(--accent)', fontSize: 12, fontWeight: 700 }}>
+                    Primeira captura do hidrômetro. Ao aprovar, vira leitura-base e gera cobrança de instalação.
+                  </div>
+                )}
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
                   <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Anterior</div><div style={{ fontWeight: 600 }}>{r.previous_value.toFixed(2)}</div></div>

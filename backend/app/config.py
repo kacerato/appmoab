@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     efi_cert_path: str = ""
     efi_key_path: str = ""
     efi_p12_path: str = ""
+    efi_p12_base64: str = ""
     efi_p12_password: str = ""
 
     whatsapp_enabled: bool = False

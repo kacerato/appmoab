@@ -75,6 +75,8 @@ class ReadingResponse(BaseModel):
     hydrometer_code: str | None = None
     customer_name: str | None = None
     customer_id: UUID | None = None
+    is_installation: bool = False
+    charge_type: str | None = None
 
     model_config = {"from_attributes": True}
 
