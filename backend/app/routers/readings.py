@@ -37,7 +37,7 @@ from app.services.efi_api import efi_service
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
     notification_flow_enabled,
-    render_notification_message,
+    render_invoice_customer_message,
 )
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
@@ -591,11 +591,14 @@ async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
         if not notification_flow_enabled(settings, "invoice_generated"):
             return
 
-        base_message = render_notification_message(settings, "invoice_generated", {
-            "nome": invoice.customer.name,
-            "valor": f"R$ {invoice.amount:.2f}",
-            "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
-        })
+        base_message = render_invoice_customer_message(
+            settings,
+            charge_type=invoice.charge_type,
+            customer_name=invoice.customer.name,
+            amount=invoice.amount,
+            due_date=invoice.due_date,
+            reference_month=invoice.reference_month,
+        )
         text = base_message
         if invoice.efi_payment_url and invoice.efi_payment_url not in text:
             text = f"{text}\n\nLink de pagamento: {invoice.efi_payment_url}"

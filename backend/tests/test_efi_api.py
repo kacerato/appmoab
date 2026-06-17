@@ -2,6 +2,7 @@ from datetime import date
 import unittest
 
 from app.services.efi_api import EfiAPIError, EfiAPIService, _decode_p12_base64, _format_billet_message
+from app.services.notification_templates import render_invoice_customer_message
 
 
 class CapturingEfiService(EfiAPIService):
@@ -140,6 +141,19 @@ class EfiAPIServiceTest(unittest.IsolatedAsyncioTestCase):
 
     def test_decodes_p12_base64_with_whitespace(self):
         self.assertEqual(_decode_p12_base64(" YWJjZA==\n"), b"abcd")
+
+    def test_installation_invoice_message_does_not_use_monthly_invoice_copy(self):
+        message = render_invoice_customer_message(
+            None,
+            charge_type="installation",
+            customer_name="Cliente Teste",
+            amount=150.0,
+            due_date=date(2026, 6, 19),
+            reference_month="2026-06",
+        )
+
+        self.assertIn("cobrança de instalação", message)
+        self.assertNotIn("fatura do mês", message.lower())
 
 
 if __name__ == "__main__":

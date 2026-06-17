@@ -62,7 +62,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const [whatsAppFeedback, setWhatsAppFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<Invoice>(`/invoices/${id}`)
+    api.get<Invoice>(`/invoices/${id}`, { skipCache: true })
       .then(setInv)
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -102,8 +102,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     if (!confirmed) return;
 
     try {
-      await api.post(`/invoices/${id}/cancel`);
-      const updated = await api.get<Invoice>(`/invoices/${id}`);
+      const updated = await api.post<Invoice>(`/invoices/${id}/cancel`);
       setInv(updated);
       notify('Fatura cancelada', 'O status da fatura foi atualizado.', 'success');
     } catch (e: unknown) {
@@ -112,7 +111,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   };
 
   const reloadInvoice = async () => {
-    const updated = await api.get<Invoice>(`/invoices/${id}`);
+    const updated = await api.get<Invoice>(`/invoices/${id}`, { skipCache: true });
     setInv(updated);
   };
 
@@ -230,10 +229,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const emitBoleto = async () => {
     setActionLoading('boleto');
     try {
-      await api.post(`/invoices/${id}/emit-boleto`);
-      const updated = await api.get<Invoice>(`/invoices/${id}`);
+      const updated = await api.post<Invoice>(`/invoices/${id}/emit-boleto`);
       setInv(updated);
-      notify('Cobrança emitida', 'A Efí gerou a cobrança com sucesso.', 'success');
+      notify('Cobrança emitida', 'A Efí gerou a cobrança. Use o botão WhatsApp para enviar e registrar a mensagem na conversa.', 'success');
     } catch (e: unknown) {
       notify('Falha ao emitir cobrança', e instanceof Error ? e.message : 'Erro ao emitir cobrança na Efí.', 'error');
     } finally {
@@ -248,7 +246,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       const result = await api.post<{ detail: string; status: string }>(`/invoices/${id}/send-whatsapp`);
       setWhatsAppFeedback(result.detail || (result.status === 'sent' ? 'Fatura enviada com sucesso.' : 'Falha ao enviar a fatura.'));
       if (result.status === 'sent') {
-        const updated = await api.get<Invoice>(`/invoices/${id}`);
+        const updated = await api.get<Invoice>(`/invoices/${id}`, { skipCache: true });
         setInv(updated);
       }
     } catch (e: unknown) {

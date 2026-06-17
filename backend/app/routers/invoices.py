@@ -3,11 +3,10 @@ Router de Faturas — Lista, detalhe, PDF e dashboard financeiro.
 """
 
 import uuid
-import asyncio
 from datetime import date, datetime, timezone
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +29,7 @@ from app.services.efi_api import efi_service
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
     notification_flow_enabled,
+    render_invoice_customer_message,
     render_notification_message,
 )
 from app.services.whatsapp_api import whatsapp_service
@@ -114,6 +114,28 @@ def _append_payment_link(message: str, invoice: Invoice) -> str:
     if link in message:
         return message
     return f"{message}\n\nLink de pagamento: {link}"
+
+
+def _invoice_charge_message(invoice: Invoice) -> str:
+    if invoice.charge_type == "installation":
+        return f"Cobranca de instalacao - Ref: {invoice.reference_month}"
+    if invoice.charge_type == "reconnection":
+        return f"Cobranca de religacao - Ref: {invoice.reference_month}"
+    if invoice.charge_type == "manual":
+        return f"Cobranca avulsa - Ref: {invoice.reference_month}"
+    return f"Fatura de agua - Ref: {invoice.reference_month}"
+
+
+def _invoice_customer_message(settings: SystemSetting, invoice: Invoice) -> str:
+    customer_name = invoice.customer.name if invoice.customer else "cliente"
+    return render_invoice_customer_message(
+        settings,
+        charge_type=invoice.charge_type,
+        customer_name=customer_name,
+        amount=invoice.amount,
+        due_date=invoice.due_date,
+        reference_month=invoice.reference_month,
+    )
 
 
 def _record_outbound_whatsapp(
@@ -346,7 +368,7 @@ async def create_manual_invoice(
     settings = await _get_system_settings(db)
     # Opcional: ja emitir a cobranca na Efí
     try:
-        await _emit_invoice_charge(invoice, customer, settings, f"Fatura avulsa {invoice.reference_month}")
+        await _emit_invoice_charge(invoice, customer, settings, _invoice_charge_message(invoice))
         await db.flush()
     except Exception as e:
         import logging
@@ -357,14 +379,14 @@ async def create_manual_invoice(
     return _invoice_response(invoice)
 
 
-@router.post("/{invoice_id}/cancel", status_code=200)
+@router.post("/{invoice_id}/cancel", response_model=InvoiceResponse)
 async def cancel_invoice(
     invoice_id: str,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -372,7 +394,8 @@ async def cancel_invoice(
 
     invoice.status = "cancelled"
     await db.flush()
-    return {"message": "Fatura cancelada", "invoice_id": str(invoice.id)}
+    await db.refresh(invoice)
+    return _invoice_response(invoice)
 
 
 @router.patch("/{invoice_id}/amount", response_model=InvoiceResponse)
@@ -596,7 +619,6 @@ async def send_cut_notice(
 @router.post("/{invoice_id}/emit-boleto", response_model=InvoiceResponse)
 async def force_emit_boleto(
     invoice_id: str,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -613,20 +635,9 @@ async def force_emit_boleto(
 
     try:
         settings = await _get_system_settings(db)
-        efi_result = await _emit_invoice_charge(invoice, invoice.customer, settings, f"Fatura {invoice.reference_month}")
+        await _emit_invoice_charge(invoice, invoice.customer, settings, _invoice_charge_message(invoice))
         await db.flush()
         await db.refresh(invoice)
-
-        # Agenda a busca do PDF e envio por WhatsApp em background
-        if invoice.customer.phone and invoice.efi_pdf_url:
-            background_tasks.add_task(
-                process_pdf_and_whatsapp,
-                invoice.efi_pdf_url,
-                invoice.customer.phone,
-                f"boleto_{str(invoice.id)[:8]}.pdf",
-                f"Sua fatura do mês {invoice.reference_month} já está disponível."
-            )
-        
         return _invoice_response(invoice)
     except Exception as e:
         import logging
@@ -691,11 +702,7 @@ async def send_invoice_whatsapp(
             detail="O fluxo de envio de fatura está desativado nas configurações.",
         )
 
-    base_message = render_notification_message(settings, "invoice_generated", {
-        "nome": invoice.customer.name,
-        "valor": f"R$ {invoice.amount:.2f}",
-        "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
-    })
+    base_message = _invoice_customer_message(settings, invoice)
 
     if not invoice.efi_charge_id and not invoice.efi_payment_url:
         return InvoiceWhatsAppDispatchResponse(
@@ -782,30 +789,3 @@ async def send_invoice_whatsapp(
         reason="ok",
         detail=f"Fatura enviada com sucesso para {normalized_phone}.",
     )
-
-
-async def process_pdf_and_whatsapp(pdf_url: str, phone: str, filename: str, caption: str):
-    """Baixa o PDF da Efí e depois envia pelo WhatsApp."""
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    pdf_data = None
-    for attempt in range(6):
-        await asyncio.sleep(5)  # Espera 5 segundos entre as tentativas
-        try:
-            pdf_data = await efi_service.baixar_pdf(pdf_url)
-            if pdf_data:
-                break
-        except Exception:
-            pass
-
-    if pdf_data:
-        logger.info("PDF Efí obtido. Enviando via WhatsApp...")
-        await whatsapp_service.send_invoice_document(
-            phone=phone,
-            pdf_data=pdf_data,
-            filename=filename,
-            caption=caption
-        )
-    else:
-        logger.warning("Nao foi possivel obter o PDF Efí para envio via WhatsApp.")
