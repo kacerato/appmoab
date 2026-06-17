@@ -1,3 +1,4 @@
+from copy import deepcopy
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -85,12 +86,20 @@ def _build_evolution_quote(message: WhatsAppMessage) -> dict | None:
     }
 
 
-def _extract_media_entry(stored_message: dict) -> tuple[str, str, dict] | None:
+def _extract_media_entry_with_key(stored_message: dict) -> tuple[str, str, str, dict] | None:
     for key, (media_type, fallback_mime) in MEDIA_MESSAGE_TYPES.items():
         media = stored_message.get(key)
         if isinstance(media, dict):
-            return media_type, fallback_mime, media
+            return key, media_type, fallback_mime, media
     return None
+
+
+def _extract_media_entry(stored_message: dict) -> tuple[str, str, dict] | None:
+    media_entry = _extract_media_entry_with_key(stored_message)
+    if not media_entry:
+        return None
+    _, media_type, fallback_mime, media = media_entry
+    return media_type, fallback_mime, media
 
 
 def _looks_like_base64(value: str) -> bool:
@@ -145,6 +154,41 @@ def _media_message_key(mime_type: str | None) -> tuple[str, str]:
     if normalized.startswith("audio/"):
         return "audio", "audioMessage"
     return "document", "documentMessage"
+
+
+def _persist_fetched_media(
+    message: WhatsAppMessage,
+    *,
+    media_key: str,
+    media_type: str,
+    mime_type: str,
+    file_name: str | None,
+    data_uri: str,
+) -> str:
+    stored_file_path = save_binary_from_base64(data_uri, prefix="whatsapp", fallback_ext="bin")
+    public_file_url = build_public_upload_url(stored_file_path)
+
+    payload = deepcopy(message.payload) if isinstance(message.payload, dict) else {}
+    container = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    stored_message = container.get("message") if isinstance(container.get("message"), dict) else {}
+    media = stored_message.get(media_key) if isinstance(stored_message.get(media_key), dict) else {}
+    media.update({
+        "fileName": file_name,
+        "mimetype": mime_type,
+        "url": public_file_url,
+        "storedFilePath": stored_file_path,
+    })
+    stored_message[media_key] = media
+    container["message"] = stored_message
+    payload["media"] = {
+        "type": media_type,
+        "file_name": file_name,
+        "mime_type": mime_type,
+        "stored_file_path": stored_file_path,
+        "public_file_url": public_file_url,
+    }
+    message.payload = payload
+    return public_file_url
 
 
 async def _find_customer_by_phone(db: AsyncSession, phone: str) -> Customer | None:
@@ -233,19 +277,20 @@ async def get_message_media(
         raise HTTPException(status_code=404, detail="Mensagem nao encontrada")
 
     stored_message = _extract_stored_message_object(message)
-    media_entry = _extract_media_entry(stored_message)
+    media_entry = _extract_media_entry_with_key(stored_message)
     if not media_entry:
         raise HTTPException(status_code=400, detail="Mensagem sem midia suportada")
 
-    media_type, fallback_mime, media = media_entry
+    media_key, media_type, fallback_mime, media = media_entry
     mime_type = str(media.get("mimetype") or media.get("mimeType") or fallback_mime)
+    file_name = media.get("fileName") or media.get("filename") or media.get("title")
     direct_base64 = _find_media_base64({"message": stored_message, "payload": message.payload})
     if direct_base64:
         return {
             "message_id": str(message.id),
             "media_type": media_type,
             "mime_type": mime_type,
-            "file_name": media.get("fileName") or media.get("filename") or media.get("title"),
+            "file_name": file_name,
             "data_uri": _media_data_uri(direct_base64, mime_type),
         }
 
@@ -268,12 +313,24 @@ async def get_message_media(
     if not fetched_base64:
         raise HTTPException(status_code=502, detail="Evolution API nao retornou a midia em base64")
 
+    data_uri = _media_data_uri(fetched_base64, mime_type)
+    public_file_url = _persist_fetched_media(
+        message,
+        media_key=media_key,
+        media_type=media_type,
+        mime_type=mime_type,
+        file_name=str(file_name) if file_name else None,
+        data_uri=data_uri,
+    )
+    await db.flush()
+
     return {
         "message_id": str(message.id),
         "media_type": media_type,
         "mime_type": mime_type,
-        "file_name": media.get("fileName") or media.get("filename") or media.get("title"),
-        "data_uri": _media_data_uri(fetched_base64, mime_type),
+        "file_name": file_name,
+        "data_uri": data_uri,
+        "url": public_file_url,
     }
 
 

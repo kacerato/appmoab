@@ -111,9 +111,9 @@ export default function RouteScreen() {
     }
 
     if (readingsResult.status === 'fulfilled') {
-      const todayKey = new Date().toISOString().slice(0, 10);
+      const monthKey = new Date().toISOString().slice(0, 7);
       nextReadings = (readingsResult.value.items || []).filter(
-        item => item.collaborator_id === user?.id && item.captured_at.slice(0, 10) === todayKey,
+        item => item.collaborator_id === user?.id && item.captured_at.slice(0, 7) === monthKey,
       );
       setTodayReadings(nextReadings);
     } else {
@@ -160,7 +160,12 @@ export default function RouteScreen() {
 
   const routeItems = useMemo(() => {
     const byHydrometer = new Map<string, ReadingItem>();
-    for (const reading of todayReadings) byHydrometer.set(reading.hydrometer_id, reading);
+    for (const reading of todayReadings) {
+      const previous = byHydrometer.get(reading.hydrometer_id);
+      if (!previous || reading.captured_at > previous.captured_at) {
+        byHydrometer.set(reading.hydrometer_id, reading);
+      }
+    }
 
     return customers
       .map(customer => {
@@ -375,15 +380,24 @@ function ScreenHeader({ eyebrow, title, subtitle }: { eyebrow: string; title: st
 
 function CustomerCard({ item, onPress }: { item: { customer: Customer; hydrometer: Hydrometer; todayStatus?: ReadingItem }; onPress: () => void }) {
   const isInstallation = !item.hydrometer.last_reading_date;
+  const locked = Boolean(item.todayStatus && item.todayStatus.status !== 'rejected');
+  const actionLabel = locked
+    ? item.todayStatus?.status === 'approved'
+      ? 'Concluido'
+      : 'Em revisao'
+    : isInstallation ? 'Iniciar instalacao' : 'Escanear';
   return (
-    <TouchableOpacity activeOpacity={0.88} style={styles.customerCard} onPress={onPress}>
+    <TouchableOpacity activeOpacity={0.88} style={[styles.customerCard, locked && styles.customerCardLocked]} onPress={onPress} disabled={locked}>
       <View style={styles.neoLine} />
       <View style={styles.cardTopRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.customerName}>{item.customer.name}</Text>
           <Text style={styles.customerCode}>QR {item.hydrometer.code}</Text>
         </View>
-        <StatusBadge status={item.todayStatus?.status || 'pending'} mode={isInstallation ? 'installation' : 'reading'} />
+        <StatusBadge
+          status={item.todayStatus?.status || 'open'}
+          mode={isInstallation ? 'installation' : 'reading'}
+        />
       </View>
       {isInstallation && <Text style={styles.installationPill}>Instalacao: informar valor inicial, foto e local</Text>}
       {!!item.hydrometer.location_description && <Text style={styles.locationText}>{item.hydrometer.location_description}</Text>}
@@ -392,7 +406,7 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
         {item.hydrometer.black_digits ? ` - ${item.hydrometer.black_digits} pretos` : ''}
       </Text>
       <View style={styles.rowActionButton}>
-        <Text style={styles.rowActionButtonText}>{isInstallation ? 'Iniciar instalacao' : 'Escanear'}</Text>
+        <Text style={styles.rowActionButtonText}>{actionLabel}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -409,7 +423,10 @@ function TaskCard({ item, onPress }: { item: { customer: Customer; hydrometer: H
         <Text style={styles.customerName}>{item.customer.name}</Text>
         <Text style={styles.metaLine}>{isInstallation ? 'Instalacao pendente' : `QR ${item.hydrometer.code}`}</Text>
       </View>
-      <StatusBadge status={item.todayStatus?.status || 'pending'} mode={isInstallation ? 'installation' : 'reading'} />
+      <StatusBadge
+        status={item.todayStatus?.status || 'open'}
+        mode={isInstallation ? 'installation' : 'reading'}
+      />
     </TouchableOpacity>
   );
 }
@@ -512,6 +529,7 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
 function StatusBadge({ status, mode = 'reading' }: { status: string; mode?: 'reading' | 'installation' }) {
   let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Pendente' };
   if (mode === 'installation') palette = { backgroundColor: colors.accentSoft, color: colors.accent, label: 'Instalar' };
+  if (status === 'pending') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Revisao' };
   if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
   if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };
   return (
@@ -669,6 +687,9 @@ function createRouteStyles() {
     shadowRadius: 12,
     elevation: 2,
     overflow: 'hidden',
+  },
+  customerCardLocked: {
+    opacity: 0.78,
   },
   cardTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 },
   customerName: { color: colors.textPrimary, fontWeight: '800', fontSize: 16 },

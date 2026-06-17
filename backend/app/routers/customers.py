@@ -102,6 +102,10 @@ def _next_reference_month(due_date: date) -> str:
     return f"{due_date.year}-{due_date.month:02d}"
 
 
+def _current_reference_month(today: date) -> str:
+    return f"{today.year}-{today.month:02d}"
+
+
 def _format_reference_month(reference_month: str) -> str:
     try:
         year, month = reference_month.split("-", 1)
@@ -236,6 +240,21 @@ async def list_customers(
         system_settings = await _get_system_settings(db)
         today = date.today()
         items = [customer for customer in items if _customer_in_route_window(customer, system_settings, today)]
+
+        customer_ids = [customer.id for customer in items]
+        if customer_ids:
+            billed_result = await db.execute(
+                select(Invoice.customer_id)
+                .where(
+                    Invoice.customer_id.in_(customer_ids),
+                    Invoice.reference_month == _current_reference_month(today),
+                    Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
+                    Invoice.status.in_(OPEN_INVOICE_STATUSES + ("paid",)),
+                )
+                .group_by(Invoice.customer_id)
+            )
+            billed_customer_ids = {row[0] for row in billed_result.all()}
+            items = [customer for customer in items if customer.id not in billed_customer_ids]
 
         total = len(items)
         offset = (page - 1) * per_page
