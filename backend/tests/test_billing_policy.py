@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 import unittest
 
 from app.services.billing_policy import (
@@ -9,6 +9,7 @@ from app.services.billing_policy import (
 )
 from app.models.invoice import Invoice
 from app.routers.invoices import _invoice_display_status
+from app.schemas.reading import ReadingResponse
 
 
 class BillingPolicyTest(unittest.TestCase):
@@ -91,6 +92,35 @@ class BillingPolicyTest(unittest.TestCase):
         self.assertEqual(status, "due_today")
         self.assertEqual(label, "Vence hoje")
         self.assertEqual(days, 0)
+
+    def test_reading_response_exposes_installation_marker(self):
+        payload = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "hydrometer_id": "22222222-2222-2222-2222-222222222222",
+            "collaborator_id": "33333333-3333-3333-3333-333333333333",
+            "current_value": 10.0,
+            "previous_value": 0.0,
+            "consumption": 0.0,
+            "photo_url": "/uploads/test.jpg",
+            "photo_extracted_code": None,
+            "photo_extracted_value": None,
+            "ocr_confidence": None,
+            "latitude": None,
+            "longitude": None,
+            "captured_at": datetime(2026, 6, 17, tzinfo=timezone.utc),
+            "status": "pending",
+            "rejection_reason": None,
+            "approved_by": None,
+            "approved_at": None,
+            "created_at": datetime(2026, 6, 17, tzinfo=timezone.utc),
+            "is_installation": True,
+            "charge_type": "installation",
+        }
+
+        response = ReadingResponse.model_validate(payload)
+
+        self.assertTrue(response.is_installation)
+        self.assertEqual(response.charge_type, "installation")
 
 
 if __name__ == "__main__":

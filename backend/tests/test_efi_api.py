@@ -1,7 +1,7 @@
 from datetime import date
 import unittest
 
-from app.services.efi_api import EfiAPIError, EfiAPIService, _format_billet_message
+from app.services.efi_api import EfiAPIError, EfiAPIService, _decode_p12_base64, _format_billet_message
 
 
 class CapturingEfiService(EfiAPIService):
@@ -137,6 +137,9 @@ class EfiAPIServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(lines), 4)
         self.assertTrue(all(len(line) <= 100 for line in lines))
         self.assertEqual(sum(len(line) for line in lines), 400)
+
+    def test_decodes_p12_base64_with_whitespace(self):
+        self.assertEqual(_decode_p12_base64(" YWJjZA==\n"), b"abcd")
 
 
 if __name__ == "__main__":

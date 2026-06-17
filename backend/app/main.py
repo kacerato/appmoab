@@ -111,6 +111,6 @@ async def health_check():
         "whatsapp_enabled": settings.whatsapp_enabled,
         "payment_provider": "efi",
         "efi_sandbox": settings.efi_sandbox,
-        "efi_certificate_mode": "p12" if settings.efi_p12_path else "pem" if settings.efi_cert_path else "none",
+        "efi_certificate_mode": "p12_base64" if settings.efi_p12_base64 else "p12" if settings.efi_p12_path else "pem" if settings.efi_cert_path else "none",
         "cors_origins": settings.cors_origin_list,
     }

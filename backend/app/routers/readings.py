@@ -255,6 +255,7 @@ async def list_readings(
     query = select(Reading).options(
         selectinload(Reading.hydrometer).selectinload(Hydrometer.customer),
         selectinload(Reading.collaborator),
+        selectinload(Reading.invoice),
     )
 
     if status:
@@ -279,6 +280,12 @@ async def list_readings(
         if r.hydrometer and r.hydrometer.customer:
             resp.customer_name = r.hydrometer.customer.name
             resp.customer_id = r.hydrometer.customer.id
+            resp.is_installation = (
+                r.invoice.charge_type == "installation"
+                if r.invoice
+                else r.hydrometer.last_reading_date is None
+            )
+            resp.charge_type = r.invoice.charge_type if r.invoice else "installation" if resp.is_installation else "water"
         items.append(resp)
 
     return ReadingListResponse(items=items, total=total, page=page, per_page=per_page)

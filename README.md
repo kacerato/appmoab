@@ -82,6 +82,7 @@ docker-compose up -d
 | `EFI_SANDBOX` | `true` para homologacao, `false` para producao |
 | `EFI_NOTIFICATION_URL` | URL publica do webhook `/api/webhooks/efi` |
 | `EFI_BOLETO_DAYS_TO_WRITE_OFF` | Dias para baixa automatica da cobranca apos vencimento |
+| `EFI_P12_BASE64` | Conteudo do certificado `.p12` em base64; recomendado no Railway |
 | `EFI_P12_PATH` | Caminho do certificado `.p12` da aplicacao Efí em producao |
 | `EFI_P12_PASSWORD` | Senha do `.p12`, deixe vazio se o certificado nao tiver senha |
 | `EFI_CERT_PATH` / `EFI_KEY_PATH` | Alternativa em PEM ao `.p12`; use somente um dos modos |
@@ -90,9 +91,9 @@ docker-compose up -d
 | `EVOLUTION_API_KEY` | Chave enviada no header `apikey` |
 | `EVOLUTION_INSTANCE_NAME` | Nome da instancia usada para envio |
 
-> Variaveis legadas `INTER_CLIENT_ID`, `INTER_CLIENT_SECRET` e `INTER_SANDBOX` ainda sao aceitas pelo backend para compatibilidade, mas novos ambientes devem usar `EFI_*`. Em producao real use `EFI_SANDBOX=false` e configure `EFI_P12_PATH` apontando para um certificado `.p12` fora do git, ou use o par `EFI_CERT_PATH`/`EFI_KEY_PATH` caso tenha convertido para PEM.
+> Variaveis legadas `INTER_CLIENT_ID`, `INTER_CLIENT_SECRET` e `INTER_SANDBOX` ainda sao aceitas pelo backend para compatibilidade, mas novos ambientes devem usar `EFI_*`. Em producao real use `EFI_SANDBOX=false` e configure `EFI_P12_BASE64` no Railway, ou `EFI_P12_PATH` apontando para um certificado `.p12` fora do git. Use o par `EFI_CERT_PATH`/`EFI_KEY_PATH` apenas caso tenha convertido para PEM.
 
-Para validar producao sem emitir cobranca, autentique como admin e chame `POST /api/system-settings/efi/validate`. O retorno deve indicar `environment: production`, `certificate_mode: p12` e `ok: true`.
+Para validar producao sem emitir cobranca, autentique como admin e chame `POST /api/system-settings/efi/validate`. O retorno deve indicar `environment: production`, `certificate_mode: p12_base64` ou `p12`, e `ok: true`.
 
 ## WhatsApp via Evolution API
 
