@@ -131,6 +131,16 @@ class EfiAPIServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.last_request["params"]["charge_type"], "billet")
         self.assertEqual(service.last_request["params"]["status"], "waiting")
 
+    async def test_cancelar_cobranca_uses_efi_cancel_endpoint(self):
+        service = CapturingEfiService({"code": 200, "data": {"status": "canceled"}})
+
+        result = await service.cancelar_cobranca("123456")
+
+        self.assertEqual(result["data"]["status"], "canceled")
+        assert service.last_request is not None
+        self.assertEqual(service.last_request["method"], "PUT")
+        self.assertEqual(service.last_request["path"], "/v1/charge/123456/cancel")
+
     def test_billet_message_is_limited_to_four_lines_of_one_hundred_chars(self):
         message = _format_billet_message("x" * 450)
         lines = message.splitlines()

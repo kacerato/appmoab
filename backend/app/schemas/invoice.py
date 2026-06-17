@@ -79,6 +79,10 @@ class InvoiceStatusUpdate(BaseModel):
     paid_date: date | None = None
 
 
+class InvoiceReopenRequest(BaseModel):
+    reason: str
+
+
 class InvoiceSummary(BaseModel):
     """Resumo financeiro para o dashboard."""
     total_pending: float
@@ -97,3 +101,17 @@ class InvoiceWhatsAppDispatchResponse(BaseModel):
     status: str
     reason: str
     detail: str | None = None
+
+
+class InvoiceEventResponse(BaseModel):
+    id: UUID
+    invoice_id: UUID
+    user_id: UUID | None = None
+    event_type: str
+    previous_status: str | None = None
+    new_status: str | None = None
+    reason: str | None = None
+    payload: dict | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

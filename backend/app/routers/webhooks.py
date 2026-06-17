@@ -14,6 +14,7 @@ from app.database import get_db
 from app.config import get_settings
 from app.models.customer import Customer
 from app.models.invoice import Invoice
+from app.models.invoice_event import InvoiceEvent
 from app.models.whatsapp_message import WhatsAppMessage
 from app.services.efi_api import efi_service
 from app.services.payment_receipts import store_efi_payment_receipt
@@ -234,6 +235,7 @@ async def efi_webhook(
     if not invoice:
         return {"status": "ignored", "reason": "invoice_not_found", "charge_id": charge_id}
 
+    previous_status = invoice.status
     invoice.efi_status = current_status
     invoice.efi_raw_response = detail
     mapped_status = _map_efi_status(current_status, invoice)
@@ -247,6 +249,19 @@ async def efi_webhook(
             invoice.paid_date = date.today()
         invoice.efi_payment_receipt_url = store_efi_payment_receipt(invoice, detail)
 
+    db.add(InvoiceEvent(
+        invoice_id=invoice.id,
+        event_type="efi_webhook_applied",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        reason="Webhook Efí atualizou a fatura",
+        payload={
+            "charge_id": charge_id,
+            "efi_status": current_status,
+            "notification": str(notification_token),
+            "was_locally_cancelled": previous_status == "cancelled" and mapped_status == "paid",
+        },
+    ))
     await db.flush()
     logger.info("Notificacao Efí aplicada na fatura %s: %s", invoice.id, current_status)
     return {"status": "ok", "invoice_id": str(invoice.id), "efi_status": current_status}
