@@ -17,6 +17,13 @@ interface DashboardData {
     deductions: { total: number; items: { label: string; amount: number }[] };
   };
   readings: { pending_approval: number; this_month: number };
+  operational_issues: Array<{
+    code: string;
+    title: string;
+    detail: string;
+    severity: 'danger' | 'warning' | 'info';
+    href: string;
+  }>;
   current_month: string;
   scope: 'month' | 'all';
 }
@@ -113,6 +120,39 @@ export default function DashboardPage() {
           <div className="kpi-sub">Após deduções de {fmt(data.financial.deductions.total)}</div>
         </div>
       </div>
+
+      {data.operational_issues?.length ? (
+        <div className="card" style={{ marginBottom: 16, padding: 18 }}>
+          <div className="card-header" style={{ marginBottom: 12 }}>
+            <span className="card-title">Atenção operacional</span>
+            <span className="badge pending">{data.operational_issues.length} item(ns)</span>
+          </div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            {data.operational_issues.slice(0, 6).map((issue, index) => (
+              <Link
+                key={`${issue.code}-${index}`}
+                href={issue.href}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '18px minmax(0, 1fr) auto',
+                  gap: 10,
+                  alignItems: 'center',
+                  padding: '10px 0',
+                  borderTop: index ? '1px solid var(--border)' : 0,
+                  color: 'inherit',
+                }}
+              >
+                <AlertTriangle size={16} style={{ color: issue.severity === 'danger' ? 'var(--danger)' : 'var(--warning)' }} />
+                <span style={{ minWidth: 0 }}>
+                  <strong style={{ display: 'block', fontSize: 13 }}>{issue.title}</strong>
+                  <small style={{ display: 'block', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{issue.detail}</small>
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 800, color: 'var(--accent)' }}>Ver</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
         <div className="card">

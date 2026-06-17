@@ -95,6 +95,10 @@ function formatM3(value: number | null | undefined) {
   });
 }
 
+function currentReferenceMonth() {
+  return new Date().toISOString().slice(0, 7);
+}
+
 export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
@@ -124,6 +128,11 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   });
 
   const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
+  const currentCycleInvoice = useMemo(
+    () => invoices.find(invoice => invoice.reference_month === currentReferenceMonth()),
+    [invoices],
+  );
+  const primaryHydrometer = customer?.hydrometers[0] || null;
   const adjustingHydrometer = useMemo(
     () => customer?.hydrometers.find(hydrometer => hydrometer.id === adjustingHydrometerId) || null,
     [adjustingHydrometerId, customer],
@@ -322,6 +331,33 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         <div className="kpi-card red">
           <div className="kpi-label">Em atraso</div>
           <div className="kpi-value" style={{ fontSize: 20, color: 'var(--danger)' }}>{fmt(customer.total_overdue)}</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24, padding: 18 }}>
+        <div className="card-header" style={{ marginBottom: 14 }}>
+          <span className="card-title">Ciclo atual</span>
+          <span className={`badge ${currentCycleInvoice?.status || 'pending'}`}>
+            {currentCycleInvoice ? statusLabel(currentCycleInvoice.status) : 'Aguardando leitura'}
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <CycleStep label="Referencia" value={currentReferenceMonth()} tone="info" />
+          <CycleStep
+            label="Leitura"
+            value={primaryHydrometer?.last_reading_date ? new Date(primaryHydrometer.last_reading_date).toLocaleDateString('pt-BR') : 'Pendente'}
+            tone={primaryHydrometer?.last_reading_date ? 'success' : 'warning'}
+          />
+          <CycleStep
+            label="Fatura"
+            value={currentCycleInvoice ? fmt(currentCycleInvoice.amount) : 'Nao gerada'}
+            tone={currentCycleInvoice ? 'success' : 'warning'}
+          />
+          <CycleStep
+            label="Vencimento"
+            value={currentCycleInvoice ? new Date(currentCycleInvoice.due_date).toLocaleDateString('pt-BR') : `Dia ${customer.due_day}`}
+            tone={currentCycleInvoice?.status === 'overdue' ? 'danger' : 'info'}
+          />
         </div>
       </div>
 
@@ -549,6 +585,21 @@ function Info({ icon, label, value }: { icon: React.ReactNode; label: string; va
         <div style={{ color: 'var(--text-muted)', fontSize: 11, marginBottom: 2 }}>{label}</div>
         <div>{value}</div>
       </div>
+    </div>
+  );
+}
+
+function CycleStep({ label, value, tone }: { label: string; value: string; tone: 'info' | 'success' | 'warning' | 'danger' }) {
+  const colors: Record<typeof tone, string> = {
+    info: 'var(--accent)',
+    success: 'var(--success)',
+    warning: 'var(--warning)',
+    danger: 'var(--danger)',
+  };
+  return (
+    <div style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: 12, background: 'var(--bg-card)' }}>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ marginTop: 6, fontSize: 14, fontWeight: 800, color: colors[tone] }}>{value}</div>
     </div>
   );
 }
