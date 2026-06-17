@@ -53,11 +53,13 @@ def _build_quoted_payload(quoted: WhatsAppMessage | None, sent_text: str) -> dic
     if not quoted:
         return None
 
+    media = _message_media_summary(quoted)
     return {
         "quoted_message_id": str(quoted.id),
         "quoted_body": quoted.body[:500],
         "quoted_direction": quoted.direction,
         "quoted_created_at": quoted.created_at.isoformat(),
+        "quoted_media": media,
         "sent_text": sent_text,
     }
 
@@ -114,6 +116,22 @@ def _extract_media_entry(stored_message: dict) -> tuple[str, str, dict] | None:
         return None
     _, media_type, fallback_mime, media = media_entry
     return media_type, fallback_mime, media
+
+
+def _message_media_summary(message: WhatsAppMessage) -> dict | None:
+    stored_message = _extract_stored_message_object(message)
+    media_entry = _extract_media_entry(stored_message)
+    if not media_entry:
+        return None
+
+    media_type, fallback_mime, media = media_entry
+    mime_type = str(media.get("mimetype") or media.get("mimeType") or fallback_mime)
+    file_name = media.get("fileName") or media.get("filename") or media.get("title")
+    return {
+        "type": media_type,
+        "mime_type": mime_type,
+        "file_name": str(file_name) if file_name else None,
+    }
 
 
 def _looks_like_base64(value: str) -> bool:
@@ -203,6 +221,45 @@ def _persist_fetched_media(
     }
     message.payload = payload
     return public_file_url
+
+
+def _mark_media_unavailable(
+    message: WhatsAppMessage,
+    *,
+    media_key: str,
+    media_type: str,
+    mime_type: str,
+    file_name: str | None,
+    detail: str,
+) -> dict:
+    payload = deepcopy(message.payload) if isinstance(message.payload, dict) else {}
+    container = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    stored_message = container.get("message") if isinstance(container.get("message"), dict) else {}
+    media = stored_message.get(media_key) if isinstance(stored_message.get(media_key), dict) else {}
+    media.update({
+        "fileName": file_name,
+        "mimetype": mime_type,
+        "unavailable": True,
+        "unavailableDetail": detail,
+    })
+    stored_message[media_key] = media
+    container["message"] = stored_message
+    payload["media"] = {
+        "type": media_type,
+        "file_name": file_name,
+        "mime_type": mime_type,
+        "unavailable": True,
+        "detail": detail,
+    }
+    message.payload = payload
+    return {
+        "message_id": str(message.id),
+        "media_type": media_type,
+        "mime_type": mime_type,
+        "file_name": file_name,
+        "available": False,
+        "detail": detail,
+    }
 
 
 def _message_response(message: WhatsAppMessage) -> WhatsAppMessageResponse:
@@ -330,22 +387,47 @@ async def get_message_media(
 
     evolution_message = _build_evolution_quote(message)
     if not evolution_message:
-        raise HTTPException(status_code=400, detail="Mensagem sem ID externo para buscar midia")
+        response = _mark_media_unavailable(
+            message,
+            media_key=media_key,
+            media_type=media_type,
+            mime_type=mime_type,
+            file_name=str(file_name) if file_name else None,
+            detail="Mensagem sem ID externo para buscar midia",
+        )
+        await db.flush()
+        return response
 
     result_payload = await whatsapp_service.get_media_base64(
         evolution_message,
         convert_to_mp4=media_type == "video",
     )
     if not result_payload or result_payload.get("status") != "ok":
-        raise HTTPException(
-            status_code=502,
-            detail=(result_payload or {}).get("error") or "Nao foi possivel buscar a midia na Evolution API",
+        detail = (result_payload or {}).get("error") or "Nao foi possivel buscar a midia na Evolution API"
+        response = _mark_media_unavailable(
+            message,
+            media_key=media_key,
+            media_type=media_type,
+            mime_type=mime_type,
+            file_name=str(file_name) if file_name else None,
+            detail=detail,
         )
+        await db.flush()
+        return response
 
     payload = result_payload.get("payload")
     fetched_base64 = _find_media_base64(payload)
     if not fetched_base64:
-        raise HTTPException(status_code=502, detail="Evolution API nao retornou a midia em base64")
+        response = _mark_media_unavailable(
+            message,
+            media_key=media_key,
+            media_type=media_type,
+            mime_type=mime_type,
+            file_name=str(file_name) if file_name else None,
+            detail="Evolution API nao retornou a midia em base64",
+        )
+        await db.flush()
+        return response
 
     data_uri = _media_data_uri(fetched_base64, mime_type)
     public_file_url = _persist_fetched_media(

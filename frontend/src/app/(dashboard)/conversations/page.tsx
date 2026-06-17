@@ -49,6 +49,11 @@ type WhatsAppPayload = {
   quoted_body?: string;
   quoted_direction?: string;
   quoted_created_at?: string;
+  quoted_media?: {
+    type?: string;
+    mime_type?: string;
+    file_name?: string | null;
+  } | null;
   sent_text?: string;
   [key: string]: unknown;
 };
@@ -60,13 +65,16 @@ interface MessageMedia {
   fileName?: string;
   mimeType: string;
   isAnimated?: boolean;
+  unavailable?: boolean;
 }
 
 interface WhatsAppMediaResponse {
+  available?: boolean;
   data_uri?: string;
   mime_type?: string;
   base64?: string;
   url?: string;
+  detail?: string;
 }
 
 interface SendMessageResponse {
@@ -173,6 +181,7 @@ function mediaSource(
 function messageMedia(message: WhatsAppMessage): MessageMedia | null {
   const data = payloadData(message.payload);
   const messageObject = isRecord(data.message) ? data.message : {};
+  const payloadMedia = isRecord(data.media) ? data.media : {};
   const configs: Array<{ key: string; type: MessageMedia['type']; label: string; fallbackMime: string }> = [
     { key: 'stickerMessage', type: 'sticker', label: 'Figurinha recebida', fallbackMime: 'image/webp' },
     { key: 'imageMessage', type: 'image', label: 'Imagem recebida', fallbackMime: 'image/jpeg' },
@@ -193,6 +202,7 @@ function messageMedia(message: WhatsAppMessage): MessageMedia | null {
       fileName: stringValue(media, ['fileName', 'filename', 'title']),
       mimeType,
       isAnimated: Boolean(media.isAnimated),
+      unavailable: Boolean(media.unavailable || payloadMedia.unavailable),
     };
   }
 
@@ -200,6 +210,7 @@ function messageMedia(message: WhatsAppMessage): MessageMedia | null {
 }
 
 function mediaResponseSource(response: WhatsAppMediaResponse, fallbackMime: string) {
+  if (response.available === false) return undefined;
   if (response.url) return normalizeMediaSource(response.url, response.mime_type || fallbackMime);
   if (response.data_uri) return response.data_uri;
   if (response.base64) return normalizeMediaSource(response.base64, response.mime_type || fallbackMime);
@@ -207,7 +218,7 @@ function mediaResponseSource(response: WhatsAppMediaResponse, fallbackMime: stri
 }
 
 function MessageMediaPreview({ media, outbound, messageId }: { media: MessageMedia; outbound: boolean; messageId: string }) {
-  const canFetchRemoteMedia = true;
+  const canFetchRemoteMedia = !media.unavailable;
   const [loadedSrc, setLoadedSrc] = useState(media.src);
   const [failed, setFailed] = useState(false);
   const fetchAttemptedRef = useRef(false);
@@ -292,10 +303,39 @@ function MessageMediaPreview({ media, outbound, messageId }: { media: MessageMed
 
   return (
     <div className="whatsapp-media-fallback" style={{ color: softColor }}>
-      <span>{media.label}{media.isAnimated ? ' animada' : ''}</span>
+      <span>{media.unavailable || failed ? `${media.label} indisponivel` : media.label}{media.isAnimated ? ' animada' : ''}</span>
       {media.fileName && <small>{media.fileName}</small>}
     </div>
   );
+}
+
+function mediaTypeLabel(type?: string) {
+  const labels: Record<string, string> = {
+    sticker: 'Figurinha',
+    image: 'Imagem',
+    video: 'Video',
+    audio: 'Audio',
+    document: 'Documento',
+  };
+  return labels[type || ''] || 'Midia';
+}
+
+function quotedPreviewFromPayload(payload: WhatsAppPayload | null, fallback = 'Mensagem citada') {
+  const media = payload?.quoted_media;
+  if (media?.type) {
+    const name = media.file_name ? `: ${media.file_name}` : '';
+    return `${mediaTypeLabel(media.type)} mencionado${name}`;
+  }
+  return payload?.quoted_body?.trim() || fallback;
+}
+
+function quotedPreviewFromMessage(message: WhatsAppMessage) {
+  const media = messageMedia(message);
+  if (media) {
+    const name = media.fileName ? `: ${media.fileName}` : '';
+    return `${mediaTypeLabel(media.type)} mencionado${name}`;
+  }
+  return message.body.trim() || 'Mensagem citada';
 }
 
 export default function ConversationsPage() {
@@ -319,6 +359,8 @@ export default function ConversationsPage() {
   const [newFile, setNewFile] = useState<File | null>(null);
   const selectedPhoneRef = useRef<string | null>(null);
   const conversationsRef = useRef<Conversation[]>([]);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     selectedPhoneRef.current = selectedPhone;
@@ -328,15 +370,29 @@ export default function ConversationsPage() {
     conversationsRef.current = conversations;
   }, [conversations]);
 
+  const scrollMessagesToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    window.requestAnimationFrame(() => {
+      const container = messagesScrollRef.current;
+      if (container) {
+        container.scrollTo({ top: container.scrollHeight, behavior });
+      }
+    });
+  }, []);
+
   const loadMessages = useCallback((phone: string, showLoading = true) => {
     if (showLoading) setMessagesLoading(true);
     api.get<WhatsAppMessage[]>(`/whatsapp/conversations/${encodeURIComponent(phone)}/messages`, { skipCache: true })
-      .then(setMessages)
+      .then(items => {
+        setMessages(items);
+        if (selectedPhoneRef.current === phone) {
+          scrollMessagesToBottom(showLoading ? 'auto' : 'smooth');
+        }
+      })
       .catch(err => notify('Falha ao carregar conversa', err instanceof Error ? err.message : 'Erro ao buscar mensagens.', 'error'))
       .finally(() => {
         if (showLoading) setMessagesLoading(false);
       });
-  }, [notify]);
+  }, [notify, scrollMessagesToBottom]);
 
   const loadConversations = useCallback((phoneToSelect?: string, keepSelection = false, silentMessages = false) => {
     api.get<Conversation[]>('/whatsapp/conversations', { skipCache: true })
@@ -408,6 +464,24 @@ export default function ConversationsPage() {
     loadMessages(phone);
   };
 
+  useEffect(() => {
+    if (!messagesLoading && messages.length) {
+      scrollMessagesToBottom('auto');
+    }
+  }, [messages.length, messagesLoading, selectedPhone, scrollMessagesToBottom]);
+
+  const focusComposer = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      composerRef.current?.focus();
+      composerRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  }, []);
+
+  const handleQuoteMessage = (message: WhatsAppMessage) => {
+    setQuoted(message);
+    focusComposer();
+  };
+
   const handleSend = async () => {
     if (!selectedPhone || (!composer.trim() && !selectedFile)) return;
     setSending(true);
@@ -432,10 +506,12 @@ export default function ConversationsPage() {
         setSelectedFile(null);
         setQuoted(null);
         setMessages(current => [...current, response.message]);
+        scrollMessagesToBottom('smooth');
         loadConversations(response.message.phone);
         loadMessages(response.message.phone, false);
         window.setTimeout(() => loadMessages(response.message.phone, false), 800);
         window.setTimeout(() => loadMessages(response.message.phone, false), 2200);
+        window.setTimeout(() => scrollMessagesToBottom('smooth'), 2400);
         notify(
           response.whatsapp_status === 'sent' ? 'Mensagem enviada' : 'Mensagem registrada',
           response.detail || 'O historico da conversa foi atualizado.',
@@ -480,6 +556,8 @@ export default function ConversationsPage() {
         setNewText('');
         setNewFile(null);
         setQuoted(null);
+        setMessages(current => selectedPhoneRef.current === response.message.phone ? [...current, response.message] : current);
+        scrollMessagesToBottom('smooth');
         loadConversations(response.message.phone);
         loadMessages(response.message.phone, false);
         window.setTimeout(() => loadMessages(response.message.phone, false), 800);
@@ -602,7 +680,7 @@ export default function ConversationsPage() {
             <MessageCircle size={22} style={{ color: 'var(--accent)' }} />
           </div>
 
-          <div className="whatsapp-messages-scroll">
+          <div className="whatsapp-messages-scroll" ref={messagesScrollRef}>
             {messagesLoading ? (
               <div className="loading-page" style={{ minHeight: 300 }}>
                 <Loader2 size={18} className="spinner" />
@@ -638,7 +716,7 @@ export default function ConversationsPage() {
                           boxShadow: 'var(--shadow-sm)',
                         }}
                       >
-                        {message.payload?.quoted_body && (
+                        {message.payload?.quoted_message_id && (
                           <div
                             style={{
                               padding: '8px 10px',
@@ -650,7 +728,7 @@ export default function ConversationsPage() {
                               lineHeight: 1.45,
                             }}
                           >
-                            {truncate(message.payload.quoted_body, 160)}
+                            {truncate(quotedPreviewFromPayload(message.payload), 160)}
                           </div>
                         )}
                         {media && <MessageMediaPreview media={media} outbound={outbound} messageId={message.id} />}
@@ -667,7 +745,7 @@ export default function ConversationsPage() {
                       <button
                         className="btn btn-ghost btn-sm"
                         type="button"
-                        onClick={() => setQuoted(message)}
+                        onClick={() => handleQuoteMessage(message)}
                         style={{ marginTop: 4, padding: '4px 8px', fontSize: 11 }}
                       >
                         <Reply size={12} />
@@ -687,7 +765,7 @@ export default function ConversationsPage() {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: 0.4 }}>Respondendo mensagem</div>
                   <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {quoted.body}
+                    {quotedPreviewFromMessage(quoted)}
                   </div>
                 </div>
                 <button className="btn btn-ghost btn-icon" type="button" onClick={() => setQuoted(null)} aria-label="Remover resposta">
@@ -709,6 +787,7 @@ export default function ConversationsPage() {
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: 10, alignItems: 'end' }}>
               <textarea
+                ref={composerRef}
                 className="form-textarea whatsapp-composer"
                 value={composer}
                 onChange={event => setComposer(event.target.value)}
