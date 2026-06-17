@@ -44,6 +44,16 @@ interface Invoice {
   created_at: string;
 }
 
+interface InvoiceEvent {
+  id: string;
+  event_type: string;
+  previous_status: string | null;
+  new_status: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
 }
@@ -60,10 +70,17 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [whatsAppFeedback, setWhatsAppFeedback] = useState<string | null>(null);
+  const [events, setEvents] = useState<InvoiceEvent[]>([]);
 
   useEffect(() => {
-    api.get<Invoice>(`/invoices/${id}`)
-      .then(setInv)
+    Promise.all([
+      api.get<Invoice>(`/invoices/${id}`, { skipCache: true }),
+      api.get<InvoiceEvent[]>(`/invoices/${id}/events`, { skipCache: true }).catch(() => []),
+    ])
+      .then(([invoice, invoiceEvents]) => {
+        setInv(invoice);
+        setEvents(invoiceEvents);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [id]);
@@ -102,18 +119,23 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     if (!confirmed) return;
 
     try {
-      await api.post(`/invoices/${id}/cancel`);
-      const updated = await api.get<Invoice>(`/invoices/${id}`);
+      const updated = await api.post<Invoice>(`/invoices/${id}/cancel`);
       setInv(updated);
-      notify('Fatura cancelada', 'O status da fatura foi atualizado.', 'success');
+      await reloadEvents();
+      notify('Fatura cancelada', 'A cobrança foi cancelada e a fatura não poderá ser enviada até ser reaberta.', 'success');
     } catch (e: unknown) {
       notify('Falha ao cancelar fatura', e instanceof Error ? e.message : 'Erro ao cancelar a fatura.', 'error');
     }
   };
 
   const reloadInvoice = async () => {
-    const updated = await api.get<Invoice>(`/invoices/${id}`);
+    const updated = await api.get<Invoice>(`/invoices/${id}`, { skipCache: true });
     setInv(updated);
+  };
+
+  const reloadEvents = async () => {
+    const updated = await api.get<InvoiceEvent[]>(`/invoices/${id}/events`, { skipCache: true });
+    setEvents(updated);
   };
 
   const editAmount = async () => {
@@ -137,6 +159,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     try {
       const updated = await api.patch<Invoice>(`/invoices/${id}/amount`, { amount: parsed, reason });
       setInv(updated);
+      await reloadEvents();
       notify('Valor atualizado', 'A fatura foi ajustada com sucesso.', 'success');
     } catch (e: unknown) {
       notify('Falha ao ajustar valor', e instanceof Error ? e.message : 'Erro ao editar a fatura.', 'error');
@@ -173,6 +196,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     try {
       const updated = await api.post<Invoice>(`/invoices/${id}/refresh-overdue`, { days_overdue: days });
       setInv(updated);
+      await reloadEvents();
       notify('Valor atualizado', 'Juros e multa foram recalculados.', 'success');
     } catch (e: unknown) {
       notify('Falha ao atualizar atraso', e instanceof Error ? e.message : 'Erro ao recalcular juros.', 'error');
@@ -190,6 +214,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     try {
       await api.post(`/invoices/${id}/mark-paid`, {});
       await reloadInvoice();
+      await reloadEvents();
       notify('Pagamento registrado', 'A fatura foi marcada como paga.', 'success');
     } catch (e: unknown) {
       notify('Falha ao registrar pagamento', e instanceof Error ? e.message : 'Erro ao marcar como paga.', 'error');
@@ -203,11 +228,20 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       confirmLabel: 'Reabrir',
     });
     if (!confirmed) return;
+    const reason = await prompt('Motivo da reabertura', 'Explique por que esta fatura será reaberta. Isso ficará no histórico financeiro.', {
+      confirmLabel: 'Registrar motivo',
+      placeholder: 'Ex: boleto cancelado por erro de emissão',
+    });
+    if (!reason || reason.trim().length < 5) {
+      notify('Motivo obrigatório', 'Informe um motivo claro para reabrir a fatura.', 'warning');
+      return;
+    }
     setActionLoading('reopen');
     try {
-      await api.post(`/invoices/${id}/reopen`);
-      await reloadInvoice();
-      notify('Fatura reaberta', 'A fatura voltou para pendente.', 'success');
+      const updated = await api.post<Invoice>(`/invoices/${id}/reopen`, { reason: reason.trim() });
+      setInv(updated);
+      await reloadEvents();
+      notify('Fatura reaberta', 'O boleto antigo foi desvinculado. Emita uma nova cobrança Efí antes de enviar ao cliente.', 'success');
     } catch (e: unknown) {
       notify('Falha ao reabrir', e instanceof Error ? e.message : 'Erro ao reabrir fatura.', 'error');
     } finally {
@@ -230,10 +264,10 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const emitBoleto = async () => {
     setActionLoading('boleto');
     try {
-      await api.post(`/invoices/${id}/emit-boleto`);
-      const updated = await api.get<Invoice>(`/invoices/${id}`);
+      const updated = await api.post<Invoice>(`/invoices/${id}/emit-boleto`);
       setInv(updated);
-      notify('Cobrança emitida', 'A Efí gerou a cobrança com sucesso.', 'success');
+      await reloadEvents();
+      notify('Cobrança emitida', 'A Efí gerou a cobrança. Use o botão WhatsApp para enviar e registrar a mensagem na conversa.', 'success');
     } catch (e: unknown) {
       notify('Falha ao emitir cobrança', e instanceof Error ? e.message : 'Erro ao emitir cobrança na Efí.', 'error');
     } finally {
@@ -248,11 +282,13 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       const result = await api.post<{ detail: string; status: string }>(`/invoices/${id}/send-whatsapp`);
       setWhatsAppFeedback(result.detail || (result.status === 'sent' ? 'Fatura enviada com sucesso.' : 'Falha ao enviar a fatura.'));
       if (result.status === 'sent') {
-        const updated = await api.get<Invoice>(`/invoices/${id}`);
+        const updated = await api.get<Invoice>(`/invoices/${id}`, { skipCache: true });
         setInv(updated);
       }
+      await reloadEvents();
     } catch (e: unknown) {
       setWhatsAppFeedback(e instanceof Error ? e.message : 'Não foi possível encaminhar a fatura pelo WhatsApp.');
+      await reloadEvents().catch(() => undefined);
     } finally {
       setActionLoading(null);
     }
@@ -402,6 +438,41 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           </div>
         </div>
       </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-header"><span className="card-title">Histórico financeiro</span></div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {events.length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>Nenhum evento registrado para esta fatura.</div>
+          )}
+          {events.map((event) => (
+            <div
+              key={event.id}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '170px 1fr',
+                gap: 12,
+                padding: '10px 0',
+                borderTop: '1px solid var(--border)',
+                fontSize: 13,
+              }}
+            >
+              <div style={{ color: 'var(--text-muted)' }}>{new Date(event.created_at).toLocaleString('pt-BR')}</div>
+              <div>
+                <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{eventLabel(event.event_type)}</div>
+                {(event.previous_status || event.new_status) && (
+                  <div style={{ color: 'var(--text-secondary)', marginTop: 3 }}>
+                    {event.previous_status ? statusLabel(event.previous_status) : 'Novo'} {'->'} {event.new_status ? statusLabel(event.new_status) : '-'}
+                  </div>
+                )}
+                {event.reason && (
+                  <div style={{ color: 'var(--text-muted)', marginTop: 3 }}>{event.reason}</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </>
   );
 }
@@ -422,5 +493,23 @@ function statusLabel(s: string) {
 
 function chargeTypeLabel(s: string) {
   const m: Record<string, string> = { water: 'Água', installation: 'Instalação', reconnection: 'Religamento', manual: 'Manual' };
+  return m[s] || s;
+}
+
+function eventLabel(s: string) {
+  const m: Record<string, string> = {
+    invoice_created_manual: 'Fatura criada manualmente',
+    invoice_created_from_reading: 'Fatura criada pela leitura',
+    efi_charge_emitted: 'Cobrança Efí emitida',
+    efi_charge_failed: 'Falha ao emitir Efí',
+    invoice_cancelled: 'Fatura cancelada',
+    invoice_reopened: 'Fatura reaberta',
+    invoice_amount_adjusted: 'Valor ajustado',
+    invoice_overdue_refreshed: 'Atraso recalculado',
+    invoice_marked_paid: 'Pagamento registrado',
+    efi_webhook_applied: 'Webhook Efí aplicado',
+    whatsapp_invoice_sent: 'WhatsApp enviado',
+    whatsapp_invoice_failed: 'Falha no WhatsApp',
+  };
   return m[s] || s;
 }

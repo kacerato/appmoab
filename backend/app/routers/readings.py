@@ -19,6 +19,7 @@ from app.models.reading import Reading
 from app.models.hydrometer import Hydrometer
 from app.models.customer import Customer
 from app.models.invoice import Invoice
+from app.models.invoice_event import InvoiceEvent
 from app.models.system_setting import SystemSetting
 from app.models.whatsapp_message import WhatsAppMessage
 from app.models.user import User
@@ -37,7 +38,7 @@ from app.services.efi_api import efi_service
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
     notification_flow_enabled,
-    render_notification_message,
+    render_invoice_customer_message,
 )
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
@@ -516,9 +517,24 @@ async def approve_reading(
     db.add(invoice)
     await db.flush()
     await db.refresh(invoice)
+    db.add(InvoiceEvent(
+        invoice_id=invoice.id,
+        user_id=admin.id,
+        event_type="invoice_created_from_reading",
+        previous_status=None,
+        new_status=invoice.status,
+        reason="Leitura aprovada gerou fatura",
+        payload={
+            "reading_id": str(reading.id),
+            "charge_type": charge_type,
+            "reference_month": ref_month,
+            "is_installation": is_installation_capture,
+        },
+    ))
 
     # Gera cobranca Efí
     try:
+        previous_status = invoice.status
         payment_due_date = payment_due_date_for_provider(invoice.due_date, today)
         boleto = await efi_service.emitir_cobranca(
             valor=amount,
@@ -549,9 +565,31 @@ async def approve_reading(
         invoice.efi_pix_qrcode = boleto.get("pix_qrcode")
         invoice.efi_raw_response = boleto.get("raw")
         invoice.status = "sent"
+        db.add(InvoiceEvent(
+            invoice_id=invoice.id,
+            user_id=admin.id,
+            event_type="efi_charge_emitted",
+            previous_status=previous_status,
+            new_status=invoice.status,
+            payload={
+                "efi_charge_id": invoice.efi_charge_id,
+                "efi_status": invoice.efi_status,
+                "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
+                "source": "reading_approval",
+            },
+        ))
 
     except Exception as e:
         logger.error("Erro ao gerar cobranca Efí: %s", e)
+        db.add(InvoiceEvent(
+            invoice_id=invoice.id,
+            user_id=admin.id,
+            event_type="efi_charge_failed",
+            previous_status=invoice.status,
+            new_status=invoice.status,
+            reason="Falha ao emitir cobrança Efí na aprovação da leitura",
+            payload={"error": str(e), "source": "reading_approval"},
+        ))
         # Fatura criada mas sem cobranca — pode ser gerada depois
 
     await db.flush()
@@ -591,11 +629,14 @@ async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
         if not notification_flow_enabled(settings, "invoice_generated"):
             return
 
-        base_message = render_notification_message(settings, "invoice_generated", {
-            "nome": invoice.customer.name,
-            "valor": f"R$ {invoice.amount:.2f}",
-            "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
-        })
+        base_message = render_invoice_customer_message(
+            settings,
+            charge_type=invoice.charge_type,
+            customer_name=invoice.customer.name,
+            amount=invoice.amount,
+            due_date=invoice.due_date,
+            reference_month=invoice.reference_month,
+        )
         text = base_message
         if invoice.efi_payment_url and invoice.efi_payment_url not in text:
             text = f"{text}\n\nLink de pagamento: {invoice.efi_payment_url}"
@@ -651,9 +692,29 @@ async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
                     status="sent",
                     payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": mode},
                 ))
+            db.add(InvoiceEvent(
+                invoice_id=invoice.id,
+                event_type="whatsapp_invoice_sent" if notification.status == "sent" else "whatsapp_invoice_failed",
+                previous_status=invoice.status,
+                new_status=invoice.status,
+                reason=notification.error_message,
+                payload={
+                    "mode": mode,
+                    "message_id": notification.external_message_id,
+                    "source": "reading_approval_auto_send",
+                },
+            ))
         except Exception as exc:
             notification.status = "failed"
             notification.error_message = str(exc)[:500]
+            db.add(InvoiceEvent(
+                invoice_id=invoice.id,
+                event_type="whatsapp_invoice_failed",
+                previous_status=invoice.status,
+                new_status=invoice.status,
+                reason=notification.error_message,
+                payload={"source": "reading_approval_auto_send"},
+            ))
             logger.warning("Falha no envio automatico da fatura %s: %s", invoice.id, exc)
 
         await db.commit()

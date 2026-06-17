@@ -5,6 +5,7 @@ from app.models.customer import Customer
 from app.models.hydrometer import Hydrometer
 from app.models.reading import Reading
 from app.models.invoice import Invoice
+from app.models.invoice_event import InvoiceEvent
 from app.models.tariff import TariffTier
 from app.models.notification import Notification
 from app.models.whatsapp_message import WhatsAppMessage
@@ -19,6 +20,7 @@ __all__ = [
     "Hydrometer",
     "Reading",
     "Invoice",
+    "InvoiceEvent",
     "TariffTier",
     "Notification",
     "KimiVisionMemory",

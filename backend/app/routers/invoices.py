@@ -3,11 +3,10 @@ Router de Faturas — Lista, detalhe, PDF e dashboard financeiro.
 """
 
 import uuid
-import asyncio
 from datetime import date, datetime, timezone
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, case
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.invoice import Invoice
+from app.models.invoice_event import InvoiceEvent
 from app.models.notification import Notification
 from app.models.system_setting import SystemSetting
 from app.models.whatsapp_message import WhatsAppMessage
@@ -23,13 +23,16 @@ from app.models.user import User
 from app.schemas.invoice import (
     InvoiceResponse, InvoiceListResponse,
     InvoiceCreateManual, InvoiceSummary, InvoiceWhatsAppDispatchResponse,
+    InvoiceEventResponse,
     InvoiceAmountUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
+    InvoiceReopenRequest,
 )
 from app.services.billing_policy import calculate_overdue_amount, payment_due_date_for_provider
-from app.services.efi_api import efi_service
+from app.services.efi_api import EfiAPIError, efi_service
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
     notification_flow_enabled,
+    render_invoice_customer_message,
     render_notification_message,
 )
 from app.services.whatsapp_api import whatsapp_service
@@ -81,6 +84,24 @@ def _apply_efi_result(invoice: Invoice, result: dict, payment_due_date: date | N
     invoice.efi_raw_response = result.get("raw") or result
 
 
+def _merge_efi_raw(invoice: Invoice, **updates) -> dict:
+    raw = invoice.efi_raw_response if isinstance(invoice.efi_raw_response, dict) else {}
+    return {**raw, **updates}
+
+
+def _clear_efi_payment_data(invoice: Invoice) -> None:
+    invoice.payment_provider = None
+    invoice.payment_due_date = None
+    invoice.efi_charge_id = None
+    invoice.efi_status = None
+    invoice.efi_barcode = None
+    invoice.efi_payment_url = None
+    invoice.efi_pdf_url = None
+    invoice.efi_pix_qrcode = None
+    invoice.efi_payment_receipt_url = None
+    invoice.pdf_data = None
+
+
 async def _emit_invoice_charge(invoice: Invoice, customer: Customer, settings: SystemSetting, mensagem: str) -> dict:
     payment_due_date = payment_due_date_for_provider(invoice.due_date, date.today())
     result = await efi_service.emitir_cobranca(
@@ -116,6 +137,28 @@ def _append_payment_link(message: str, invoice: Invoice) -> str:
     return f"{message}\n\nLink de pagamento: {link}"
 
 
+def _invoice_charge_message(invoice: Invoice) -> str:
+    if invoice.charge_type == "installation":
+        return f"Cobranca de instalacao - Ref: {invoice.reference_month}"
+    if invoice.charge_type == "reconnection":
+        return f"Cobranca de religacao - Ref: {invoice.reference_month}"
+    if invoice.charge_type == "manual":
+        return f"Cobranca avulsa - Ref: {invoice.reference_month}"
+    return f"Fatura de agua - Ref: {invoice.reference_month}"
+
+
+def _invoice_customer_message(settings: SystemSetting, invoice: Invoice) -> str:
+    customer_name = invoice.customer.name if invoice.customer else "cliente"
+    return render_invoice_customer_message(
+        settings,
+        charge_type=invoice.charge_type,
+        customer_name=customer_name,
+        amount=invoice.amount,
+        due_date=invoice.due_date,
+        reference_month=invoice.reference_month,
+    )
+
+
 def _record_outbound_whatsapp(
     db: AsyncSession,
     *,
@@ -133,6 +176,28 @@ def _record_outbound_whatsapp(
         body=body,
         external_message_id=message_id,
         status=status,
+        payload=payload,
+    ))
+
+
+def _record_invoice_event(
+    db: AsyncSession,
+    *,
+    invoice: Invoice,
+    event_type: str,
+    previous_status: str | None = None,
+    new_status: str | None = None,
+    user: User | None = None,
+    reason: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    db.add(InvoiceEvent(
+        invoice_id=invoice.id,
+        user_id=user.id if user else None,
+        event_type=event_type,
+        previous_status=previous_status,
+        new_status=new_status,
+        reason=reason.strip() if reason else None,
         payload=payload,
     ))
 
@@ -285,6 +350,21 @@ async def get_invoice(
     return _invoice_response(invoice)
 
 
+@router.get("/{invoice_id}/events", response_model=list[InvoiceEventResponse])
+async def get_invoice_events(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(InvoiceEvent)
+        .where(InvoiceEvent.invoice_id == uuid.UUID(invoice_id))
+        .order_by(InvoiceEvent.created_at.desc())
+        .limit(100)
+    )
+    return list(result.scalars().all())
+
+
 @router.get("/{invoice_id}/pdf")
 async def download_pdf(
     invoice_id: str,
@@ -342,11 +422,35 @@ async def create_manual_invoice(
     )
     db.add(invoice)
     await db.flush()
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_created_manual",
+        previous_status=None,
+        new_status=invoice.status,
+        user=admin,
+        reason="Criação manual de fatura",
+        payload={"charge_type": invoice.charge_type, "reference_month": invoice.reference_month},
+    )
 
     settings = await _get_system_settings(db)
     # Opcional: ja emitir a cobranca na Efí
     try:
-        await _emit_invoice_charge(invoice, customer, settings, f"Fatura avulsa {invoice.reference_month}")
+        previous_status = invoice.status
+        await _emit_invoice_charge(invoice, customer, settings, _invoice_charge_message(invoice))
+        _record_invoice_event(
+            db,
+            invoice=invoice,
+            event_type="efi_charge_emitted",
+            previous_status=previous_status,
+            new_status=invoice.status,
+            user=admin,
+            payload={
+                "efi_charge_id": invoice.efi_charge_id,
+                "efi_status": invoice.efi_status,
+                "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
+            },
+        )
         await db.flush()
     except Exception as e:
         import logging
@@ -357,22 +461,63 @@ async def create_manual_invoice(
     return _invoice_response(invoice)
 
 
-@router.post("/{invoice_id}/cancel", status_code=200)
+@router.post("/{invoice_id}/cancel", response_model=InvoiceResponse)
 async def cancel_invoice(
     invoice_id: str,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    if invoice.status == "paid":
+        raise HTTPException(status_code=400, detail="Fatura paga não pode ser cancelada.")
+    if invoice.status == "cancelled":
+        return _invoice_response(invoice)
 
+    cancel_result = None
+    if invoice.efi_charge_id and invoice.efi_status not in ("canceled", "cancelled"):
+        try:
+            cancel_result = await efi_service.cancelar_cobranca(invoice.efi_charge_id)
+        except EfiAPIError as exc:
+            detail = exc.detail or exc.message
+            raise HTTPException(
+                status_code=502,
+                detail=f"A Efí não confirmou o cancelamento da cobrança: {detail}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Falha ao cancelar cobrança na Efí: {exc}",
+            ) from exc
+
+    previous_status = invoice.status
     invoice.status = "cancelled"
+    if invoice.efi_charge_id:
+        invoice.efi_status = "canceled"
+        invoice.efi_raw_response = _merge_efi_raw(
+            invoice,
+            cancel_result=cancel_result,
+            cancelled_at=datetime.now(timezone.utc).isoformat(),
+        )
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_cancelled",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        payload={
+            "efi_charge_id": invoice.efi_charge_id,
+            "efi_cancel_result": cancel_result,
+        },
+    )
     await db.flush()
-    return {"message": "Fatura cancelada", "invoice_id": str(invoice.id)}
+    await db.refresh(invoice)
+    return _invoice_response(invoice)
 
 
 @router.patch("/{invoice_id}/amount", response_model=InvoiceResponse)
@@ -392,12 +537,24 @@ async def update_invoice_amount(
         raise HTTPException(status_code=400, detail="Fatura paga nao pode ter valor editado")
 
     base_amount = invoice.original_amount if invoice.original_amount is not None else invoice.amount
+    previous_amount = invoice.amount
+    previous_status = invoice.status
     invoice.custom_adjustment_amount = round(data.amount - base_amount, 2)
     invoice.adjustment_reason = data.reason
     invoice.amount = round(data.amount, 2)
     invoice.late_fee_amount = 0.0
     invoice.interest_amount = 0.0
     invoice.days_overdue_charged = 0
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_amount_adjusted",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        reason=data.reason,
+        payload={"previous_amount": previous_amount, "new_amount": invoice.amount},
+    )
     await db.flush()
     await db.refresh(invoice)
 
@@ -422,13 +579,49 @@ async def refresh_invoice_overdue_amount(
     if invoice.due_date >= date.today() and (data.days_overdue or 0) > 0:
         raise HTTPException(status_code=400, detail="Fatura em dia nao pode receber multa ou juros")
     if not invoice.overdue_charges_allowed:
+        previous_amount = invoice.amount
+        previous_status = invoice.status
         _recalculate_overdue_amount(invoice, await _get_system_settings(db), data.days_overdue)
+        _record_invoice_event(
+            db,
+            invoice=invoice,
+            event_type="invoice_overdue_refreshed",
+            previous_status=previous_status,
+            new_status=invoice.status,
+            user=admin,
+            reason=invoice.overdue_charge_blocked_reason,
+            payload={
+                "previous_amount": previous_amount,
+                "new_amount": invoice.amount,
+                "days_overdue_charged": invoice.days_overdue_charged,
+                "late_fee_amount": invoice.late_fee_amount,
+                "interest_amount": invoice.interest_amount,
+                "overdue_charges_allowed": False,
+            },
+        )
         await db.flush()
         await db.refresh(invoice)
         return _invoice_response(invoice)
 
     settings = await _get_system_settings(db)
+    previous_amount = invoice.amount
+    previous_status = invoice.status
     _recalculate_overdue_amount(invoice, settings, data.days_overdue)
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_overdue_refreshed",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        payload={
+            "previous_amount": previous_amount,
+            "new_amount": invoice.amount,
+            "days_overdue_charged": invoice.days_overdue_charged,
+            "late_fee_amount": invoice.late_fee_amount,
+            "interest_amount": invoice.interest_amount,
+        },
+    )
     await db.flush()
     await db.refresh(invoice)
 
@@ -451,8 +644,18 @@ async def mark_invoice_paid(
 
     settings = await _get_system_settings(db)
     _recalculate_overdue_amount(invoice, settings)
+    previous_status = invoice.status
     invoice.status = "paid"
     invoice.paid_date = data.paid_date or date.today()
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_marked_paid",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        payload={"paid_date": invoice.paid_date.isoformat() if invoice.paid_date else None},
+    )
     if invoice.customer and invoice.customer.phone and notification_flow_enabled(settings, "payment_confirmed"):
         message = render_notification_message(settings, "payment_confirmed", {
             "nome": invoice.customer.name,
@@ -496,6 +699,7 @@ async def mark_invoice_paid(
 @router.post("/{invoice_id}/reopen", response_model=InvoiceResponse)
 async def reopen_invoice(
     invoice_id: str,
+    data: InvoiceReopenRequest,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -505,9 +709,30 @@ async def reopen_invoice(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    reason = (data.reason or "").strip()
+    if len(reason) < 5:
+        raise HTTPException(status_code=400, detail="Informe um motivo claro para reabrir a fatura.")
 
+    previous_status = invoice.status
+    previous_charge_id = invoice.efi_charge_id
+    invoice.efi_raw_response = _merge_efi_raw(
+        invoice,
+        reopened_from_charge_id=previous_charge_id,
+        reopened_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _clear_efi_payment_data(invoice)
     invoice.status = "pending"
     invoice.paid_date = None
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_reopened",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        reason=reason,
+        payload={"previous_efi_charge_id": previous_charge_id},
+    )
     await db.flush()
     await db.refresh(invoice)
     return _invoice_response(invoice)
@@ -596,7 +821,6 @@ async def send_cut_notice(
 @router.post("/{invoice_id}/emit-boleto", response_model=InvoiceResponse)
 async def force_emit_boleto(
     invoice_id: str,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -610,23 +834,32 @@ async def force_emit_boleto(
 
     if not invoice.customer:
         raise HTTPException(status_code=400, detail="Cliente não associado à fatura")
+    if invoice.status == "paid":
+        raise HTTPException(status_code=400, detail="Fatura paga não pode gerar nova cobrança.")
+    if invoice.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Reabra a fatura antes de emitir uma nova cobrança.")
+    if invoice.efi_charge_id or invoice.efi_payment_url:
+        raise HTTPException(status_code=400, detail="Esta fatura já possui cobrança Efí emitida.")
 
     try:
         settings = await _get_system_settings(db)
-        efi_result = await _emit_invoice_charge(invoice, invoice.customer, settings, f"Fatura {invoice.reference_month}")
+        previous_status = invoice.status
+        await _emit_invoice_charge(invoice, invoice.customer, settings, _invoice_charge_message(invoice))
+        _record_invoice_event(
+            db,
+            invoice=invoice,
+            event_type="efi_charge_emitted",
+            previous_status=previous_status,
+            new_status=invoice.status,
+            user=admin,
+            payload={
+                "efi_charge_id": invoice.efi_charge_id,
+                "efi_status": invoice.efi_status,
+                "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
+            },
+        )
         await db.flush()
         await db.refresh(invoice)
-
-        # Agenda a busca do PDF e envio por WhatsApp em background
-        if invoice.customer.phone and invoice.efi_pdf_url:
-            background_tasks.add_task(
-                process_pdf_and_whatsapp,
-                invoice.efi_pdf_url,
-                invoice.customer.phone,
-                f"boleto_{str(invoice.id)[:8]}.pdf",
-                f"Sua fatura do mês {invoice.reference_month} já está disponível."
-            )
-        
         return _invoice_response(invoice)
     except Exception as e:
         import logging
@@ -648,6 +881,14 @@ async def send_invoice_whatsapp(
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
+
+    if invoice.status == "cancelled":
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="invoice_cancelled",
+            detail="Fatura cancelada não pode ser enviada. Reabra e emita uma nova cobrança antes do envio.",
+        )
 
     if not whatsapp_service.is_enabled:
         return InvoiceWhatsAppDispatchResponse(
@@ -691,11 +932,7 @@ async def send_invoice_whatsapp(
             detail="O fluxo de envio de fatura está desativado nas configurações.",
         )
 
-    base_message = render_notification_message(settings, "invoice_generated", {
-        "nome": invoice.customer.name,
-        "valor": f"R$ {invoice.amount:.2f}",
-        "data_vencimento": invoice.due_date.strftime("%d/%m/%Y"),
-    })
+    base_message = _invoice_customer_message(settings, invoice)
 
     if not invoice.efi_charge_id and not invoice.efi_payment_url:
         return InvoiceWhatsAppDispatchResponse(
@@ -711,6 +948,16 @@ async def send_invoice_whatsapp(
             if invoice.pdf_data:
                 await db.flush()
         except Exception as exc:
+            _record_invoice_event(
+                db,
+                invoice=invoice,
+                event_type="whatsapp_invoice_failed",
+                previous_status=invoice.status,
+                new_status=invoice.status,
+                user=admin,
+                reason="Falha ao baixar PDF da cobrança",
+                payload={"error": str(exc), "efi_pdf_url": invoice.efi_pdf_url},
+            )
             return InvoiceWhatsAppDispatchResponse(
                 invoice_id=invoice.id,
                 status="failed",
@@ -723,6 +970,7 @@ async def send_invoice_whatsapp(
             text = _append_payment_link(base_message, invoice)
             wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
             if wa_result and wa_result.get("status") == "sent":
+                previous_status = invoice.status
                 if invoice.status == "pending":
                     invoice.status = "sent"
                 _record_outbound_whatsapp(
@@ -733,6 +981,15 @@ async def send_invoice_whatsapp(
                     status="sent",
                     message_id=wa_result.get("message_id"),
                     payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "payment_link"},
+                )
+                _record_invoice_event(
+                    db,
+                    invoice=invoice,
+                    event_type="whatsapp_invoice_sent",
+                    previous_status=previous_status,
+                    new_status=invoice.status,
+                    user=admin,
+                    payload={"mode": "payment_link", "message_id": wa_result.get("message_id")},
                 )
                 await db.flush()
                 return InvoiceWhatsAppDispatchResponse(
@@ -756,6 +1013,16 @@ async def send_invoice_whatsapp(
     )
 
     if not wa_result or wa_result.get("status") != "sent":
+        _record_invoice_event(
+            db,
+            invoice=invoice,
+            event_type="whatsapp_invoice_failed",
+            previous_status=invoice.status,
+            new_status=invoice.status,
+            user=admin,
+            reason="A Evolution API não confirmou o envio",
+            payload={"error": (wa_result or {}).get("error"), "mode": "document"},
+        )
         return InvoiceWhatsAppDispatchResponse(
             invoice_id=invoice.id,
             status="failed",
@@ -763,6 +1030,7 @@ async def send_invoice_whatsapp(
             detail=(wa_result or {}).get("error") or "A Evolution API não confirmou o envio.",
         )
 
+    previous_status = invoice.status
     if invoice.status == "pending":
         invoice.status = "sent"
     _record_outbound_whatsapp(
@@ -774,6 +1042,15 @@ async def send_invoice_whatsapp(
         message_id=(wa_result or {}).get("message_id"),
         payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "document"},
     )
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="whatsapp_invoice_sent",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        payload={"mode": "document", "message_id": (wa_result or {}).get("message_id")},
+    )
     await db.flush()
 
     return InvoiceWhatsAppDispatchResponse(
@@ -782,30 +1059,3 @@ async def send_invoice_whatsapp(
         reason="ok",
         detail=f"Fatura enviada com sucesso para {normalized_phone}.",
     )
-
-
-async def process_pdf_and_whatsapp(pdf_url: str, phone: str, filename: str, caption: str):
-    """Baixa o PDF da Efí e depois envia pelo WhatsApp."""
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    pdf_data = None
-    for attempt in range(6):
-        await asyncio.sleep(5)  # Espera 5 segundos entre as tentativas
-        try:
-            pdf_data = await efi_service.baixar_pdf(pdf_url)
-            if pdf_data:
-                break
-        except Exception:
-            pass
-
-    if pdf_data:
-        logger.info("PDF Efí obtido. Enviando via WhatsApp...")
-        await whatsapp_service.send_invoice_document(
-            phone=phone,
-            pdf_data=pdf_data,
-            filename=filename,
-            caption=caption
-        )
-    else:
-        logger.warning("Nao foi possivel obter o PDF Efí para envio via WhatsApp.")

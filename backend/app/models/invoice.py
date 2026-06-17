@@ -88,6 +88,7 @@ class Invoice(Base):
     customer = relationship("Customer", back_populates="invoices")
     reading = relationship("Reading", back_populates="invoice")
     notifications = relationship("Notification", back_populates="invoice", cascade="all, delete-orphan")
+    events = relationship("InvoiceEvent", back_populates="invoice", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Invoice R${self.amount:.2f} [{self.status}] due:{self.due_date}>"

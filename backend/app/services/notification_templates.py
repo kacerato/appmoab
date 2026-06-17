@@ -2,6 +2,7 @@
 
 from string import Formatter
 from typing import Any
+from datetime import date
 
 from app.models.system_setting import SystemSetting
 
@@ -67,6 +68,41 @@ def render_notification_message(
         return template
     safe_params = {key: str(value) for key, value in params.items()}
     return template.format_map(_SafeDict(safe_params))
+
+
+def render_invoice_customer_message(
+    settings: SystemSetting | None,
+    *,
+    charge_type: str,
+    customer_name: str,
+    amount: float,
+    due_date: date,
+    reference_month: str,
+) -> str:
+    formatted_amount = f"R$ {amount:.2f}".replace(".", ",")
+    formatted_due = due_date.strftime("%d/%m/%Y")
+    if charge_type == "installation":
+        return (
+            f"Olá {customer_name}, sua cobrança de instalação do hidrômetro "
+            f"no valor de {formatted_amount} vence em {formatted_due}."
+        )
+    if charge_type == "reconnection":
+        return (
+            f"Olá {customer_name}, sua cobrança de religação "
+            f"no valor de {formatted_amount} vence em {formatted_due}."
+        )
+    if charge_type == "manual":
+        return (
+            f"Olá {customer_name}, sua cobrança avulsa "
+            f"no valor de {formatted_amount} vence em {formatted_due}."
+        )
+
+    return render_notification_message(settings, "invoice_generated", {
+        "nome": customer_name,
+        "valor": formatted_amount,
+        "data_vencimento": formatted_due,
+        "referencia": reference_month,
+    })
 
 
 class _SafeDict(dict):

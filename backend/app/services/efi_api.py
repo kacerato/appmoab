@@ -258,6 +258,10 @@ class EfiAPIService:
         result = await self._request("GET", f"/v1/charge/{charge_id}")
         return self._normalize_charge_response(result)
 
+    async def cancelar_cobranca(self, charge_id: str) -> dict:
+        result = await self._request("PUT", f"/v1/charge/{charge_id}/cancel")
+        return result
+
     async def consultar_por_notificacao(self, token: str) -> dict:
         return await self._request("GET", f"/v1/notification/{token}")
 
