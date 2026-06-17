@@ -35,6 +35,9 @@ class InvoiceResponse(BaseModel):
     efi_payment_receipt_url: str | None = None
     paid_date: date | None
     status: str
+    display_status: str | None = None
+    display_status_label: str | None = None
+    days_until_due: int | None = None
     has_pdf: bool = False
     created_at: datetime
 
@@ -79,10 +82,12 @@ class InvoiceStatusUpdate(BaseModel):
 class InvoiceSummary(BaseModel):
     """Resumo financeiro para o dashboard."""
     total_pending: float
+    total_upcoming: float = 0.0
     total_overdue: float
     total_paid_month: float
     total_invoices: int
     invoices_pending: int
+    invoices_upcoming: int = 0
     invoices_overdue: int
     invoices_paid: int
 

@@ -89,7 +89,13 @@ BILLING_CYCLE_CHARGE_TYPES = ("water", "installation")
 
 
 def _next_due_date(customer: Customer, today: date) -> date:
-    due_date = _resolve_month_date(customer.due_day, today)
+    anchor = today
+    created_on = customer.created_at.date() if customer.created_at else today
+    if created_on.year == today.year and created_on.month == today.month:
+        next_month_anchor = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+        return _resolve_month_date(customer.due_day, next_month_anchor)
+
+    due_date = _resolve_month_date(customer.due_day, anchor)
     if due_date >= today:
         return due_date
 
@@ -382,7 +388,10 @@ async def get_customer(
     inv_result = await db.execute(
         select(
             func.count(Invoice.id),
-            func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date <= date.today()),
+                Invoice.amount,
+            ), else_=0)), 0),
             func.coalesce(func.sum(case((
                 (Invoice.status.in_(OPEN_INVOICE_STATUSES))
                 & (Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES))

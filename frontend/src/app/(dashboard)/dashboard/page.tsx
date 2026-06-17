@@ -12,8 +12,8 @@ import Link from 'next/link';
 interface DashboardData {
   customers: { total: number; active: number; with_hydrometer: number; without_hydrometer: number };
   financial: {
-    pending_amount: number; overdue_amount: number; paid_this_month: number;
-    pending_count: number; overdue_count: number; paid_count: number;
+    pending_amount: number; upcoming_amount: number; overdue_amount: number; paid_this_month: number;
+    pending_count: number; upcoming_count: number; overdue_count: number; paid_count: number;
     deductions: { total: number; items: { label: string; amount: number }[] };
   };
   readings: { pending_approval: number; this_month: number };
@@ -92,9 +92,9 @@ export default function DashboardPage() {
 
         <div className="kpi-card orange">
           <div className="kpi-icon orange"><FileText size={20} /></div>
-          <div className="kpi-label">A Receber</div>
+          <div className="kpi-label">Pendente Hoje</div>
           <div className="kpi-value" style={{ color: 'var(--warning)' }}>{fmt(data.financial.pending_amount)}</div>
-          <div className="kpi-sub">{data.financial.pending_count} faturas pendentes</div>
+          <div className="kpi-sub">{data.financial.pending_count} fatura(s) no vencimento</div>
         </div>
 
         <div className="kpi-card red">
@@ -161,7 +161,8 @@ export default function DashboardPage() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <FinRow label="Faturado (pago)" value={data.financial.paid_this_month} color="var(--success)" icon={<TrendingUp size={14} />} />
-            <FinRow label="A receber" value={data.financial.pending_amount} color="var(--warning)" icon={<FileText size={14} />} />
+            <FinRow label="A vencer" value={data.financial.upcoming_amount} color="var(--accent)" icon={<FileText size={14} />} />
+            <FinRow label="Pendente hoje" value={data.financial.pending_amount} color="var(--warning)" icon={<FileText size={14} />} />
             <FinRow label="Inadimplente" value={data.financial.overdue_amount} color="var(--danger)" icon={<TrendingDown size={14} />} />
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
               <FinRow label="Receita líquida" value={netRevenue} color={netRevenue >= 0 ? 'var(--success)' : 'var(--danger)'} icon={<DollarSign size={14} />} bold />

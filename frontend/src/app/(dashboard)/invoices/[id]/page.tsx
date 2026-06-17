@@ -27,6 +27,9 @@ interface Invoice {
   due_date: string;
   paid_date: string | null;
   status: string;
+  display_status: string | null;
+  display_status_label: string | null;
+  days_until_due: number | null;
   payment_provider: string | null;
   payment_due_date: string | null;
   efi_charge_id: string | null;
@@ -329,7 +332,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
         </div>
         <div className="kpi-card orange">
           <div className="kpi-label">Status</div>
-          <span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span>
+          <span className={`badge ${inv.display_status || inv.status}`}>{inv.display_status_label || statusLabel(inv.status)}</span>
         </div>
       </div>
 
@@ -413,7 +416,7 @@ function Field({ label, value }: { label: string; value: string | null | undefin
 }
 
 function statusLabel(s: string) {
-  const m: Record<string, string> = { pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
+  const m: Record<string, string> = { upcoming: 'A vencer', due_today: 'Vence hoje', pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
   return m[s] || s;
 }
 

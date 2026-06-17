@@ -145,6 +145,33 @@ def _current_month_range() -> tuple[date, date]:
     return month_start, date(today.year, today.month + 1, 1)
 
 
+def _invoice_display_status(invoice: Invoice, today: date | None = None) -> tuple[str, str, int | None]:
+    today = today or date.today()
+    days_until_due = (invoice.due_date - today).days if invoice.due_date else None
+    if invoice.status == "pending" and days_until_due is not None and days_until_due > 0:
+        return "upcoming", f"A vencer em {days_until_due} dia(s)", days_until_due
+    if invoice.status == "pending" and days_until_due == 0:
+        return "due_today", "Vence hoje", days_until_due
+    labels = {
+        "pending": "Pendente",
+        "sent": "Enviado",
+        "paid": "Pago",
+        "overdue": "Vencido",
+        "cancelled": "Cancelado",
+    }
+    return invoice.status, labels.get(invoice.status, invoice.status), days_until_due
+
+
+def _invoice_response(invoice: Invoice) -> InvoiceResponse:
+    resp = InvoiceResponse.model_validate(invoice)
+    resp.has_pdf = invoice.pdf_data is not None
+    resp.display_status, resp.display_status_label, resp.days_until_due = _invoice_display_status(invoice)
+    if invoice.customer:
+        resp.customer_name = invoice.customer.name
+        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+    return resp
+
+
 @router.get("", response_model=InvoiceListResponse)
 async def list_invoices(
     page: int = Query(1, ge=1),
@@ -157,7 +184,12 @@ async def list_invoices(
 ):
     query = select(Invoice).options(selectinload(Invoice.customer))
 
-    if status:
+    today = date.today()
+    if status == "upcoming":
+        query = query.where(Invoice.status == "pending", Invoice.due_date > today)
+    elif status == "pending":
+        query = query.where(Invoice.status == "pending", Invoice.due_date <= today)
+    elif status:
         query = query.where(Invoice.status == status)
     if customer_id:
         query = query.where(Invoice.customer_id == uuid.UUID(customer_id))
@@ -174,12 +206,7 @@ async def list_invoices(
 
     items = []
     for inv in invoices:
-        resp = InvoiceResponse.model_validate(inv)
-        resp.has_pdf = inv.pdf_data is not None
-        if inv.customer:
-            resp.customer_name = inv.customer.name
-            resp.customer_cpf_cnpj = inv.customer.cpf_cnpj
-        items.append(resp)
+        items.append(_invoice_response(inv))
 
     return InvoiceListResponse(items=items, total=total, page=page, per_page=per_page)
 
@@ -197,7 +224,14 @@ async def get_summary(
     result = await db.execute(
         select(
             func.count(Invoice.id),
-            func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date <= date.today()),
+                Invoice.amount,
+            ), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date > date.today()),
+                Invoice.amount,
+            ), else_=0)), 0),
             func.coalesce(func.sum(case((Invoice.status == "overdue", Invoice.amount), else_=0)), 0),
             func.coalesce(func.sum(
                 case((
@@ -207,7 +241,14 @@ async def get_summary(
                     Invoice.amount,
                 ), else_=0)
             ), 0),
-            func.sum(case((Invoice.status == "pending", 1), else_=0)),
+            func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date <= date.today()),
+                1,
+            ), else_=0)),
+            func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date > date.today()),
+                1,
+            ), else_=0)),
             func.sum(case((Invoice.status == "overdue", 1), else_=0)),
             func.sum(case((Invoice.status == "paid", 1), else_=0)),
         )
@@ -217,11 +258,13 @@ async def get_summary(
     return InvoiceSummary(
         total_invoices=row[0] or 0,
         total_pending=float(row[1] or 0),
-        total_overdue=float(row[2] or 0),
-        total_paid_month=float(row[3] or 0),
-        invoices_pending=int(row[4] or 0),
-        invoices_overdue=int(row[5] or 0),
-        invoices_paid=int(row[6] or 0),
+        total_upcoming=float(row[2] or 0),
+        total_overdue=float(row[3] or 0),
+        total_paid_month=float(row[4] or 0),
+        invoices_pending=int(row[5] or 0),
+        invoices_upcoming=int(row[6] or 0),
+        invoices_overdue=int(row[7] or 0),
+        invoices_paid=int(row[8] or 0),
     )
 
 
@@ -239,12 +282,7 @@ async def get_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
 
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
-    if invoice.customer:
-        resp.customer_name = invoice.customer.name
-        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-    return resp
+    return _invoice_response(invoice)
 
 
 @router.get("/{invoice_id}/pdf")
@@ -316,11 +354,7 @@ async def create_manual_invoice(
 
     await db.refresh(invoice)
     
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
-    resp.customer_name = customer.name
-    resp.customer_cpf_cnpj = customer.cpf_cnpj
-    return resp
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/cancel", status_code=200)
@@ -367,12 +401,7 @@ async def update_invoice_amount(
     await db.flush()
     await db.refresh(invoice)
 
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
-    if invoice.customer:
-        resp.customer_name = invoice.customer.name
-        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-    return resp
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/refresh-overdue", response_model=InvoiceResponse)
@@ -396,24 +425,14 @@ async def refresh_invoice_overdue_amount(
         _recalculate_overdue_amount(invoice, await _get_system_settings(db), data.days_overdue)
         await db.flush()
         await db.refresh(invoice)
-        resp = InvoiceResponse.model_validate(invoice)
-        resp.has_pdf = invoice.pdf_data is not None
-        if invoice.customer:
-            resp.customer_name = invoice.customer.name
-            resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-        return resp
+        return _invoice_response(invoice)
 
     settings = await _get_system_settings(db)
     _recalculate_overdue_amount(invoice, settings, data.days_overdue)
     await db.flush()
     await db.refresh(invoice)
 
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
-    if invoice.customer:
-        resp.customer_name = invoice.customer.name
-        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-    return resp
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/mark-paid", response_model=InvoiceResponse)
@@ -471,12 +490,7 @@ async def mark_invoice_paid(
             notification.error_message = "WhatsApp desabilitado ou sem canal ativo"
     await db.flush()
     await db.refresh(invoice)
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
-    if invoice.customer:
-        resp.customer_name = invoice.customer.name
-        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-    return resp
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/reopen", response_model=InvoiceResponse)
@@ -496,12 +510,7 @@ async def reopen_invoice(
     invoice.paid_date = None
     await db.flush()
     await db.refresh(invoice)
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
-    if invoice.customer:
-        resp.customer_name = invoice.customer.name
-        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-    return resp
+    return _invoice_response(invoice)
 
 
 @router.post("/{invoice_id}/cut-notice", response_model=InvoiceWhatsAppDispatchResponse)
@@ -618,11 +627,7 @@ async def force_emit_boleto(
                 f"Sua fatura do mês {invoice.reference_month} já está disponível."
             )
         
-        resp = InvoiceResponse.model_validate(invoice)
-        resp.has_pdf = invoice.pdf_data is not None
-        resp.customer_name = invoice.customer.name
-        resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
-        return resp
+        return _invoice_response(invoice)
     except Exception as e:
         import logging
         logger = logging.getLogger(__name__)

@@ -44,6 +44,8 @@ interface Customer {
   billing_status: string;
   billing_status_label: string;
   days_until_due: number | null;
+  next_invoice_reference_month: string | null;
+  next_invoice_due_date: string | null;
 }
 
 interface Hydrometer {
@@ -61,6 +63,9 @@ interface Invoice {
   amount: number;
   due_date: string;
   status: string;
+  display_status: string | null;
+  display_status_label: string | null;
+  days_until_due: number | null;
   reference_month: string;
   consumption_m3: number;
 }
@@ -128,9 +133,10 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   });
 
   const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
+  const billingReferenceMonth = customer?.next_invoice_reference_month || currentReferenceMonth();
   const currentCycleInvoice = useMemo(
-    () => invoices.find(invoice => invoice.reference_month === currentReferenceMonth()),
-    [invoices],
+    () => invoices.find(invoice => invoice.reference_month === billingReferenceMonth),
+    [billingReferenceMonth, invoices],
   );
   const primaryHydrometer = customer?.hydrometers[0] || null;
   const adjustingHydrometer = useMemo(
@@ -337,12 +343,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       <div className="card" style={{ marginBottom: 24, padding: 18 }}>
         <div className="card-header" style={{ marginBottom: 14 }}>
           <span className="card-title">Ciclo atual</span>
-          <span className={`badge ${currentCycleInvoice?.status || 'pending'}`}>
-            {currentCycleInvoice ? statusLabel(currentCycleInvoice.status) : 'Aguardando leitura'}
+          <span className={`badge ${currentCycleInvoice?.display_status || currentCycleInvoice?.status || 'pending'}`}>
+            {currentCycleInvoice ? currentCycleInvoice.display_status_label || statusLabel(currentCycleInvoice.status) : 'Aguardando leitura'}
           </span>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
-          <CycleStep label="Referencia" value={currentReferenceMonth()} tone="info" />
+          <CycleStep label="Referencia" value={billingReferenceMonth} tone="info" />
           <CycleStep
             label="Leitura"
             value={primaryHydrometer?.last_reading_date ? new Date(primaryHydrometer.last_reading_date).toLocaleDateString('pt-BR') : 'Pendente'}
@@ -356,7 +362,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           <CycleStep
             label="Vencimento"
             value={currentCycleInvoice ? new Date(currentCycleInvoice.due_date).toLocaleDateString('pt-BR') : `Dia ${customer.due_day}`}
-            tone={currentCycleInvoice?.status === 'overdue' ? 'danger' : 'info'}
+            tone={currentCycleInvoice?.display_status === 'overdue' || currentCycleInvoice?.status === 'overdue' ? 'danger' : 'info'}
           />
         </div>
       </div>
@@ -461,7 +467,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                   <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : 'Fixo / Avulso'}</td>
                   <td style={{ fontWeight: 600 }}>{fmt(inv.amount)}</td>
                   <td>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</td>
-                  <td><span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span></td>
+                  <td><span className={`badge ${inv.display_status || inv.status}`}>{inv.display_status_label || statusLabel(inv.status)}</span></td>
                 </tr>
               ))}
             </tbody>
@@ -605,7 +611,7 @@ function CycleStep({ label, value, tone }: { label: string; value: string; tone:
 }
 
 function statusLabel(status: string) {
-  const map: Record<string, string> = { pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
+  const map: Record<string, string> = { upcoming: 'A vencer', due_today: 'Vence hoje', pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
   return map[status] || status;
 }
 
