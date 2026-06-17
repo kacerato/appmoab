@@ -6,7 +6,7 @@ import asyncio
 import logging
 import math
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select, func
@@ -50,6 +50,9 @@ DEFAULT_ALLOWED_RADIUS_METERS = 80.0
 CRITICAL_DISTANCE_MULTIPLIER = 4
 LOW_ACCURACY_THRESHOLD_METERS = 50.0
 ROLLOVER_PREVIOUS_THRESHOLD = 0.90
+BILLING_CYCLE_CHARGE_TYPES = ("water", "installation")
+ACTIVE_INVOICE_STATUSES = ("pending", "sent", "paid", "overdue")
+ACTIVE_READING_STATUSES = ("pending", "approved")
 
 
 def _flag(code: str, label: str, message: str, severity: str = "warning") -> dict:
@@ -178,6 +181,67 @@ async def _get_system_settings(db: AsyncSession) -> SystemSetting:
     return settings
 
 
+def _month_bounds(reference: date) -> tuple[datetime, datetime]:
+    month_start = date(reference.year, reference.month, 1)
+    if reference.month == 12:
+        next_month = date(reference.year + 1, 1, 1)
+    else:
+        next_month = date(reference.year, reference.month + 1, 1)
+    return (
+        datetime.combine(month_start, datetime.min.time(), timezone.utc),
+        datetime.combine(next_month, datetime.min.time(), timezone.utc),
+    )
+
+
+async def _ensure_cycle_accepts_new_reading(db: AsyncSession, hydrometer: Hydrometer, captured_at: datetime) -> None:
+    customer = hydrometer.customer
+    if not customer:
+        return
+
+    reference_date = captured_at.date()
+    due_date = resolve_invoice_due_date(reference_date, customer.due_day)
+    reference_month = f"{due_date.year}-{due_date.month:02d}"
+
+    invoice_result = await db.execute(
+        select(Invoice.id, Invoice.status)
+        .where(
+            Invoice.customer_id == customer.id,
+            Invoice.reference_month == reference_month,
+            Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
+            Invoice.status.in_(ACTIVE_INVOICE_STATUSES),
+        )
+        .limit(1)
+    )
+    existing_invoice = invoice_result.first()
+    if existing_invoice:
+        status = existing_invoice[1]
+        if status == "paid":
+            detail = "Este ciclo ja esta pago. O cliente so volta para leitura no proximo ciclo."
+        else:
+            detail = "Este ciclo ja possui fatura ativa. Nao registre uma nova leitura para o mesmo periodo."
+        raise HTTPException(status_code=409, detail=detail)
+
+    period_start, next_period_start = _month_bounds(reference_date)
+    reading_result = await db.execute(
+        select(Reading.id, Reading.status)
+        .where(
+            Reading.hydrometer_id == hydrometer.id,
+            Reading.status.in_(ACTIVE_READING_STATUSES),
+            Reading.captured_at >= period_start,
+            Reading.captured_at < next_period_start,
+        )
+        .limit(1)
+    )
+    existing_reading = reading_result.first()
+    if existing_reading:
+        status = existing_reading[1]
+        if status == "pending":
+            detail = "Este hidrometro ja tem leitura em revisao neste ciclo."
+        else:
+            detail = "Este hidrometro ja tem leitura aprovada neste ciclo."
+        raise HTTPException(status_code=409, detail=detail)
+
+
 @router.get("", response_model=ReadingListResponse)
 async def list_readings(
     page: int = Query(1, ge=1),
@@ -239,6 +303,8 @@ async def create_reading(
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
         raise HTTPException(status_code=404, detail="Hidrômetro não encontrado")
+
+    await _ensure_cycle_accepts_new_reading(db, hydrometer, data.captured_at)
 
     # Salva foto
     photo_url = save_photo_from_base64(data.photo_base64, prefix="reading")
@@ -398,7 +464,6 @@ async def approve_reading(
 
     # Determina data de vencimento da competencia atual.
     now = datetime.now(timezone.utc)
-    from datetime import date
     today = now.date()
     due_date = resolve_invoice_due_date(today, customer.due_day)
     ref_month = f"{due_date.year}-{due_date.month:02d}"
@@ -483,7 +548,9 @@ async def approve_reading(
         # Fatura criada mas sem cobranca — pode ser gerada depois
 
     await db.flush()
-    if system_settings.auto_send_invoice_on_approval and invoice.efi_payment_url:
+    if system_settings.auto_send_invoice_on_approval and (
+        invoice.pdf_data or invoice.efi_pdf_url or invoice.efi_payment_url
+    ):
         background_tasks.add_task(_send_invoice_generated_whatsapp, str(invoice.id))
 
     return {
@@ -532,12 +599,36 @@ async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
             channel="whatsapp",
             type=FLOW_NOTIFICATION_TYPES["invoice_generated"],
             status="queued",
-            payload={"flow_key": "invoice_generated", "message": text, "mode": "payment_link"},
+            payload={"flow_key": "invoice_generated", "message": text, "mode": "document"},
         )
         db.add(notification)
 
         try:
-            wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
+            if not invoice.pdf_data and invoice.efi_pdf_url:
+                try:
+                    invoice.pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url)
+                    if invoice.pdf_data:
+                        await db.flush()
+                except Exception as exc:
+                    logger.warning("Nao foi possivel baixar PDF da fatura %s: %s", invoice.id, exc)
+
+            if invoice.pdf_data:
+                wa_result = await whatsapp_service.send_invoice_document(
+                    phone=invoice.customer.phone,
+                    pdf_data=invoice.pdf_data,
+                    filename=f"boleto_{str(invoice.id)[:8]}.pdf",
+                    caption=text,
+                )
+                mode = "document"
+            elif invoice.efi_payment_url:
+                wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
+                mode = "payment_link"
+                notification.payload = {**(notification.payload or {}), "mode": mode}
+            else:
+                wa_result = {"status": "failed", "error": "Fatura sem PDF e sem link de pagamento."}
+                mode = "missing_payment_file"
+                notification.payload = {**(notification.payload or {}), "mode": mode}
+
             notification.status = (wa_result or {}).get("status") or "failed"
             notification.external_message_id = (wa_result or {}).get("message_id")
             notification.sent_at = datetime.now(timezone.utc)
@@ -551,7 +642,7 @@ async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
                     body=text,
                     external_message_id=notification.external_message_id,
                     status="sent",
-                    payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "payment_link"},
+                    payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": mode},
                 ))
         except Exception as exc:
             notification.status = "failed"
