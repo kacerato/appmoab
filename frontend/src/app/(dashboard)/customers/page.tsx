@@ -171,7 +171,7 @@ function billingBadgeClass(status: string) {
   const m: Record<string, string> = {
     overdue: 'overdue',
     due_today: 'rejected',
-    near_due: 'pending',
+    near_due: 'upcoming',
     normal: 'active',
   };
   return m[status] || 'active';

@@ -7,6 +7,8 @@ from app.services.billing_policy import (
     resolve_invoice_due_date,
     should_block_overdue_charges_for_late_reading,
 )
+from app.models.invoice import Invoice
+from app.routers.invoices import _invoice_display_status
 
 
 class BillingPolicyTest(unittest.TestCase):
@@ -55,6 +57,40 @@ class BillingPolicyTest(unittest.TestCase):
         self.assertEqual(calc.late_fee_amount, 10.0)
         self.assertEqual(calc.interest_amount, 2.0)
         self.assertEqual(calc.days_overdue_charged, 2)
+
+    def test_future_pending_invoice_is_displayed_as_upcoming(self):
+        invoice = Invoice(
+            amount=100.0,
+            original_amount=100.0,
+            reference_month="2026-06",
+            due_date=date(2026, 6, 19),
+            consumption_m3=0.0,
+            tariff_rate=0.0,
+            status="pending",
+        )
+
+        status, label, days = _invoice_display_status(invoice, today=date(2026, 6, 17))
+
+        self.assertEqual(status, "upcoming")
+        self.assertEqual(label, "A vencer em 2 dia(s)")
+        self.assertEqual(days, 2)
+
+    def test_pending_invoice_due_today_is_not_upcoming(self):
+        invoice = Invoice(
+            amount=100.0,
+            original_amount=100.0,
+            reference_month="2026-06",
+            due_date=date(2026, 6, 17),
+            consumption_m3=0.0,
+            tariff_rate=0.0,
+            status="pending",
+        )
+
+        status, label, days = _invoice_display_status(invoice, today=date(2026, 6, 17))
+
+        self.assertEqual(status, "due_today")
+        self.assertEqual(label, "Vence hoje")
+        self.assertEqual(days, 0)
 
 
 if __name__ == "__main__":

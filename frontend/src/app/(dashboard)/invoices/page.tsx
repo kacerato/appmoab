@@ -17,6 +17,9 @@ interface Invoice {
   due_date: string;
   paid_date: string;
   status: string;
+  display_status: string | null;
+  display_status_label: string | null;
+  days_until_due: number | null;
   reference_month: string;
   has_pdf: boolean;
   efi_pdf_url: string | null;
@@ -125,6 +128,7 @@ export default function InvoicesPage() {
       <div className="toolbar">
         {[
           { v: '', l: 'Todas' },
+          { v: 'upcoming', l: 'A vencer' },
           { v: 'pending', l: 'Pendentes' },
           { v: 'sent', l: 'Enviadas' },
           { v: 'paid', l: 'Pagas' },
@@ -165,7 +169,7 @@ export default function InvoicesPage() {
                   <td>{inv.consumption_m3.toFixed(2)} m³</td>
                   <td style={{ fontWeight: 700 }}>{fmt(inv.amount)}</td>
                   <td>{formatDateOnly(inv.due_date)}</td>
-                  <td><span className={`badge ${inv.status}`}>{statusLabel(inv.status)}</span></td>
+                  <td><span className={`badge ${inv.display_status || inv.status}`}>{inv.display_status_label || statusLabel(inv.status)}</span></td>
                   <td>
                     <div style={{ display: 'flex', gap: 8 }}>
                       {canSendWhatsApp && (
@@ -201,6 +205,6 @@ export default function InvoicesPage() {
 }
 
 function statusLabel(s: string) {
-  const m: Record<string, string> = { pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
+  const m: Record<string, string> = { upcoming: 'A vencer', due_today: 'Vence hoje', pending: 'Pendente', sent: 'Enviado', paid: 'Pago', overdue: 'Vencido', cancelled: 'Cancelado' };
   return m[s] || s;
 }

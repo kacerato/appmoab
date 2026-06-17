@@ -151,17 +151,32 @@ async def get_dashboard(
         paid_condition = paid_condition & (Invoice.paid_date >= month_start) & (Invoice.paid_date < next_month_start)
         readings_condition = func.to_char(Reading.created_at, "YYYY-MM") == current_month
 
+    today = date.today()
     invoices_result = await db.execute(
         select(
-            func.coalesce(func.sum(case((Invoice.status == "pending", Invoice.amount), else_=0)), 0),
             func.coalesce(func.sum(case((
-                (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < date.today()),
+                (Invoice.status == "pending") & (Invoice.due_date <= today),
+                Invoice.amount,
+            ), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date > today),
+                Invoice.amount,
+            ), else_=0)), 0),
+            func.coalesce(func.sum(case((
+                (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < today),
                 Invoice.amount,
             ), else_=0)), 0),
             func.coalesce(func.sum(case((paid_condition, Invoice.amount), else_=0)), 0),
-            func.sum(case((Invoice.status == "pending", 1), else_=0)),
             func.sum(case((
-                (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < date.today()),
+                (Invoice.status == "pending") & (Invoice.due_date <= today),
+                1,
+            ), else_=0)),
+            func.sum(case((
+                (Invoice.status == "pending") & (Invoice.due_date > today),
+                1,
+            ), else_=0)),
+            func.sum(case((
+                (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < today),
                 1,
             ), else_=0)),
             func.sum(case((paid_condition, 1), else_=0)),
@@ -197,11 +212,13 @@ async def get_dashboard(
         },
         "financial": {
             "pending_amount": float(inv[0] or 0),
-            "overdue_amount": float(inv[1] or 0),
-            "paid_this_month": float(inv[2] or 0),
-            "pending_count": int(inv[3] or 0),
-            "overdue_count": int(inv[4] or 0),
-            "paid_count": int(inv[5] or 0),
+            "upcoming_amount": float(inv[1] or 0),
+            "overdue_amount": float(inv[2] or 0),
+            "paid_this_month": float(inv[3] or 0),
+            "pending_count": int(inv[4] or 0),
+            "upcoming_count": int(inv[5] or 0),
+            "overdue_count": int(inv[6] or 0),
+            "paid_count": int(inv[7] or 0),
             "deductions": {
                 "total": deductions_total,
                 "items": [{"label": d.label, "amount": d.amount} for d in deductions],

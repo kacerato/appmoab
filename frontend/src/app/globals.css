@@ -184,6 +184,8 @@ a:hover { color: var(--accent-hover); }
 .badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 99px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; }
 .badge.active, .badge.paid, .badge.approved { background: var(--success-soft); color: var(--success); }
 .badge.pending, .badge.sent { background: var(--warning-soft); color: var(--warning); }
+.badge.upcoming { background: var(--accent-soft); color: var(--accent); }
+.badge.due_today { background: var(--warning-soft); color: var(--warning); }
 .badge.overdue, .badge.rejected { background: var(--danger-soft); color: var(--danger); }
 .badge.suspended, .badge.cancelled { background: rgba(148,163,184,0.12); color: var(--text-muted); }
 .badge.disconnected { background: var(--danger-soft); color: var(--danger); }
