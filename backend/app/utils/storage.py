@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import os
 import uuid
 from pathlib import Path
@@ -40,41 +41,70 @@ def ensure_upload_dir() -> Path:
     return upload_path
 
 
-def _parse_data_uri(base64_data: str, fallback_ext: str) -> tuple[str, bytes]:
+def decode_base64_upload(base64_data: str, fallback_ext: str) -> tuple[str, bytes, str]:
     ext = fallback_ext
     payload = base64_data
+    content_type = "application/octet-stream"
 
     if "," in base64_data:
         header, payload = base64_data.split(",", 1)
         if "/" in header:
-            ext = header.split("/")[-1].split(";")[0].lower()
+            content_type = header.removeprefix("data:").split(";", 1)[0].lower()
+            ext = content_type.split("/")[-1].lower()
 
     raw = base64.b64decode(payload)
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
     if len(raw) > max_bytes:
         raise ValueError(f"Arquivo excede o limite de {settings.max_upload_size_mb}MB")
 
-    return ext, raw
+    if content_type == "application/octet-stream":
+        if ext in {"jpg", "jpeg", "png", "webp"}:
+            content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+        elif ext in {"pdf", "json"}:
+            content_type = f"application/{ext}"
+
+    return ext, raw, content_type
+
+
+def binary_sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def save_binary(raw: bytes, key: str, content_type: str = "application/octet-stream") -> str:
+    """Persiste bytes usando uma chave estavel e retorna o caminho canonico."""
+    max_bytes = settings.max_upload_size_mb * 1024 * 1024
+    if len(raw) > max_bytes:
+        raise ValueError(f"Arquivo excede o limite de {settings.max_upload_size_mb}MB")
+
+    normalized_key = key.strip().lstrip("/").replace("\\", "/")
+    if not normalized_key or ".." in normalized_key.split("/"):
+        raise ValueError("Chave de storage invalida")
+
+    if _r2_enabled():
+        _r2_client().put_object(
+            Bucket=settings.r2_bucket_name,
+            Key=normalized_key,
+            Body=raw,
+            ContentType=content_type,
+            Metadata={"sha256": binary_sha256(raw)},
+        )
+        return f"r2://{settings.r2_bucket_name}/{normalized_key}"
+
+    upload_path = ensure_upload_dir()
+    filename = normalized_key.replace("/", "__")
+    filepath = upload_path / filename
+    with open(filepath, "wb") as file_handle:
+        file_handle.write(raw)
+    return str(filepath)
 
 
 def save_binary_from_base64(base64_data: str, prefix: str, fallback_ext: str = "bin") -> str:
-    ext, raw = _parse_data_uri(base64_data, fallback_ext=fallback_ext)
+    ext, raw, content_type = decode_base64_upload(base64_data, fallback_ext=fallback_ext)
     filename = f"{prefix}_{uuid.uuid4().hex}.{ext}"
 
     if _r2_enabled():
         key = f"uploads/{prefix}/{filename}"
-        content_type = f"application/{ext}"
-        if ext in {"jpg", "jpeg", "png", "webp"}:
-            content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-        elif ext == "pdf":
-            content_type = "application/pdf"
-        _r2_client().put_object(
-            Bucket=settings.r2_bucket_name,
-            Key=key,
-            Body=raw,
-            ContentType=content_type,
-        )
-        return f"r2://{settings.r2_bucket_name}/{key}"
+        return save_binary(raw, key, content_type)
 
     upload_path = ensure_upload_dir()
     filepath = upload_path / filename
@@ -106,23 +136,25 @@ def build_public_upload_url(filepath: str) -> str:
     return f"/uploads/{Path(filepath).name}"
 
 
-def get_photo_base64(filepath: str) -> str | None:
+def read_binary(filepath: str) -> bytes | None:
     if filepath.startswith("r2://"):
         bucket_and_key = filepath.removeprefix("r2://")
         bucket, _, key = bucket_and_key.partition("/")
         if not key or not _r2_enabled():
             return None
         obj = _r2_client().get_object(Bucket=bucket, Key=key)
-        data = obj["Body"].read()
-        ext = Path(key).suffix.lstrip(".")
-        return f"data:image/{ext};base64,{base64.b64encode(data).decode('utf-8')}"
+        return obj["Body"].read()
 
     if not os.path.exists(filepath):
         return None
-
     with open(filepath, "rb") as file_handle:
-        data = file_handle.read()
+        return file_handle.read()
 
+
+def get_photo_base64(filepath: str) -> str | None:
+    data = read_binary(filepath)
+    if data is None:
+        return None
     ext = Path(filepath).suffix.lstrip(".")
     return f"data:image/{ext};base64,{base64.b64encode(data).decode('utf-8')}"
 

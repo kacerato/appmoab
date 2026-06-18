@@ -3,7 +3,7 @@
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func, case
+from sqlalchemy import String, case, cast, func, literal, select, true, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -27,6 +27,7 @@ def _issue(
     severity: str,
     href: str,
 ) -> dict:
+    """Mantém o formato público dos alertas e serve aos testes de contrato."""
     return {
         "code": code,
         "title": title,
@@ -37,27 +38,23 @@ def _issue(
 
 
 async def _operational_issues(db: AsyncSession, limit: int = 12) -> list[dict]:
-    issues: list[dict] = []
-
-    approved_without_invoice = await db.execute(
+    approved_without_invoice = (
         select(Reading.id, Customer.name, Hydrometer.code)
         .join(Hydrometer, Hydrometer.id == Reading.hydrometer_id)
         .join(Customer, Customer.id == Hydrometer.customer_id)
         .outerjoin(Invoice, Invoice.reading_id == Reading.id)
         .where(Reading.status == "approved", Invoice.id.is_(None))
-        .order_by(Reading.approved_at.desc().nullslast(), Reading.created_at.desc())
-        .limit(limit)
+        .with_only_columns(
+            literal("approved_reading_without_invoice").label("code"),
+            literal("Leitura aprovada sem fatura").label("title"),
+            func.concat(Customer.name, " - hidrometro ", Hydrometer.code).label("detail"),
+            literal("danger").label("severity"),
+            func.concat("/leituras?reading_id=", cast(Reading.id, String)).label("href"),
+            func.coalesce(Reading.approved_at, Reading.created_at).label("event_at"),
+            literal(0).label("severity_rank"),
+        )
     )
-    for reading_id, customer_name, hydrometer_code in approved_without_invoice.all():
-        issues.append(_issue(
-            code="approved_reading_without_invoice",
-            title="Leitura aprovada sem fatura",
-            detail=f"{customer_name} - hidrometro {hydrometer_code}",
-            severity="danger",
-            href=f"/leituras?reading_id={reading_id}",
-        ))
-
-    active_invoice_without_charge = await db.execute(
+    active_invoice_without_charge = (
         select(Invoice.id, Customer.name, Invoice.reference_month, Invoice.status)
         .join(Customer, Customer.id == Invoice.customer_id)
         .where(
@@ -65,35 +62,33 @@ async def _operational_issues(db: AsyncSession, limit: int = 12) -> list[dict]:
             Invoice.efi_charge_id.is_(None),
             Invoice.efi_payment_url.is_(None),
         )
-        .order_by(Invoice.created_at.desc())
-        .limit(limit)
+        .with_only_columns(
+            literal("active_invoice_without_charge").label("code"),
+            literal("Fatura ativa sem boleto/link").label("title"),
+            func.concat(
+                Customer.name, " - ", Invoice.reference_month, " (", Invoice.status, ")"
+            ).label("detail"),
+            literal("warning").label("severity"),
+            func.concat("/faturas/", cast(Invoice.id, String)).label("href"),
+            Invoice.created_at.label("event_at"),
+            literal(1).label("severity_rank"),
+        )
     )
-    for invoice_id, customer_name, reference_month, status in active_invoice_without_charge.all():
-        issues.append(_issue(
-            code="active_invoice_without_charge",
-            title="Fatura ativa sem boleto/link",
-            detail=f"{customer_name} - {reference_month} ({status})",
-            severity="warning",
-            href=f"/faturas/{invoice_id}",
-        ))
-
-    paid_without_date = await db.execute(
+    paid_without_date = (
         select(Invoice.id, Customer.name, Invoice.reference_month)
         .join(Customer, Customer.id == Invoice.customer_id)
         .where(Invoice.status == "paid", Invoice.paid_date.is_(None))
-        .order_by(Invoice.updated_at.desc())
-        .limit(limit)
+        .with_only_columns(
+            literal("paid_invoice_without_date").label("code"),
+            literal("Fatura paga sem data de pagamento").label("title"),
+            func.concat(Customer.name, " - ", Invoice.reference_month).label("detail"),
+            literal("warning").label("severity"),
+            func.concat("/faturas/", cast(Invoice.id, String)).label("href"),
+            Invoice.updated_at.label("event_at"),
+            literal(1).label("severity_rank"),
+        )
     )
-    for invoice_id, customer_name, reference_month in paid_without_date.all():
-        issues.append(_issue(
-            code="paid_invoice_without_date",
-            title="Fatura paga sem data de pagamento",
-            detail=f"{customer_name} - {reference_month}",
-            severity="warning",
-            href=f"/faturas/{invoice_id}",
-        ))
-
-    failed_invoice_notifications = await db.execute(
+    failed_invoice_notifications = (
         select(Notification.invoice_id, Customer.name, Notification.error_message)
         .join(Customer, Customer.id == Notification.customer_id)
         .where(
@@ -101,21 +96,39 @@ async def _operational_issues(db: AsyncSession, limit: int = 12) -> list[dict]:
             Notification.status == "failed",
             Notification.invoice_id.is_not(None),
         )
-        .order_by(Notification.created_at.desc())
+        .with_only_columns(
+            literal("invoice_whatsapp_failed").label("code"),
+            literal("WhatsApp da fatura falhou").label("title"),
+            func.concat(
+                Customer.name,
+                " - ",
+                func.left(func.coalesce(Notification.error_message, "sem detalhe"), 120),
+            ).label("detail"),
+            literal("warning").label("severity"),
+            func.concat("/faturas/", cast(Notification.invoice_id, String)).label("href"),
+            Notification.created_at.label("event_at"),
+            literal(1).label("severity_rank"),
+        )
+    )
+
+    combined = union_all(
+        approved_without_invoice,
+        active_invoice_without_charge,
+        paid_without_date,
+        failed_invoice_notifications,
+    ).subquery()
+    result = await db.execute(
+        select(
+            combined.c.code,
+            combined.c.title,
+            combined.c.detail,
+            combined.c.severity,
+            combined.c.href,
+        )
+        .order_by(combined.c.severity_rank, combined.c.event_at.desc())
         .limit(limit)
     )
-    for invoice_id, customer_name, error_message in failed_invoice_notifications.all():
-        issues.append(_issue(
-            code="invoice_whatsapp_failed",
-            title="WhatsApp da fatura falhou",
-            detail=f"{customer_name} - {(error_message or 'sem detalhe')[:120]}",
-            severity="warning",
-            href=f"/faturas/{invoice_id}",
-        ))
-
-    severity_order = {"danger": 0, "warning": 1, "info": 2}
-    issues.sort(key=lambda item: severity_order.get(item["severity"], 9))
-    return issues[:limit]
+    return [dict(row) for row in result.mappings().all()]
 
 
 @router.get("")
@@ -133,16 +146,18 @@ async def get_dashboard(
     else:
         next_month_start = date(now.year, now.month + 1, 1)
 
-    # Clientes
-    customers_result = await db.execute(
+    # As métricas principais são subconsultas de uma única instrução SQL. No
+    # banco remoto, isso remove quatro viagens de rede da primeira abertura do
+    # painel sem alterar o contrato retornado ao frontend.
+    customer_metrics = (
         select(
-            func.count(Customer.id),
-            func.sum(case((Customer.status == "active", 1), else_=0)),
-            func.sum(case((Customer.has_hydrometer == True, 1), else_=0)),  # noqa: E712
-            func.sum(case((Customer.has_hydrometer == False, 1), else_=0)),  # noqa: E712
+            func.count(Customer.id).label("total"),
+            func.sum(case((Customer.status == "active", 1), else_=0)).label("active"),
+            func.sum(case((Customer.has_hydrometer == True, 1), else_=0)).label("with_hydrometer"),  # noqa: E712
+            func.sum(case((Customer.has_hydrometer == False, 1), else_=0)).label("without_hydrometer"),  # noqa: E712
         )
+        .subquery()
     )
-    c = customers_result.one()
 
     # Faturas
     paid_condition = Invoice.status == "paid"
@@ -152,49 +167,54 @@ async def get_dashboard(
         readings_condition = func.to_char(Reading.created_at, "YYYY-MM") == current_month
 
     today = date.today()
-    invoices_result = await db.execute(
+    invoice_metrics = (
         select(
             func.coalesce(func.sum(case((
                 (Invoice.status == "pending") & (Invoice.due_date <= today),
                 Invoice.amount,
-            ), else_=0)), 0),
+            ), else_=0)), 0).label("pending_amount"),
             func.coalesce(func.sum(case((
                 (Invoice.status == "pending") & (Invoice.due_date > today),
                 Invoice.amount,
-            ), else_=0)), 0),
+            ), else_=0)), 0).label("upcoming_amount"),
             func.coalesce(func.sum(case((
                 (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < today),
                 Invoice.amount,
-            ), else_=0)), 0),
-            func.coalesce(func.sum(case((paid_condition, Invoice.amount), else_=0)), 0),
+            ), else_=0)), 0).label("overdue_amount"),
+            func.coalesce(func.sum(case((paid_condition, Invoice.amount), else_=0)), 0).label("paid_amount"),
             func.sum(case((
                 (Invoice.status == "pending") & (Invoice.due_date <= today),
                 1,
-            ), else_=0)),
+            ), else_=0)).label("pending_count"),
             func.sum(case((
                 (Invoice.status == "pending") & (Invoice.due_date > today),
                 1,
-            ), else_=0)),
+            ), else_=0)).label("upcoming_count"),
             func.sum(case((
                 (Invoice.status.in_(("pending", "sent", "overdue"))) & (Invoice.due_date < today),
                 1,
-            ), else_=0)),
-            func.sum(case((paid_condition, 1), else_=0)),
+            ), else_=0)).label("overdue_count"),
+            func.sum(case((paid_condition, 1), else_=0)).label("paid_count"),
+        )
+        .subquery()
+    )
+    reading_metrics = (
+        select(
+            func.sum(case((Reading.status == "pending", 1), else_=0)).label("pending"),
+            func.sum(case((readings_condition, 1), else_=0)).label("month"),
+        )
+        .subquery()
+    )
+
+    metrics_result = await db.execute(
+        select(customer_metrics, invoice_metrics, reading_metrics)
+        .select_from(
+            customer_metrics
+            .join(invoice_metrics, true())
+            .join(reading_metrics, true())
         )
     )
-    inv = invoices_result.one()
-
-    # Leituras pendentes
-    readings_pending = await db.execute(
-        select(func.count(Reading.id)).where(Reading.status == "pending")
-    )
-    pending_readings = readings_pending.scalar() or 0
-
-    # Leituras do mês
-    readings_month = await db.execute(
-        select(func.count(Reading.id)).where(readings_condition)
-    )
-    month_readings = readings_month.scalar() or 0
+    metrics = metrics_result.mappings().one()
 
     # Deduções do banco de dados
     deductions_result = await db.execute(
@@ -205,28 +225,28 @@ async def get_dashboard(
 
     return {
         "customers": {
-            "total": c[0] or 0,
-            "active": int(c[1] or 0),
-            "with_hydrometer": int(c[2] or 0),
-            "without_hydrometer": int(c[3] or 0),
+            "total": metrics["total"] or 0,
+            "active": int(metrics["active"] or 0),
+            "with_hydrometer": int(metrics["with_hydrometer"] or 0),
+            "without_hydrometer": int(metrics["without_hydrometer"] or 0),
         },
         "financial": {
-            "pending_amount": float(inv[0] or 0),
-            "upcoming_amount": float(inv[1] or 0),
-            "overdue_amount": float(inv[2] or 0),
-            "paid_this_month": float(inv[3] or 0),
-            "pending_count": int(inv[4] or 0),
-            "upcoming_count": int(inv[5] or 0),
-            "overdue_count": int(inv[6] or 0),
-            "paid_count": int(inv[7] or 0),
+            "pending_amount": float(metrics["pending_amount"] or 0),
+            "upcoming_amount": float(metrics["upcoming_amount"] or 0),
+            "overdue_amount": float(metrics["overdue_amount"] or 0),
+            "paid_this_month": float(metrics["paid_amount"] or 0),
+            "pending_count": int(metrics["pending_count"] or 0),
+            "upcoming_count": int(metrics["upcoming_count"] or 0),
+            "overdue_count": int(metrics["overdue_count"] or 0),
+            "paid_count": int(metrics["paid_count"] or 0),
             "deductions": {
                 "total": deductions_total,
                 "items": [{"label": d.label, "amount": d.amount} for d in deductions],
             },
         },
         "readings": {
-            "pending_approval": pending_readings,
-            "this_month": month_readings,
+            "pending_approval": int(metrics["pending"] or 0),
+            "this_month": int(metrics["month"] or 0),
         },
         "operational_issues": await _operational_issues(db),
         "current_month": current_month,

@@ -247,7 +247,7 @@ async def efi_webhook(
         except ValueError:
             from datetime import date
             invoice.paid_date = date.today()
-        invoice.efi_payment_receipt_url = store_efi_payment_receipt(invoice, detail)
+        invoice.efi_payment_receipt_url = await store_efi_payment_receipt(db, invoice, detail)
 
     db.add(InvoiceEvent(
         invoice_id=invoice.id,

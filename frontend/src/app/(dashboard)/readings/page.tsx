@@ -66,10 +66,10 @@ export default function ReadingsPage() {
   const [filter, setFilter] = useState('pending');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     setLoading(true);
     try {
-      const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`, { skipCache: true });
+      const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`, { skipCache: force });
       setData(res);
     } catch (e) {
       console.error(e);
@@ -79,13 +79,13 @@ export default function ReadingsPage() {
   }, [filter]);
 
   useEffect(() => {
-    load();
+    void load(false);
   }, [load]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
-        void load();
+        void load(true);
       }
     }, 5000);
     const handleFocus = () => void load();

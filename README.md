@@ -1,6 +1,6 @@
 # AquaMoab - Sistema de Gestao de Distribuicao de Agua
 
-Sistema completo para gestao de clientes, leitura de hidrometros via OCR (GLM-OCR), faturamento automatico e geracao de cobrancas via Efi Pay.
+Sistema completo para gestao de clientes, leitura de hidrometros por visao computacional local, faturamento automatico e geracao de cobrancas via Efi Pay.
 
 ## Arquitetura
 
@@ -22,7 +22,8 @@ appmoab/
 | Frontend | Next.js 16, TypeScript, CSS |
 | Mobile | Expo SDK 54, React Native, TypeScript |
 | Pagamentos | Efi Pay API Cobrancas |
-| OCR | GLM-OCR (Z.AI) |
+| Visao | OpenCV + ONNX Runtime; GLM apenas como diagnostico opcional |
+| Arquivos | Cloudflare R2 com hash SHA-256 e metadados no PostgreSQL |
 | Filas | Celery + Redis |
 | Notificacoes | Evolution API (WhatsApp) |
 
@@ -87,6 +88,13 @@ docker-compose up -d
 | `EFI_P12_PASSWORD` | Senha do `.p12`, deixe vazio se o certificado nao tiver senha |
 | `EFI_CERT_PATH` / `EFI_KEY_PATH` | Alternativa em PEM ao `.p12`; use somente um dos modos |
 | `GLM_API_KEY` | OCR de hidrometros via GLM-OCR |
+| `STORAGE_BACKEND` | `r2` em producao; `local` apenas para desenvolvimento |
+| `R2_ENDPOINT_URL` / `R2_BUCKET_NAME` | Endpoint S3 e bucket do Cloudflare R2 |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Credenciais do bucket R2 |
+| `VISION_ENABLED` | Ativa o motor local de visao computacional |
+| `VISION_MODEL_PATH` / `VISION_MODEL_VERSION` | Artefato ONNX/KNN promovido e sua versao |
+| `VISION_MIN_AUTOFILL_CONFIDENCE` | Limiar conservador para preenchimento automatico |
+| `VISION_GLM_SHADOW_ENABLED` | Executa GLM somente em paralelo para comparacao, sem decidir a leitura |
 | `EVOLUTION_API_URL` | URL base da Evolution API |
 | `EVOLUTION_API_KEY` | Chave enviada no header `apikey` |
 | `EVOLUTION_INSTANCE_NAME` | Nome da instancia usada para envio |
@@ -128,9 +136,27 @@ Para validar producao sem emitir cobranca, autentique como admin e chame `POST /
 
 ```text
 Colaborador tira foto
--> backend envia para GLM-OCR
--> gestor aprova leitura
+-> app captura uma pequena rajada de quadros
+-> OpenCV corrige perspectiva, reflexo e regiao dos digitos
+-> classificador local combina quadros, transicao dos roletes e historico
+-> baixa confianca pede nova foto; alta confianca apenas preenche o campo
+-> gestor confirma ou corrige a leitura
+-> amostra confirmada entra na fila de treinamento
 -> sistema calcula fatura
 -> Efi Pay gera boleto/Bolix
+-> boleto e comprovantes entram no dossie imutavel do R2
 -> backend envia notificacao pelo WhatsApp
 ```
+
+## Migracao e aprendizado visual
+
+```bash
+cd backend
+alembic upgrade head
+python -m app.scripts.backfill_invoice_documents
+python -m app.scripts.train_meter_vision
+```
+
+O treinador usa somente leituras confirmadas e aprovadas, separa treino/teste por
+hidrometro e so promove um modelo que alcance o limiar configurado. O desenho e
+os criterios operacionais completos estao em `docs/plano-evolucao-r2-performance-visao.md`.

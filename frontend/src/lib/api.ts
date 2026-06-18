@@ -1,13 +1,32 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
 const getCache = new Map<string, { expiresAt: number; value: unknown }>();
 const inFlight = new Map<string, Promise<unknown>>();
-const GET_CACHE_TTL_MS = 5 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 20_000;
 
 type ApiRequestOptions = RequestInit & { skipCache?: boolean };
 
 function clearGetCache() {
   getCache.clear();
   inFlight.clear();
+}
+
+function cacheTtl(path: string): number {
+  if (path.startsWith('/readings') || path.startsWith('/whatsapp/')) return 10_000;
+  if (path.startsWith('/dashboard')) return 30_000;
+  if (path.startsWith('/tariffs') || path.startsWith('/system-settings')) return 5 * 60_000;
+  return 60_000;
+}
+
+function reportTiming(path: string, startedAt: number, response: Response) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('aquamoab:api-timing', {
+    detail: {
+      path,
+      durationMs: Math.round(performance.now() - startedAt),
+      serverMs: Number(response.headers.get('x-response-time-ms') || 0),
+      requestId: response.headers.get('x-request-id'),
+    },
+  }));
 }
 
 async function request<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -26,8 +45,12 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   if (method !== 'GET' && options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const fetchPromise = fetch(`${API_URL}${path}`, { ...fetchOptions, headers })
+  const controller = new AbortController();
+  const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const fetchPromise = fetch(`${API_URL}${path}`, { ...fetchOptions, headers, signal: controller.signal })
     .then(async (res) => {
+      reportTiming(path, startedAt, res);
       if (res.status === 401) {
         if (typeof window !== 'undefined') {
           localStorage.removeItem('token');
@@ -48,15 +71,14 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
 
       const data = await res.json();
       if (method === 'GET') {
-        if (!skipCache) {
-          getCache.set(cacheKey, { value: data, expiresAt: Date.now() + GET_CACHE_TTL_MS });
-        }
+        getCache.set(cacheKey, { value: data, expiresAt: Date.now() + cacheTtl(path) });
       } else {
         clearGetCache();
       }
       return data as T;
     })
     .finally(() => {
+      globalThis.clearTimeout(timeoutId);
       if (method === 'GET' && !skipCache) inFlight.delete(cacheKey);
     });
 

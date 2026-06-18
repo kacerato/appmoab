@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     whatsapp_api_version: str = "v17.0"
 
     glm_api_key: str = ""
+    vision_enabled: bool = True
+    vision_model_path: str = ""
+    vision_model_version: str = "meter-opencv-template-v1"
+    vision_min_autofill_confidence: float = 0.985
+    vision_glm_shadow_enabled: bool = False
+    vision_store_debug_artifacts: bool = True
 
     upload_dir: str = "./uploads"
     max_upload_size_mb: int = 10

@@ -3,7 +3,9 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.schemas.invoice_document import InvoiceDocumentResponse
 
 
 class InvoiceResponse(BaseModel):
@@ -39,6 +41,8 @@ class InvoiceResponse(BaseModel):
     display_status_label: str | None = None
     days_until_due: int | None = None
     has_pdf: bool = False
+    document_count: int = 0
+    documents: list[InvoiceDocumentResponse] = Field(default_factory=list)
     created_at: datetime
 
     # Dados agregados

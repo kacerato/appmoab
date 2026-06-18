@@ -57,7 +57,7 @@ async def _check_payments_async():
                     invoice.efi_raw_response = cob
                     paid_at = ((cob.get("payment") or {}).get("paid_at") or cob.get("paid_at") or "")[:10]
                     invoice.paid_date = date.fromisoformat(paid_at) if paid_at else date.today()
-                    invoice.efi_payment_receipt_url = store_efi_payment_receipt(invoice, cob)
+                    invoice.efi_payment_receipt_url = await store_efi_payment_receipt(db, invoice, cob)
                     logger.info(f"Fatura {invoice.id} marcada como PAGA")
 
             await db.commit()
@@ -75,7 +75,7 @@ def mark_overdue_invoices():
 async def _mark_overdue_async():
     from app.database import async_session_factory
     from app.models.invoice import Invoice
-    from sqlalchemy import select, update
+    from sqlalchemy import update
 
     logger.info("Marcando faturas vencidas...")
 
@@ -193,7 +193,8 @@ async def _generate_fixed_async():
                 if invoice.efi_pdf_url:
                     pdf = await efi_service.baixar_pdf(invoice.efi_pdf_url)
                     if pdf:
-                        invoice.pdf_data = pdf
+                        from app.services.invoice_documents import persist_boleto_pdf
+                        await persist_boleto_pdf(db, invoice, pdf, source="scheduled_billing")
 
             except Exception as e:
                 logger.error(f"Erro ao gerar cobranca Efí para {customer.name}: {e}")

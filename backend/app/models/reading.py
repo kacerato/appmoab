@@ -42,6 +42,9 @@ class Reading(Base):
     photo_extracted_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     photo_extracted_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    vision_inference_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("vision_inferences.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # ── Geolocalização da Captura ──────────────────────────────
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
