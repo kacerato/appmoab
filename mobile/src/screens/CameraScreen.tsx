@@ -254,7 +254,7 @@ export default function CameraScreen() {
         quality: 0.8,
       });
       const framesBase64: string[] = [];
-      if (stage === 'reading') {
+      if (stage === 'reading' || stage === 'dev_test') {
         for (let index = 0; index < 2; index += 1) {
           try {
             const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.72, skipProcessing: true });
@@ -273,6 +273,26 @@ export default function CameraScreen() {
           expectedCustomerName,
           expectedHydrometerId,
           expectedHydrometerCode,
+          lastReading,
+          redDigits,
+          blackDigits,
+          hydrometerBrand,
+          hydrometerModel,
+          locationDescription,
+          isInstallation,
+        });
+        return;
+      }
+
+      if (stage === 'dev_test') {
+        navigation.navigate('DevVisionTest', {
+          photoBase64: photo.base64,
+          photoUri: photo.uri,
+          framesBase64,
+          capturedAt: new Date().toISOString(),
+          hydrometerId: activeHydrometerId,
+          hydrometerCode: activeHydrometerCode,
+          customerName: activeCustomerName,
           lastReading,
           redDigits,
           blackDigits,
@@ -323,14 +343,18 @@ export default function CameraScreen() {
 
   const stageTitle = stage === 'code'
     ? 'Etapa 1 - QR Code do cliente'
-    : isInstallation
-      ? 'Etapa 2 - Instalacao do hidrometro'
-      : 'Etapa 2 - Leitura do mostrador';
+    : stage === 'dev_test'
+      ? 'Modo Dev - Coleta de Teste'
+      : isInstallation
+        ? 'Etapa 2 - Instalacao do hidrometro'
+        : 'Etapa 2 - Leitura do mostrador';
   const guideText = stage === 'code'
     ? 'Aponte para o QR Code impresso no ponto do cliente. Se precisar, toque para fotografar e digitar.'
-    : isInstallation
-      ? 'Fotografe o hidrometro instalado e informe o valor inicial do mostrador.'
-      : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
+    : stage === 'dev_test'
+      ? 'Fotografe o visor do hidrometro para rodar o teste de visao e alimentar o dataset.'
+      : isInstallation
+        ? 'Fotografe o hidrometro instalado e informe o valor inicial do mostrador.'
+        : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
@@ -386,7 +410,13 @@ export default function CameraScreen() {
             </TouchableOpacity>
 
             <Text style={styles.captureLabel}>
-              {stage === 'code' ? 'QR automatico ou toque para digitar' : isInstallation ? 'Toque para registrar instalacao' : 'Toque para fotografar a leitura'}
+              {stage === 'code'
+                ? 'QR automatico ou toque para digitar'
+                : stage === 'dev_test'
+                  ? 'Toque para testar visao'
+                  : isInstallation
+                    ? 'Toque para registrar instalacao'
+                    : 'Toque para fotografar a leitura'}
             </Text>
           </View>
         </View>

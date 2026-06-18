@@ -16,6 +16,7 @@ import ManualCodeScreen from './src/screens/ManualCodeScreen';
 import HydrometerMatchScreen from './src/screens/HydrometerMatchScreen';
 import OCRResultScreen from './src/screens/OCRResultScreen';
 import DayHistoryScreen from './src/screens/DayHistoryScreen';
+import DevVisionTestScreen from './src/screens/DevVisionTestScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -43,6 +44,7 @@ function AppNavigator() {
           <Stack.Screen name="HydrometerMatch" component={HydrometerMatchScreen} />
           <Stack.Screen name="OCRResult" component={OCRResultScreen} />
           <Stack.Screen name="DayHistory" component={DayHistoryScreen} />
+          <Stack.Screen name="DevVisionTest" component={DevVisionTestScreen} />
         </>
       )}
     </Stack.Navigator>

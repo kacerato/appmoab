@@ -330,6 +330,26 @@ export default function RouteScreen() {
           </ScrollView>
         )}
 
+        {user ? (
+          <TouchableOpacity
+            style={styles.floatingDevButton}
+            onPress={() => navigation.navigate('DevVisionTest')}
+          >
+            <Svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+              <Path d="m8 2 1.88 1.88" />
+              <Path d="M14.12 3.88 16 2" />
+              <Path d="M9 7.13v-1a3.001 3.001 0 1 1 6 0v1" />
+              <Rect x="6" y="7" width="12" height="12" rx="6" />
+              <Path d="M4 10h2" />
+              <Path d="M18 10h2" />
+              <Path d="M4 14h2" />
+              <Path d="M18 14h2" />
+              <Path d="m5 18 1.5-1.5" />
+              <Path d="M17.5 16.5 19 18" />
+            </Svg>
+          </TouchableOpacity>
+        ) : null}
+
         <BottomTabs
           active={activeTab}
           onTabPress={tab => {
@@ -794,5 +814,21 @@ function createRouteStyles() {
   actionTile: { width: '48%', backgroundColor: colors.abyss, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 14, minHeight: 92 },
   actionTitle: { color: colors.textPrimary, fontWeight: '800', fontSize: 15 },
   actionSubtitle: { color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 8 },
+  floatingDevButton: {
+    position: 'absolute',
+    right: 18,
+    bottom: 96,
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: colors.cyan,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.28,
+    shadowRadius: 5,
+  },
   });
 }
