@@ -8,6 +8,7 @@ import {
   DollarSign, Settings, Bell, LogOut, ChevronRight, MessagesSquare
 } from 'lucide-react';
 import { LucideIcon } from 'lucide-react';
+import { prefetchRouteData } from '@/lib/route-prefetch';
 
 type NavSection = { section: string };
 type NavLink = { href: string; label: string; icon: LucideIcon };
@@ -70,6 +71,9 @@ export default function Sidebar() {
               key={item.href}
               href={item.href}
               className={`sidebar-link ${isActive ? 'active' : ''}`}
+              onMouseEnter={() => prefetchRouteData(item.href)}
+              onFocus={() => prefetchRouteData(item.href)}
+              onTouchStart={() => prefetchRouteData(item.href)}
             >
               <Icon />
               <span>{item.label}</span>

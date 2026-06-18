@@ -90,6 +90,7 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "readings", "location_status VARCHAR(30) NOT NULL DEFAULT 'unchecked'", "location_status")
     await _add_column_if_missing(conn, "readings", "validation_flags JSONB NOT NULL DEFAULT '[]'::jsonb", "validation_flags")
     await _add_column_if_missing(conn, "readings", "anomaly_override_reason TEXT", "anomaly_override_reason")
+    await _add_column_if_missing(conn, "readings", "vision_inference_id UUID REFERENCES vision_inferences(id) ON DELETE SET NULL", "vision_inference_id")
 
     await _add_column_if_missing(conn, "invoices", "original_amount DOUBLE PRECISION", "original_amount")
     if await _has_rows_matching(conn, "invoices", "original_amount IS NULL"):
@@ -159,5 +160,9 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _create_index_if_missing(conn, "ix_invoices_customer_paid_date", "CREATE INDEX ix_invoices_customer_paid_date ON invoices (customer_id, paid_date DESC) WHERE paid_date IS NOT NULL")
     await _create_index_if_missing(conn, "ix_invoices_reference_month", "CREATE INDEX ix_invoices_reference_month ON invoices (reference_month)")
     await _create_index_if_missing(conn, "ix_invoices_efi_charge_id", "CREATE INDEX ix_invoices_efi_charge_id ON invoices (efi_charge_id)")
+    await _create_index_if_missing(conn, "ix_invoice_documents_invoice_created", "CREATE INDEX ix_invoice_documents_invoice_created ON invoice_documents (invoice_id, created_at DESC)")
+    await _create_index_if_missing(conn, "ix_invoice_documents_customer_id", "CREATE INDEX ix_invoice_documents_customer_id ON invoice_documents (customer_id)")
+    await _create_index_if_missing(conn, "ix_vision_inferences_created", "CREATE INDEX ix_vision_inferences_created ON vision_inferences (created_at DESC)")
+    await _create_index_if_missing(conn, "ix_vision_inferences_training_queue", "CREATE INDEX ix_vision_inferences_training_queue ON vision_inferences (approved_for_training, was_correct, created_at DESC)")
     await _create_index_if_missing(conn, "ix_whatsapp_messages_phone_created_at", "CREATE INDEX ix_whatsapp_messages_phone_created_at ON whatsapp_messages (phone, created_at DESC)")
     await _create_index_if_missing(conn, "ix_whatsapp_messages_external_message_id", "CREATE INDEX ix_whatsapp_messages_external_message_id ON whatsapp_messages (external_message_id)")

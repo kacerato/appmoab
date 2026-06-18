@@ -44,7 +44,6 @@ async def _send_reminders_async(
 ):
     from app.database import async_session_factory
     from app.models.invoice import Invoice
-    from app.models.customer import Customer
     from app.models.notification import Notification
     from app.models.system_setting import SystemSetting
     from app.models.whatsapp_message import WhatsAppMessage

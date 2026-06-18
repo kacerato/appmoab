@@ -31,6 +31,9 @@ redis==5.3.0
 # File handling
 python-magic==0.4.27
 Pillow==11.2.1
+numpy==2.2.6
+opencv-python-headless==4.11.0.86
+onnxruntime==1.22.0
 pypdf==5.5.0
 
 # Date/Time

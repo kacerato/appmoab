@@ -3,17 +3,19 @@ Router de Faturas — Lista, detalhe, PDF e dashboard financeiro.
 """
 
 import uuid
+import asyncio
 from datetime import date, datetime, timezone
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func, case
+from sqlalchemy import select, func, case, inspect
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, load_only
 
 from app.database import get_db
 from app.models.invoice import Invoice
+from app.models.invoice_document import InvoiceDocument
 from app.models.invoice_event import InvoiceEvent
 from app.models.notification import Notification
 from app.models.system_setting import SystemSetting
@@ -27,8 +29,17 @@ from app.schemas.invoice import (
     InvoiceAmountUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
     InvoiceReopenRequest,
 )
+from app.schemas.invoice_document import InvoiceDocumentResponse, InvoiceDocumentUpload
 from app.services.billing_policy import calculate_overdue_amount, payment_due_date_for_provider
 from app.services.efi_api import EfiAPIError, efi_service
+from app.services.invoice_documents import (
+    BOLETO_PDF,
+    DocumentPayload,
+    get_or_create_boleto_pdf,
+    read_invoice_document,
+    store_invoice_document,
+    validate_receipt_upload,
+)
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
     notification_flow_enabled,
@@ -37,6 +48,7 @@ from app.services.notification_templates import (
 )
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
+from app.utils.storage import decode_base64_upload, delete_photo
 
 router = APIRouter(prefix="/invoices", tags=["Faturas"])
 
@@ -227,14 +239,73 @@ def _invoice_display_status(invoice: Invoice, today: date | None = None) -> tupl
     return invoice.status, labels.get(invoice.status, invoice.status), days_until_due
 
 
+def _document_response(document: InvoiceDocument) -> InvoiceDocumentResponse:
+    return InvoiceDocumentResponse(
+        id=document.id,
+        invoice_id=document.invoice_id,
+        customer_id=document.customer_id,
+        document_type=document.document_type,
+        source=document.source,
+        original_name=document.original_name,
+        mime_type=document.mime_type,
+        size_bytes=document.size_bytes,
+        sha256=document.sha256,
+        provider_document_id=document.provider_document_id,
+        metadata=document.metadata_json,
+        notes=document.notes,
+        created_at=document.created_at,
+    )
+
+
 def _invoice_response(invoice: Invoice) -> InvoiceResponse:
-    resp = InvoiceResponse.model_validate(invoice)
-    resp.has_pdf = invoice.pdf_data is not None
+    computed_fields = {
+        "display_status",
+        "display_status_label",
+        "days_until_due",
+        "has_pdf",
+        "document_count",
+        "documents",
+        "customer_name",
+        "customer_cpf_cnpj",
+    }
+    # Construa o contrato apenas com colunas escalares. Isso impede que o
+    # Pydantic dispare lazy-load assíncrono de relacionamentos em endpoints que
+    # não precisam deles (e evita MissingGreenlet em produção).
+    payload = {
+        field_name: getattr(invoice, field_name)
+        for field_name in InvoiceResponse.model_fields
+        if field_name not in computed_fields
+    }
+    resp = InvoiceResponse.model_validate(payload)
+    unloaded = inspect(invoice).unloaded
+    documents = [] if "documents" in unloaded else list(invoice.documents)
+    legacy_pdf_loaded = "pdf_data" not in unloaded and invoice.pdf_data is not None
+    resp.has_pdf = bool(
+        invoice.efi_pdf_url
+        or legacy_pdf_loaded
+        or any(document.document_type == BOLETO_PDF for document in documents)
+    )
+    resp.document_count = len(documents)
+    resp.documents = [_document_response(document) for document in documents]
     resp.display_status, resp.display_status_label, resp.days_until_due = _invoice_display_status(invoice)
     if invoice.customer:
         resp.customer_name = invoice.customer.name
         resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
     return resp
+
+
+async def _get_or_fetch_boleto_pdf(
+    db: AsyncSession,
+    invoice: Invoice,
+    *,
+    source: str,
+) -> bytes | None:
+    return await get_or_create_boleto_pdf(
+        db,
+        invoice,
+        efi_service.baixar_pdf,
+        source=source,
+    )
 
 
 @router.get("", response_model=InvoiceListResponse)
@@ -247,7 +318,41 @@ async def list_invoices(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = select(Invoice).options(selectinload(Invoice.customer))
+    query = select(Invoice).options(
+        load_only(
+            Invoice.id,
+            Invoice.customer_id,
+            Invoice.reading_id,
+            Invoice.consumption_m3,
+            Invoice.tariff_rate,
+            Invoice.amount,
+            Invoice.original_amount,
+            Invoice.custom_adjustment_amount,
+            Invoice.late_fee_amount,
+            Invoice.interest_amount,
+            Invoice.days_overdue_charged,
+            Invoice.overdue_charges_allowed,
+            Invoice.overdue_charge_blocked_reason,
+            Invoice.adjustment_reason,
+            Invoice.charge_type,
+            Invoice.reference_month,
+            Invoice.due_date,
+            Invoice.paid_date,
+            Invoice.status,
+            Invoice.payment_provider,
+            Invoice.payment_due_date,
+            Invoice.efi_charge_id,
+            Invoice.efi_status,
+            Invoice.efi_barcode,
+            Invoice.efi_payment_url,
+            Invoice.efi_pdf_url,
+            Invoice.efi_pix_qrcode,
+            Invoice.efi_payment_receipt_url,
+            Invoice.created_at,
+            Invoice.updated_at,
+        ),
+        selectinload(Invoice.customer),
+    )
 
     today = date.today()
     if status == "upcoming":
@@ -282,8 +387,6 @@ async def get_summary(
     user: User = Depends(get_current_user),
 ):
     """Resumo financeiro para o dashboard."""
-    now = datetime.now(timezone.utc)
-    current_month = f"{now.year}-{now.month:02d}"
     month_start, next_month_start = _current_month_range()
 
     result = await db.execute(
@@ -340,7 +443,10 @@ async def get_invoice(
     user: User = Depends(get_current_user),
 ):
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer))
+        select(Invoice).options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.documents),
+        )
         .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
@@ -365,6 +471,119 @@ async def get_invoice_events(
     return list(result.scalars().all())
 
 
+@router.get("/{invoice_id}/documents", response_model=list[InvoiceDocumentResponse])
+async def list_invoice_documents(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    parsed_id = uuid.UUID(invoice_id)
+    invoice_exists = await db.scalar(select(func.count()).where(Invoice.id == parsed_id))
+    if not invoice_exists:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    result = await db.execute(
+        select(InvoiceDocument)
+        .where(InvoiceDocument.invoice_id == parsed_id)
+        .order_by(InvoiceDocument.created_at.desc())
+    )
+    return [_document_response(document) for document in result.scalars().all()]
+
+
+@router.post("/{invoice_id}/documents", response_model=InvoiceDocumentResponse, status_code=201)
+async def upload_invoice_document(
+    invoice_id: str,
+    data: InvoiceDocumentUpload,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(invoice_id)))
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+
+    try:
+        _, raw, detected_mime = decode_base64_upload(data.file_base64, "bin")
+        if detected_mime not in {"application/octet-stream", data.mime_type}:
+            raise ValueError("Tipo declarado não corresponde ao arquivo enviado")
+        validate_receipt_upload(raw, data.mime_type)
+        document = await store_invoice_document(
+            db,
+            invoice,
+            DocumentPayload(
+                raw=raw,
+                document_type=data.document_type,
+                source="admin_upload",
+                original_name=data.original_name,
+                mime_type=data.mime_type,
+                notes=data.notes,
+                metadata={"uploaded_by": str(admin.id)},
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="payment_document_uploaded",
+        previous_status=invoice.status,
+        new_status=invoice.status,
+        user=admin,
+        payload={"document_id": str(document.id), "document_type": document.document_type},
+    )
+    return _document_response(document)
+
+
+@router.get("/{invoice_id}/documents/{document_id}/download")
+async def download_invoice_document(
+    invoice_id: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(InvoiceDocument).where(
+            InvoiceDocument.id == uuid.UUID(document_id),
+            InvoiceDocument.invoice_id == uuid.UUID(invoice_id),
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    raw = await read_invoice_document(document)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Arquivo não encontrado no storage")
+    safe_name = document.original_name.replace('"', "").replace("\r", "").replace("\n", "")
+    return StreamingResponse(
+        BytesIO(raw),
+        media_type=document.mime_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+@router.delete("/{invoice_id}/documents/{document_id}", status_code=204)
+async def delete_invoice_document(
+    invoice_id: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(InvoiceDocument).where(
+            InvoiceDocument.id == uuid.UUID(document_id),
+            InvoiceDocument.invoice_id == uuid.UUID(invoice_id),
+        )
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    if document.document_type in {BOLETO_PDF, "efi_payment_event"}:
+        raise HTTPException(status_code=409, detail="Documentos técnicos imutáveis não podem ser excluídos")
+    await asyncio.to_thread(delete_photo, document.object_key)
+    await db.delete(document)
+    await db.flush()
+
+
 @router.get("/{invoice_id}/pdf")
 async def download_pdf(
     invoice_id: str,
@@ -379,19 +598,12 @@ async def download_pdf(
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
 
-    if not invoice.pdf_data:
-        if invoice.efi_pdf_url:
-            pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url)
-            if pdf_data:
-                invoice.pdf_data = pdf_data
-                await db.flush()
-            else:
-                raise HTTPException(status_code=404, detail="PDF não disponível")
-        else:
-            raise HTTPException(status_code=404, detail="PDF não disponível")
+    pdf_data = await _get_or_fetch_boleto_pdf(db, invoice, source="invoice_download")
+    if not pdf_data:
+        raise HTTPException(status_code=404, detail="PDF não disponível")
 
     return StreamingResponse(
-        BytesIO(invoice.pdf_data),
+        BytesIO(pdf_data),
         media_type="application/pdf",
         headers={"Content-Disposition": f"attachment; filename=boleto_{invoice_id[:8]}.pdf"},
     )
@@ -845,6 +1057,20 @@ async def force_emit_boleto(
         settings = await _get_system_settings(db)
         previous_status = invoice.status
         await _emit_invoice_charge(invoice, invoice.customer, settings, _invoice_charge_message(invoice))
+        if invoice.efi_pdf_url:
+            try:
+                await _get_or_fetch_boleto_pdf(db, invoice, source="manual_emit")
+            except Exception as exc:
+                _record_invoice_event(
+                    db,
+                    invoice=invoice,
+                    event_type="boleto_document_pending",
+                    previous_status=previous_status,
+                    new_status=invoice.status,
+                    user=admin,
+                    reason="Cobrança emitida, mas PDF ainda não foi persistido no R2",
+                    payload={"error": str(exc)},
+                )
         _record_invoice_event(
             db,
             invoice=invoice,
@@ -942,30 +1168,27 @@ async def send_invoice_whatsapp(
             detail="A fatura ainda não possui cobranca emitida na Efí.",
         )
 
-    if not invoice.pdf_data:
-        try:
-            invoice.pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url or "")
-            if invoice.pdf_data:
-                await db.flush()
-        except Exception as exc:
-            _record_invoice_event(
-                db,
-                invoice=invoice,
-                event_type="whatsapp_invoice_failed",
-                previous_status=invoice.status,
-                new_status=invoice.status,
-                user=admin,
-                reason="Falha ao baixar PDF da cobrança",
-                payload={"error": str(exc), "efi_pdf_url": invoice.efi_pdf_url},
-            )
-            return InvoiceWhatsAppDispatchResponse(
-                invoice_id=invoice.id,
-                status="failed",
-                reason="pdf_fetch_error",
-                detail=f"Nao foi possivel obter o PDF da cobranca: {exc}",
-            )
+    try:
+        pdf_data = await _get_or_fetch_boleto_pdf(db, invoice, source="whatsapp_dispatch")
+    except Exception as exc:
+        _record_invoice_event(
+            db,
+            invoice=invoice,
+            event_type="whatsapp_invoice_failed",
+            previous_status=invoice.status,
+            new_status=invoice.status,
+            user=admin,
+            reason="Falha ao baixar PDF da cobrança",
+            payload={"error": str(exc), "efi_pdf_url": invoice.efi_pdf_url},
+        )
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id,
+            status="failed",
+            reason="pdf_fetch_error",
+            detail=f"Nao foi possivel obter o PDF da cobranca: {exc}",
+        )
 
-    if not invoice.pdf_data:
+    if not pdf_data:
         if invoice.efi_payment_url:
             text = _append_payment_link(base_message, invoice)
             wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
@@ -1007,7 +1230,7 @@ async def send_invoice_whatsapp(
 
     wa_result = await whatsapp_service.send_invoice_document(
         phone=invoice.customer.phone,
-        pdf_data=invoice.pdf_data,
+        pdf_data=pdf_data,
         filename=f"boleto_{str(invoice.id)[:8]}.pdf",
         caption=_append_payment_link(base_message, invoice),
     )

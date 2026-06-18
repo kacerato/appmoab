@@ -83,6 +83,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Response-Time-Ms", "X-Request-ID", "Server-Timing"],
 )
 
 os.makedirs(settings.upload_dir, exist_ok=True)

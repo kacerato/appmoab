@@ -1,5 +1,6 @@
 import logging
 import time
+import uuid
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 
@@ -74,6 +75,7 @@ def _cache_control(request: Request, response: Response) -> str:
 
 async def performance_and_security_middleware(request: Request, call_next: RequestHandler) -> Response:
     started = time.perf_counter()
+    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
 
     if _rate_limited(request):
         return JSONResponse(
@@ -86,6 +88,8 @@ async def performance_and_security_middleware(request: Request, call_next: Reque
     duration_ms = round((time.perf_counter() - started) * 1000, 1)
 
     response.headers["X-Response-Time-Ms"] = str(duration_ms)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["Server-Timing"] = f"app;dur={duration_ms}"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")

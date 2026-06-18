@@ -5,7 +5,21 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore, CheckCircle2, RotateCcw, Calculator, BellRing, Pencil } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { fileToDataUrl } from '@/lib/file-base64';
+import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore, CheckCircle2, RotateCcw, Calculator, BellRing, Pencil, Upload, FileCheck2 } from 'lucide-react';
+
+interface InvoiceDocument {
+  id: string;
+  document_type: string;
+  source: string;
+  original_name: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string;
+  notes: string | null;
+  created_at: string;
+}
 
 interface Invoice {
   id: string;
@@ -41,6 +55,8 @@ interface Invoice {
   overdue_charges_allowed: boolean;
   overdue_charge_blocked_reason: string | null;
   has_pdf: boolean;
+  document_count: number;
+  documents: InvoiceDocument[];
   created_at: string;
 }
 
@@ -66,11 +82,14 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const { id } = use(params);
   const router = useRouter();
   const { confirm, notify, prompt } = useAppFeedback();
+  const { isAdmin } = useAuth();
   const [inv, setInv] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [whatsAppFeedback, setWhatsAppFeedback] = useState<string | null>(null);
   const [events, setEvents] = useState<InvoiceEvent[]>([]);
+  const [documents, setDocuments] = useState<InvoiceDocument[]>([]);
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -79,6 +98,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     ])
       .then(([invoice, invoiceEvents]) => {
         setInv(invoice);
+        setDocuments(invoice.documents || []);
         setEvents(invoiceEvents);
       })
       .catch(console.error)
@@ -131,6 +151,47 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const reloadInvoice = async () => {
     const updated = await api.get<Invoice>(`/invoices/${id}`, { skipCache: true });
     setInv(updated);
+    setDocuments(updated.documents || []);
+  };
+
+  const downloadDocument = async (invoiceDocument: InvoiceDocument) => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'}/invoices/${id}/documents/${invoiceDocument.id}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Documento indisponível');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = invoiceDocument.original_name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      notify('Falha ao baixar documento', error instanceof Error ? error.message : 'Arquivo indisponível.', 'error');
+    }
+  };
+
+  const uploadReceipt = async () => {
+    if (!receiptFile) return;
+    setActionLoading('receipt');
+    try {
+      const uploaded = await api.post<InvoiceDocument>(`/invoices/${id}/documents`, {
+        file_base64: await fileToDataUrl(receiptFile),
+        original_name: receiptFile.name,
+        mime_type: receiptFile.type,
+        document_type: receiptFile.type === 'application/pdf' ? 'payment_confirmation_pdf' : 'payment_receipt_upload',
+      });
+      setDocuments(current => [uploaded, ...current.filter(item => item.id !== uploaded.id)]);
+      setReceiptFile(null);
+      await reloadEvents();
+      notify('Comprovante armazenado', 'O documento foi incluído no dossiê privado desta fatura.', 'success');
+    } catch (error) {
+      notify('Falha ao anexar comprovante', error instanceof Error ? error.message : 'Não foi possível enviar o arquivo.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   const reloadEvents = async () => {
@@ -440,6 +501,45 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
+        <div className="card-header">
+          <span className="card-title">Documentos da cobrança</span>
+          <span className="badge active">{documents.length} arquivo(s)</span>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {documents.length === 0 && (
+            <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>O dossiê ainda não possui documentos persistidos.</div>
+          )}
+          {documents.map((document) => (
+            <div key={document.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 12, border: '1px solid var(--border)', borderRadius: 'var(--radius-md)' }}>
+              <FileCheck2 size={18} color="var(--accent)" />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{document.original_name}</div>
+                <div style={{ color: 'var(--text-muted)', fontSize: 11, marginTop: 3 }}>
+                  {documentTypeLabel(document.document_type)} · {(document.size_bytes / 1024).toFixed(1)} KB · {new Date(document.created_at).toLocaleString('pt-BR')}
+                </div>
+              </div>
+              <button className="btn btn-secondary btn-sm" onClick={() => downloadDocument(document)}>
+                <Download size={14} /> Baixar
+              </button>
+            </div>
+          ))}
+        </div>
+        {isAdmin && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+            <input
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,image/webp"
+              onChange={(event) => setReceiptFile(event.target.files?.[0] || null)}
+              style={{ flex: 1 }}
+            />
+            <button className="btn btn-primary btn-sm" onClick={uploadReceipt} disabled={!receiptFile || actionLoading === 'receipt'}>
+              {actionLoading === 'receipt' ? <Loader2 size={14} className="spinner" /> : <Upload size={14} />} Anexar comprovante
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
         <div className="card-header"><span className="card-title">Histórico financeiro</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {events.length === 0 && (
@@ -512,4 +612,14 @@ function eventLabel(s: string) {
     whatsapp_invoice_failed: 'Falha no WhatsApp',
   };
   return m[s] || s;
+}
+
+function documentTypeLabel(type: string) {
+  const labels: Record<string, string> = {
+    boleto_pdf: 'Boleto PDF',
+    efi_payment_event: 'Confirmação técnica Efí',
+    payment_receipt_upload: 'Comprovante enviado',
+    payment_confirmation_pdf: 'Comprovante de pagamento',
+  };
+  return labels[type] || type;
 }

@@ -17,15 +17,15 @@ from app.database import async_session_factory, get_db
 from app.models.notification import Notification
 from app.models.reading import Reading
 from app.models.hydrometer import Hydrometer
-from app.models.customer import Customer
 from app.models.invoice import Invoice
 from app.models.invoice_event import InvoiceEvent
 from app.models.system_setting import SystemSetting
 from app.models.whatsapp_message import WhatsAppMessage
 from app.models.user import User
+from app.models.vision_inference import VisionInference
 from app.schemas.reading import (
     ReadingCreate, ReadingOCRResult, ReadingConfirm,
-    ReadingApprove, ReadingReject, ReadingResponse, ReadingListResponse,
+    ReadingReject, ReadingResponse, ReadingListResponse,
 )
 from app.services.glm_ocr import glm_ocr_service
 from app.services.billing import calculate_billing
@@ -35,6 +35,7 @@ from app.services.billing_policy import (
     should_block_overdue_charges_for_late_reading,
 )
 from app.services.efi_api import efi_service
+from app.services.invoice_documents import get_or_create_boleto_pdf
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
     notification_flow_enabled,
@@ -312,6 +313,17 @@ async def create_reading(
     if not hydrometer:
         raise HTTPException(status_code=404, detail="Hidrômetro não encontrado")
 
+    vision_inference = None
+    if data.vision_inference_id:
+        vision_inference = await db.get(VisionInference, data.vision_inference_id)
+        if (
+            not vision_inference
+            or vision_inference.collaborator_id != user.id
+            or (vision_inference.hydrometer_id and vision_inference.hydrometer_id != hydrometer.id)
+        ):
+            raise HTTPException(status_code=400, detail="Inferência visual não pertence a esta leitura")
+        vision_inference.hydrometer_id = hydrometer.id
+
     await _ensure_cycle_accepts_new_reading(db, hydrometer, data.captured_at)
 
     # Salva foto
@@ -370,6 +382,7 @@ async def create_reading(
         photo_extracted_code=data.confirmed_code or ocr_result.get("codigo"),
         photo_extracted_value=ocr_result.get("leitura_m3"),
         ocr_confidence=ocr_result.get("confianca"),
+        vision_inference_id=data.vision_inference_id,
         latitude=data.latitude,
         longitude=data.longitude,
         location_accuracy_meters=data.location_accuracy_meters,
@@ -461,6 +474,16 @@ async def approve_reading(
     reading.status = "approved"
     reading.approved_by = admin.id
     reading.approved_at = datetime.now(timezone.utc)
+    if reading.vision_inference_id:
+        inference = await db.get(VisionInference, reading.vision_inference_id)
+        if inference:
+            inference.confirmed_value = reading.current_value
+            inference.confirmed_at = inference.confirmed_at or reading.approved_at
+            inference.was_correct = (
+                inference.predicted_value is not None
+                and abs(float(inference.predicted_value) - float(reading.current_value)) <= 0.01
+            )
+            inference.approved_for_training = True
 
     # Atualiza última leitura do hidrômetro
     hydrometer = reading.hydrometer
@@ -594,9 +617,11 @@ async def approve_reading(
 
     await db.flush()
     if system_settings.auto_send_invoice_on_approval and (
-        invoice.pdf_data or invoice.efi_pdf_url or invoice.efi_payment_url
+        invoice.efi_pdf_url or invoice.efi_payment_url
     ):
         background_tasks.add_task(_send_invoice_generated_whatsapp, str(invoice.id))
+    elif invoice.efi_pdf_url:
+        background_tasks.add_task(_persist_invoice_boleto_document, str(invoice.id))
 
     return {
         "message": "Leitura aprovada e fatura gerada",
@@ -611,6 +636,25 @@ async def approve_reading(
         "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
         "overdue_charges_allowed": invoice.overdue_charges_allowed,
     }
+
+
+async def _persist_invoice_boleto_document(invoice_id: str) -> None:
+    async with async_session_factory() as db:
+        result = await db.execute(select(Invoice).where(Invoice.id == uuid.UUID(invoice_id)))
+        invoice = result.scalar_one_or_none()
+        if not invoice or not invoice.efi_pdf_url:
+            return
+        try:
+            await get_or_create_boleto_pdf(
+                db,
+                invoice,
+                efi_service.baixar_pdf,
+                source="reading_approval",
+            )
+            await db.commit()
+        except Exception as exc:
+            await db.rollback()
+            logger.warning("Persistencia do boleto %s no R2 ficou pendente: %s", invoice_id, exc)
 
 
 async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
@@ -652,18 +696,21 @@ async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
         db.add(notification)
 
         try:
-            if not invoice.pdf_data and invoice.efi_pdf_url:
-                try:
-                    invoice.pdf_data = await efi_service.baixar_pdf(invoice.efi_pdf_url)
-                    if invoice.pdf_data:
-                        await db.flush()
-                except Exception as exc:
-                    logger.warning("Nao foi possivel baixar PDF da fatura %s: %s", invoice.id, exc)
+            pdf_data = None
+            try:
+                pdf_data = await get_or_create_boleto_pdf(
+                    db,
+                    invoice,
+                    efi_service.baixar_pdf,
+                    source="reading_approval_whatsapp",
+                )
+            except Exception as exc:
+                logger.warning("Nao foi possivel persistir PDF da fatura %s no R2: %s", invoice.id, exc)
 
-            if invoice.pdf_data:
+            if pdf_data:
                 wa_result = await whatsapp_service.send_invoice_document(
                     phone=invoice.customer.phone,
-                    pdf_data=invoice.pdf_data,
+                    pdf_data=pdf_data,
                     filename=f"boleto_{str(invoice.id)[:8]}.pdf",
                     caption=text,
                 )

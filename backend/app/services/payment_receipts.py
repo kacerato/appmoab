@@ -1,15 +1,24 @@
 """Persistencia de comprovantes tecnicos de pagamento."""
 
-import base64
 import json
 from datetime import datetime, timezone
 from typing import Any
 
 from app.models.invoice import Invoice
-from app.utils.storage import save_binary_from_base64
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.services.invoice_documents import (
+    DocumentPayload,
+    EFI_PAYMENT_EVENT,
+    store_invoice_document,
+)
 
 
-def store_efi_payment_receipt(invoice: Invoice, payload: dict[str, Any]) -> str:
+async def store_efi_payment_receipt(
+    db: AsyncSession,
+    invoice: Invoice,
+    payload: dict[str, Any],
+) -> str:
     document = {
         "provider": "efi",
         "invoice_id": str(invoice.id),
@@ -23,9 +32,17 @@ def store_efi_payment_receipt(invoice: Invoice, payload: dict[str, Any]) -> str:
         "payload": payload,
     }
     raw = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
-    encoded = base64.b64encode(raw).decode("utf-8")
-    return save_binary_from_base64(
-        f"data:application/json;base64,{encoded}",
-        prefix=f"efi_receipt_{invoice.id}",
-        fallback_ext="json",
+    document = await store_invoice_document(
+        db,
+        invoice,
+        DocumentPayload(
+            raw=raw,
+            document_type=EFI_PAYMENT_EVENT,
+            source="efi_webhook",
+            original_name=f"confirmacao_efi_{str(invoice.id)[:8]}.json",
+            mime_type="application/json",
+            provider_document_id=invoice.efi_charge_id,
+            metadata={"status": invoice.status, "efi_status": invoice.efi_status},
+        ),
     )
+    return document.object_key

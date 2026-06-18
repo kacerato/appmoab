@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import String, Float, Date, DateTime, ForeignKey, Text, Enum as SAEnum, LargeBinary
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, deferred
 
 from app.database import Base
 
@@ -71,7 +71,7 @@ class Invoice(Base):
     efi_raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # ── PDF do Boleto ──────────────────────────────────────────
-    pdf_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    pdf_data: Mapped[bytes | None] = deferred(mapped_column(LargeBinary, nullable=True))
 
     # ── Timestamps ─────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
@@ -89,6 +89,12 @@ class Invoice(Base):
     reading = relationship("Reading", back_populates="invoice")
     notifications = relationship("Notification", back_populates="invoice", cascade="all, delete-orphan")
     events = relationship("InvoiceEvent", back_populates="invoice", cascade="all, delete-orphan")
+    documents = relationship(
+        "InvoiceDocument",
+        back_populates="invoice",
+        cascade="all, delete-orphan",
+        order_by="InvoiceDocument.created_at.desc()",
+    )
 
     def __repr__(self) -> str:
         return f"<Invoice R${self.amount:.2f} [{self.status}] due:{self.due_date}>"

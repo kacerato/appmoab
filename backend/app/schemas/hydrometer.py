@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class HydrometerBase(BaseModel):
@@ -69,6 +69,14 @@ class HydrometerListResponse(BaseModel):
 
 class HydrometerIdentifyRequest(BaseModel):
     photo_base64: str
+    frames_base64: list[str] = Field(default_factory=list)
+    hydrometer_id: UUID | None = None
+    stage: str = "reading"
+    red_digits: int | None = 3
+    black_digits: int | None = None
+    previous_value: float | None = None
+    hydrometer_brand: str | None = None
+    hydrometer_model: str | None = None
 
 
 class HydrometerResolveCodeRequest(BaseModel):
@@ -76,6 +84,7 @@ class HydrometerResolveCodeRequest(BaseModel):
 
 
 class KimiVisionFeedbackRequest(BaseModel):
+    inference_id: UUID | None = None
     photo_base64: str | None = None
     predicted_code: str | None = None
     predicted_value: float | None = None

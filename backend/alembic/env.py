@@ -10,7 +10,7 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import get_settings
-from app.database import Base
+from app.database import Base, db_url, ssl_context
 
 # Importa todos os modelos para que o Alembic os detecte
 from app.models import *  # noqa: F401, F403
@@ -24,7 +24,7 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Override da URL do banco
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", db_url)
 
 
 def run_migrations_offline() -> None:
@@ -50,6 +50,7 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"ssl": ssl_context},
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

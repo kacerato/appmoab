@@ -253,6 +253,17 @@ export default function CameraScreen() {
         base64: true,
         quality: 0.8,
       });
+      const framesBase64: string[] = [];
+      if (stage === 'reading') {
+        for (let index = 0; index < 2; index += 1) {
+          try {
+            const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.72, skipProcessing: true });
+            if (frame?.base64) framesBase64.push(frame.base64);
+          } catch {
+            break;
+          }
+        }
+      }
 
       if (stage === 'code') {
         navigation.navigate('ManualCode', {
@@ -283,6 +294,7 @@ export default function CameraScreen() {
       navigation.navigate('OCRResult', {
         photoBase64: photo.base64,
         photoUri: photo.uri,
+        framesBase64,
         latitude: location?.coords.latitude || null,
         longitude: location?.coords.longitude || null,
         locationAccuracyMeters: location?.coords.accuracy || null,

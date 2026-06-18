@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { AuthProvider, useAuth } from '@/lib/auth';
 import Sidebar from '@/components/Sidebar';
 import { api } from '@/lib/api';
+import { PRIMARY_DATA_PATHS, SECONDARY_DATA_PATHS } from '@/lib/route-prefetch';
 
 function ProtectedShell({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -26,21 +27,16 @@ function ProtectedShell({ children }: { children: React.ReactNode }) {
         '/configuracoes',
       ].forEach(route => router.prefetch(route));
 
-      const warmup = () => api.prefetch([
-        '/dashboard?scope=month',
-        '/customers?page=1&per_page=20',
-        '/invoices?page=1&per_page=20',
-        '/readings?status=pending&per_page=50',
-        '/tariffs',
-        '/system-settings',
-      ]);
+      // As telas mais usadas aquecem imediatamente. O restante fica para ociosidade.
+      api.prefetch(PRIMARY_DATA_PATHS);
+      const warmup = () => api.prefetch(SECONDARY_DATA_PATHS);
 
       if ('requestIdleCallback' in window) {
-        const id = window.requestIdleCallback(warmup, { timeout: 1800 });
+        const id = window.requestIdleCallback(warmup, { timeout: 700 });
         return () => window.cancelIdleCallback(id);
       }
 
-      const id = globalThis.setTimeout(warmup, 700);
+      const id = globalThis.setTimeout(warmup, 250);
       return () => globalThis.clearTimeout(id);
     }
   }, [loading, user, router]);

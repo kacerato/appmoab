@@ -25,11 +25,15 @@ interface OCRData {
 }
 
 interface VisionVerdict {
+  inference_id: string | null;
   predicted_code: string | null;
   predicted_value: number | null;
   confidence: number | null;
+  auto_fill_allowed: boolean;
   red_digits: number | null;
   black_digits: number | null;
+  quality?: { usable?: boolean; recapture_reason?: string | null };
+  flags?: string[];
 }
 
 export default function OCRResultScreen() {
@@ -39,6 +43,7 @@ export default function OCRResultScreen() {
   const {
     photoBase64,
     photoUri,
+    framesBase64 = [],
     latitude,
     longitude,
     locationAccuracyMeters,
@@ -70,10 +75,25 @@ export default function OCRResultScreen() {
 
   useEffect(() => {
     setLoading(false);
-    api.post<VisionVerdict>('/hydrometers/vision-verdict', { photo_base64: photoBase64 })
-      .then(setVerdict)
+    api.post<VisionVerdict>('/hydrometers/vision-verdict', {
+      photo_base64: photoBase64,
+      frames_base64: framesBase64,
+      hydrometer_id: hydrometerId,
+      stage: 'reading',
+      red_digits: selectedRedDigits,
+      black_digits: blackDigits,
+      previous_value: lastReading,
+      hydrometer_brand: hydrometerBrand || null,
+      hydrometer_model: hydrometerModel || null,
+    })
+      .then(result => {
+        setVerdict(result);
+        if (result.auto_fill_allowed && result.predicted_value !== null) {
+          setCurrentValue(current => current || String(result.predicted_value));
+        }
+      })
       .catch(() => setVerdict(null));
-  }, [photoBase64]);
+  }, [blackDigits, framesBase64, hydrometerBrand, hydrometerId, hydrometerModel, lastReading, photoBase64, selectedRedDigits]);
 
   const confirmReading = async () => {
     if (normalizedCurrentValue === null) return;
@@ -98,10 +118,12 @@ export default function OCRResultScreen() {
         captured_at: capturedAt,
         current_value: normalizedCurrentValue,
         confirmed_code: hydrometerCode || null,
+        vision_inference_id: verdict?.inference_id || null,
       });
       setOcrData(result);
       setReadingId(result.reading_id);
       await api.post('/hydrometers/vision-feedback', {
+        inference_id: verdict?.inference_id || null,
         photo_base64: photoBase64,
         stage: 'reading',
         predicted_code: verdict?.predicted_code || null,
@@ -176,6 +198,15 @@ export default function OCRResultScreen() {
             <Field label="Localização da coleta" value={locationLabel} />
             <Field label="Capturado em" value={new Date(capturedAt).toLocaleString('pt-BR')} />
           </View>
+
+          {verdict?.quality?.usable === false && (
+            <View style={[shared.card, { borderColor: colors.warning, borderWidth: 1 }] }>
+              <Text style={[shared.sectionTitle, { color: colors.warning }]}>Foto precisa de atenção</Text>
+              <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
+                {verdict.quality.recapture_reason || 'A visão local encontrou baixa qualidade. Confirme manualmente ou refaça a captura.'}
+              </Text>
+            </View>
+          )}
 
           <View style={shared.card}>
             <Text style={shared.sectionTitle}>{isInstallation ? 'Valor inicial informado' : 'Leitura digitada'}</Text>

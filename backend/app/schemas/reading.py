@@ -17,6 +17,7 @@ class ReadingCreate(BaseModel):
     location_accuracy_meters: float | None = None
     captured_at: datetime
     anomaly_override_reason: str | None = None
+    vision_inference_id: UUID | None = None
 
 
 class ReadingOCRResult(BaseModel):
@@ -56,6 +57,7 @@ class ReadingResponse(BaseModel):
     photo_extracted_code: str | None
     photo_extracted_value: float | None
     ocr_confidence: float | None
+    vision_inference_id: UUID | None = None
     latitude: float | None
     longitude: float | None
     location_accuracy_meters: float | None = None
