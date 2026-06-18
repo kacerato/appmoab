@@ -229,7 +229,7 @@ async def store_kimi_vision_feedback(
     was_correct = None
     if data.stage == "code" and confirmed_code:
         was_correct = predicted_code == confirmed_code
-    elif data.stage == "reading" and data.confirmed_value is not None and data.predicted_value is not None:
+    elif data.stage in ("reading", "dev_test") and data.confirmed_value is not None and data.predicted_value is not None:
         was_correct = abs(float(data.confirmed_value) - float(data.predicted_value)) <= 0.01
 
     lesson = "Aguardando confirmacao humana."
