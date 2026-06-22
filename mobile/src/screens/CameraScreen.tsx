@@ -255,10 +255,12 @@ export default function CameraScreen() {
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        base64: true,
+        // No teste livre, o arquivo e lido diretamente pelo URI na tela
+        // seguinte. Evita transportar megabytes dentro do estado de navegacao.
+        base64: stage !== 'dev_test',
         quality: stage === 'dev_test' ? 0.9 : 0.8,
       });
-      if (!photo?.base64 || !photo?.uri) {
+      if (!photo?.uri || (stage !== 'dev_test' && !photo?.base64)) {
         throw new Error('A câmera não retornou a imagem. Tente novamente mantendo o aparelho firme.');
       }
       const framesBase64: string[] = [];
@@ -295,7 +297,6 @@ export default function CameraScreen() {
 
       if (stage === 'dev_test') {
         navigation.navigate('DevVisionTest', {
-          photoBase64: photo.base64,
           photoUri: photo.uri,
           framesBase64: [],
           capturedAt: new Date().toISOString(),
