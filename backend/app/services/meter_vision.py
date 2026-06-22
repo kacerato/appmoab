@@ -15,7 +15,7 @@ import threading
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFile, ImageFont
 
 from app.config import get_settings
 
@@ -88,8 +88,22 @@ class VisionResult:
 def _decode_image(data_uri: str):
     if np is None:
         raise RuntimeError("Dependencias locais de visao nao instaladas")
+    if not isinstance(data_uri, str) or not data_uri.strip():
+        raise ValueError("Imagem vazia")
     payload = data_uri.split(",", 1)[1] if data_uri.startswith("data:") and "," in data_uri else data_uri
-    raw = base64.b64decode(payload)
+    payload = re.sub(r"\s+", "", payload).replace("-", "+").replace("_", "/")
+    payload += "=" * (-len(payload) % 4)
+    raw = base64.b64decode(payload, validate=False)
+    if len(raw) < 32:
+        raise ValueError("Imagem capturada incompleta")
+
+    # OpenCV tolera melhor pequenas variacoes de JPEG geradas por Android.
+    decoded = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is not None and decoded.size:
+        return decoded
+
+    # Fallback para metadados/orientacoes que o imdecode local nao reconheceu.
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
     image = Image.open(io.BytesIO(raw)).convert("RGB")
     return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
 

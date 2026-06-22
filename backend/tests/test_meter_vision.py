@@ -6,6 +6,7 @@ import numpy as np
 from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
+    _decode_image,
     _fuse_digit_sequences,
     _red_roller_strip_candidate,
     _temporal_candidates,
@@ -38,6 +39,16 @@ def test_local_meter_vision_returns_structured_contract():
     assert 0 <= result.confidence <= 1
     assert "usable" in result.quality
     assert result.rectified_jpeg and result.rectified_jpeg.startswith(b"\xff\xd8")
+
+
+def test_mobile_base64_without_padding_or_with_line_breaks_is_decoded():
+    encoded = _synthetic_meter_data_uri().split(",", 1)[1]
+    without_padding = encoded.rstrip("=")
+    with_line_breaks = "\n".join(without_padding[index:index + 71] for index in range(0, len(without_padding), 71))
+
+    decoded = _decode_image(with_line_breaks)
+
+    assert decoded.shape[:2] == (420, 900)
 
 
 def test_bundled_field_model_and_red_roller_anchor_are_available():

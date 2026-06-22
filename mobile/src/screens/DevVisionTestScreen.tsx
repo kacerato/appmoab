@@ -10,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import * as FileSystem from 'expo-file-system/legacy';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
@@ -51,6 +52,8 @@ export default function DevVisionTestScreen() {
 
   // Verdict processing states
   const [verdictLoading, setVerdictLoading] = useState(false);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [photoBase64, setPhotoBase64] = useState<string | null>(null);
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
   const [verdictError, setVerdictError] = useState<string | null>(null);
   const [verdictAttempt, setVerdictAttempt] = useState(0);
@@ -70,8 +73,40 @@ export default function DevVisionTestScreen() {
   // Params from camera capture
   const params = route.params || {};
   const photoUri = params.photoUri;
-  const photoBase64 = params.photoBase64;
+  const incomingPhotoBase64 = params.photoBase64;
   const framesBase64 = params.framesBase64 || [];
+
+  useEffect(() => {
+    if (!photoUri && !incomingPhotoBase64) {
+      setPhotoBase64(null);
+      return;
+    }
+
+    let active = true;
+    const loadCapturedImage = async () => {
+      setImageLoading(true);
+      setVerdictError(null);
+      try {
+        const encoded = incomingPhotoBase64 || await FileSystem.readAsStringAsync(photoUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        if (!encoded || encoded.length < 128) {
+          throw new Error('O arquivo capturado está vazio ou incompleto. Refaça a foto.');
+        }
+        if (active) setPhotoBase64(encoded.replace(/\s+/g, ''));
+      } catch (error) {
+        if (!active) return;
+        setPhotoBase64(null);
+        setVerdictError(error instanceof Error ? error.message : 'Não foi possível ler a foto capturada.');
+      } finally {
+        if (active) setImageLoading(false);
+      }
+    };
+    void loadCapturedImage();
+    return () => {
+      active = false;
+    };
+  }, [incomingPhotoBase64, photoUri]);
 
   // When photo is received, call the local vision model verdict API
   useEffect(() => {
@@ -81,6 +116,7 @@ export default function DevVisionTestScreen() {
     setVerdictLoading(true);
     setVerdict(null);
     setVerdictError(null);
+    setPhotoBase64(null);
     setTestResult(null);
 
     api.post<VisionVerdict>('/hydrometers/vision-verdict', {
@@ -255,7 +291,7 @@ export default function DevVisionTestScreen() {
       {/* STEP 2: Verdict and Quality Metrics */}
       {photoUri && (
         <View>
-          {verdictLoading ? (
+          {imageLoading || verdictLoading ? (
             <View style={shared.card}>
               <ActivityIndicator size="large" color={colors.cyan} />
               <Text style={styles.loadingVerdictText}>Executando inteligência local...</Text>
