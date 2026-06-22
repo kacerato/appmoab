@@ -116,7 +116,6 @@ export default function DevVisionTestScreen() {
     setVerdictLoading(true);
     setVerdict(null);
     setVerdictError(null);
-    setPhotoBase64(null);
     setTestResult(null);
 
     api.post<VisionVerdict>('/hydrometers/vision-verdict', {
@@ -148,8 +147,6 @@ export default function DevVisionTestScreen() {
     return () => {
       active = false;
     };
-    // A tentativa precisa ocorrer também quando o hidrômetro é restaurado do
-    // cache depois que a foto já chegou da câmera.
   }, [photoBase64, selectedRedDigits, verdictAttempt]);
 
   const handleOpenCamera = () => {
@@ -222,6 +219,7 @@ export default function DevVisionTestScreen() {
       photoUri: null,
       framesBase64: [],
     });
+    setPhotoBase64(null);
     setVerdict(null);
     setVerdictError(null);
     setManualValue('');
