@@ -45,3 +45,6 @@ mobile/android/
 *.log
 coverage/
 .pytest_cache/
+*.apk
+*.aab
+mobile/app-debug.apk
