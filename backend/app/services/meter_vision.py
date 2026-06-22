@@ -164,6 +164,138 @@ def _display_candidate(image):
     return np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype="float32"), True
 
 
+def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
+    """Localiza a janela numerica usando os roletes vermelhos como ancora.
+
+    Nos medidores mecanicos usados pelo AquaMoab, os tres ultimos roletes sao
+    vermelhos. Essa assinatura e muito mais estavel que procurar qualquer
+    retangulo na foto inteira (onde tampa, etiqueta e textos competem com o
+    visor). O retangulo vermelho e expandido para a esquerda pelo numero de
+    roletes pretos e ja preserva a inclinacao real do mostrador.
+    """
+    if red_digits <= 0:
+        return None
+    height, width = image.shape[:2]
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    red = cv2.inRange(hsv, np.array([0, 42, 35]), np.array([23, 255, 255]))
+    red |= cv2.inRange(hsv, np.array([154, 42, 35]), np.array([179, 255, 255]))
+
+    # Exclui o ponteiro inferior e elementos das bordas antes de agrupar os
+    # tres algarismos coloridos da janela.
+    region = np.zeros_like(red)
+    region[int(height * 0.28):int(height * 0.62), int(width * 0.18):int(width * 0.96)] = 255
+    red &= region
+    cleaned = cv2.morphologyEx(
+        red,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    contours, _ = cv2.findContours(cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    components = []
+    for contour in contours:
+        x, y, component_width, component_height = cv2.boundingRect(contour)
+        area = cv2.contourArea(contour)
+        if component_height < height * 0.022 or component_height > height * 0.13:
+            continue
+        if component_width < width * 0.006 or component_width > width * 0.13:
+            continue
+        if area < image.shape[0] * image.shape[1] * 0.000018:
+            continue
+        center_x = x + component_width / 2
+        center_y = y + component_height / 2
+        if not (0.34 * width <= center_x <= 0.94 * width):
+            continue
+        components.append({
+            "contour": contour,
+            "x": x,
+            "y": y,
+            "w": component_width,
+            "h": component_height,
+            "cx": center_x,
+            "cy": center_y,
+            "area": area,
+        })
+    if not components:
+        return None
+
+    groups = []
+    for seed in components:
+        aligned = [
+            item for item in components
+            if abs(item["cy"] - seed["cy"]) <= max(item["h"], seed["h"]) * 1.30
+            and 0.45 <= item["h"] / max(seed["h"], 1) <= 2.20
+        ]
+        if len(aligned) < 2:
+            continue
+        # Mantém a sequencia horizontal mais densa; sujeira isolada não deve
+        # ampliar o visor artificialmente.
+        aligned.sort(key=lambda item: item["cx"])
+        dense = []
+        for item in aligned:
+            if not dense or item["x"] - (dense[-1]["x"] + dense[-1]["w"]) <= width * 0.085:
+                dense.append(item)
+            elif len(dense) < 2:
+                dense = [item]
+        if len(dense) < 2:
+            continue
+        x1 = min(item["x"] for item in dense)
+        x2 = max(item["x"] + item["w"] for item in dense)
+        y1 = min(item["y"] for item in dense)
+        y2 = max(item["y"] + item["h"] for item in dense)
+        span_aspect = (x2 - x1) / max(y2 - y1, 1)
+        if not (1.15 <= span_aspect <= 7.5):
+            continue
+        score = min(len(dense), red_digits + 1) * 12 + sum(item["area"] for item in dense) / 250
+        score -= abs(((y1 + y2) / 2 / height) - 0.42) * 8
+        groups.append((score, dense))
+    if not groups:
+        return None
+
+    selected = max(groups, key=lambda item: item[0])[1]
+    red_points = np.vstack([item["contour"] for item in selected])
+    red_box = _order_corners(cv2.boxPoints(cv2.minAreaRect(red_points)))
+    tl, tr, br, bl = red_box
+    horizontal = ((tr - tl) + (br - bl)) / 2
+    red_width = float(np.linalg.norm(horizontal))
+    if red_width < 1:
+        return None
+    unit_x = horizontal / red_width
+    vertical = ((bl - tl) + (br - tr)) / 2
+    red_height = float(np.linalg.norm(vertical))
+    if red_height < 1:
+        return None
+    unit_y = vertical / red_height
+
+    # A distancia entre centros e mais confiavel que a largura dos glifos — em
+    # especial quando o ultimo rolete esta subindo e apenas uma faixa dele fica
+    # vermelha. Se um dos tres glifos sumiu da mascara, reconstruimos sua
+    # posicao nominal a direita em vez de encolher toda a janela.
+    ordered_components = sorted(selected, key=lambda item: item["cx"])
+    center_distances = [
+        math.hypot(right["cx"] - left["cx"], right["cy"] - left["cy"])
+        for left, right in zip(ordered_components, ordered_components[1:])
+        if right["cx"] - left["cx"] > width * 0.025
+    ]
+    estimated_slot = float(np.median(center_distances)) if center_distances else 0.0
+    if not (red_height * 0.55 <= estimated_slot <= red_height * 3.2):
+        estimated_slot = red_width / max(min(len(selected), red_digits) * 0.84, 1)
+    slot_width = estimated_slot
+    missing_red_slots = max(red_digits - min(len(selected), red_digits), 0)
+    left_extension = slot_width * (black_digits + 0.30)
+    right_extension = slot_width * (missing_red_slots + 0.40)
+    vertical_padding = red_height * 0.22
+    corners = np.array([
+        tl - unit_x * left_extension - unit_y * vertical_padding,
+        tr + unit_x * right_extension - unit_y * vertical_padding,
+        br + unit_x * right_extension + unit_y * vertical_padding,
+        bl - unit_x * left_extension + unit_y * vertical_padding,
+    ], dtype="float32")
+    corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+    corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+    return corners
+
+
 def _rectify(image, corners):
     tl, tr, br, bl = corners
     target_width = max(int(np.linalg.norm(tr - tl)), int(np.linalg.norm(br - bl)), 320)
@@ -256,7 +388,10 @@ class _OpenCvKnnClassifier:
 
 @lru_cache(maxsize=1)
 def _trained_classifier():
-    path = settings.vision_model_path.strip()
+    bundled_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "assets", "meter-field-v2-20260622.yml")
+    )
+    path = settings.vision_model_path.strip() or bundled_path
     if not path or not os.path.exists(path):
         return None
     try:
@@ -272,10 +407,37 @@ def _trained_classifier():
 
 def _normalize_slot(slot, size=(64, 96)):
     gray = cv2.cvtColor(slot, cv2.COLOR_BGR2GRAY) if slot.ndim == 3 else slot
+    # Remove as barras verticais e as bordas superior/inferior da janela. Elas
+    # eram maiores que o proprio glifo e faziam todos os slots parecerem 3/8/9.
+    crop_x = max(int(gray.shape[1] * 0.16), 1)
+    crop_y = max(int(gray.shape[0] * 0.07), 1)
+    if gray.shape[1] > crop_x * 2 + 4 and gray.shape[0] > crop_y * 2 + 4:
+        gray = gray[crop_y:gray.shape[0] - crop_y, crop_x:gray.shape[1] - crop_x]
     gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4)).apply(gray)
-    binary = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 17, 3)
-    if binary.mean() > 127:
-        binary = 255 - binary
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, 8)
+    selected_label = None
+    selected_score = -1.0
+    image_height, image_width = binary.shape
+    for label in range(1, count):
+        x, y, component_width, component_height, area = stats[label]
+        if component_height < image_height * 0.32 or component_width < max(2, image_width * 0.055):
+            continue
+        if component_width > image_width * 0.96:
+            continue
+        center_x, center_y = centroids[label]
+        center_penalty = abs(center_x - image_width / 2) / max(image_width, 1)
+        vertical_penalty = abs(center_y - image_height / 2) / max(image_height, 1)
+        score = area * (1.25 - min(center_penalty + vertical_penalty * 0.35, 1.0))
+        if score > selected_score:
+            selected_score = score
+            selected_label = label
+    if selected_label is not None:
+        binary = np.where(labels == selected_label, 255, 0).astype("uint8")
+
     coords = cv2.findNonZero(binary)
     if coords is not None:
         x, y, w, h = cv2.boundingRect(coords)
@@ -306,11 +468,71 @@ def _template_classify(slot) -> tuple[int | None, float, list[float]]:
     return best, confidence, scores
 
 
+@lru_cache(maxsize=1)
+def _synthetic_knn_classifier():
+    """Classificador inicial treinado em fontes e degradacoes variadas.
+
+    Ele e apenas o bootstrap ate o modelo aprendido com capturas confirmadas
+    assumir. Diferente de comparar com uma unica fonte Arial, cobre serifas,
+    condensacao, deslocamento vertical, leve rotacao, blur e espessura.
+    """
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
+        "C:/Windows/Fonts/times.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/ARIALN.TTF",
+    ]
+    font_paths = [path for path in font_paths if os.path.exists(path)]
+    if not font_paths or cv2 is None or np is None:
+        return None
+    features, labels = [], []
+    for font_path in font_paths:
+        for digit in range(10):
+            for size in (64, 72, 80):
+                font = ImageFont.truetype(font_path, size=size)
+                for dx, dy, angle in ((-2, -2, -2), (0, 0, 0), (2, 2, 2), (1, -3, 1)):
+                    canvas = Image.new("L", (72, 108), 255)
+                    draw = ImageDraw.Draw(canvas)
+                    bbox = draw.textbbox((0, 0), str(digit), font=font)
+                    x = (72 - (bbox[2] - bbox[0])) // 2 - bbox[0] + dx
+                    y = (108 - (bbox[3] - bbox[1])) // 2 - bbox[1] + dy
+                    draw.text((x, y), str(digit), fill=0, font=font)
+                    canvas = canvas.rotate(angle, resample=Image.Resampling.BILINEAR, fillcolor=255)
+                    gray = np.asarray(canvas)
+                    if angle:
+                        gray = cv2.GaussianBlur(gray, (3, 3), 0.45)
+                    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                    features.append(hog_features(bgr).reshape(-1))
+                    labels.append(digit)
+    model = cv2.ml.KNearest_create()
+    model.train(np.asarray(features, dtype=np.float32), cv2.ml.ROW_SAMPLE, np.asarray(labels, dtype=np.float32))
+    return model
+
+
+def _synthetic_classify(slot) -> tuple[int | None, float, list[float]]:
+    model = _synthetic_knn_classifier()
+    if model is None:
+        return _template_classify(slot)
+    features = hog_features(slot)
+    _, result, neighbours, distances = model.findNearest(features, k=7)
+    digit = int(round(float(result[0, 0])))
+    votes = [int(round(float(value))) for value in neighbours[0]]
+    scores = [votes.count(value) / len(votes) for value in range(10)]
+    vote_share = scores[digit]
+    margin = vote_share - sorted(scores, reverse=True)[1]
+    distance_score = math.exp(-float(np.mean(distances[0])) / 850.0)
+    confidence = _clamp(vote_share * 0.62 + max(margin, 0) * 0.18 + distance_score * 0.20)
+    return digit, confidence, scores
+
+
 def _classify(slot) -> tuple[int | None, float, list[float]]:
     classifier = _trained_classifier()
     if classifier:
         return classifier.classify(slot)
-    return _template_classify(slot)
+    return _synthetic_classify(slot)
 
 
 def _slot_observation(slot, position: int) -> DigitObservation:
@@ -403,14 +625,18 @@ class MeterVisionService:
             }, [], [], ["decode_failed"])
 
         quality = _quality(image)
-        corners, used_fallback_roi = _display_candidate(image)
+        resolved_black_digits = black_digits or 4
+        corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
+        used_fallback_roi = corners is None
+        if corners is None:
+            corners, used_fallback_roi = _display_candidate(image)
         rectified, perspective = _rectify(image, corners)
         quality.perspective = perspective
         if perspective > 0.72 and quality.recapture_reason is None:
             quality.usable = False
             quality.recapture_reason = "Angulo muito lateral. Posicione a camera mais de frente para o visor."
 
-        total_digits = (black_digits or 4) + red_digits
+        total_digits = resolved_black_digits + red_digits
         total_digits = max(3, min(total_digits, 10))
         margin_x = max(int(rectified.shape[1] * 0.025), 1)
         margin_y = max(int(rectified.shape[0] * 0.08), 1)
