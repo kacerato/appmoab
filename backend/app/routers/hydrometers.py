@@ -304,19 +304,27 @@ async def kimi_vision_verdict(
     rectified_key = None
     try:
         ext, raw, content_type = decode_base64_upload(selected_frame, "jpg")
-        original_key = await asyncio.to_thread(
-            save_binary,
-            raw,
-            f"vision/{datetime.now(timezone.utc):%Y/%m/%d}/{inference_id}/original.{ext}",
-            content_type,
-        )
-        if vision_result.rectified_jpeg:
-            rectified_key = await asyncio.to_thread(
+        object_prefix = f"vision/{datetime.now(timezone.utc):%Y/%m/%d}/{inference_id}"
+        uploads = [
+            asyncio.to_thread(
                 save_binary,
-                vision_result.rectified_jpeg,
-                f"vision/{datetime.now(timezone.utc):%Y/%m/%d}/{inference_id}/rectified.jpg",
-                "image/jpeg",
+                raw,
+                f"{object_prefix}/original.{ext}",
+                content_type,
             )
+        ]
+        if vision_result.rectified_jpeg:
+            uploads.append(
+                asyncio.to_thread(
+                    save_binary,
+                    vision_result.rectified_jpeg,
+                    f"{object_prefix}/rectified.jpg",
+                    "image/jpeg",
+                )
+            )
+        uploaded = await asyncio.gather(*uploads)
+        original_key = uploaded[0]
+        rectified_key = uploaded[1] if len(uploaded) > 1 else None
     except Exception as exc:
         vision_result.flags.append("artifact_storage_failed")
         vision_result.quality["storage_error"] = str(exc)[:240]

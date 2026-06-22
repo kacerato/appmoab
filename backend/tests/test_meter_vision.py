@@ -6,7 +6,10 @@ import numpy as np
 from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
+    _fuse_digit_sequences,
+    _red_roller_strip_candidate,
     _temporal_candidates,
+    _trained_classifier,
     meter_vision_service,
 )
 from app.utils.storage import binary_sha256, decode_base64_upload
@@ -35,6 +38,47 @@ def test_local_meter_vision_returns_structured_contract():
     assert 0 <= result.confidence <= 1
     assert "usable" in result.quality
     assert result.rectified_jpeg and result.rectified_jpeg.startswith(b"\xff\xd8")
+
+
+def test_bundled_field_model_and_red_roller_anchor_are_available():
+    assert _trained_classifier() is not None
+
+    image = np.full((700, 900, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (125, 270), (790, 390), (250, 250, 250), -1)
+    for index, digit in enumerate("0025748"):
+        color = (25, 25, 25) if index < 4 else (30, 30, 205)
+        cv2.putText(
+            image,
+            digit,
+            (145 + index * 88, 365),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            2.5,
+            color,
+            7,
+            cv2.LINE_AA,
+        )
+
+    corners = _red_roller_strip_candidate(image, red_digits=3, black_digits=4)
+    assert corners is not None
+    assert corners.shape == (4, 2)
+
+
+def test_sequence_fusion_handles_transition_and_false_separator():
+    fused, mode = _fuse_digit_sequences(
+        [0, 0, 9, 0, 6, 4, 5],
+        [0, 0, 9, 0, 6, 4],
+        0.96,
+    )
+    assert fused == [0, 0, 9, 0, 6, 4, 5]
+    assert mode == "sequence_missing_transition"
+
+    fused, mode = _fuse_digit_sequences(
+        [0, 0, 2, 5, 7, 4, 8],
+        [0, 0, 2, 5, 1, 7, 4, 8],
+        0.91,
+    )
+    assert fused == [0, 0, 2, 5, 7, 4, 8]
+    assert mode == "sequence_removed_separator"
 
 
 def test_transition_decoder_considers_both_visible_digits_and_history():
