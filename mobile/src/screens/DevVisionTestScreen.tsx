@@ -1,9 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  FlatList,
   Image,
-  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -12,34 +10,11 @@ import {
   View,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import * as SecureStore from 'expo-secure-store';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
 import { formatMeterReading, parseMeterReadingInput } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
-import { ROUTE_CACHE_KEY } from '../lib/route-cache';
-
-interface Hydrometer {
-  id: string;
-  code: string;
-  qr_code_token?: string | null;
-  last_reading_value: number;
-  red_digits?: number | null;
-  black_digits?: number | null;
-  brand?: string | null;
-  model?: string | null;
-  location_description?: string | null;
-  last_reading_date?: string | null;
-}
-
-interface Customer {
-  id: string;
-  name: string;
-  address: string;
-  city: string;
-  hydrometers: Hydrometer[];
-}
 
 interface VisionVerdict {
   inference_id: string | null;
@@ -69,24 +44,10 @@ interface VisionVerdict {
   model_version?: string | null;
 }
 
-interface FlattenedHydrometer {
-  customerName: string;
-  hydrometer: Hydrometer;
-}
-
 export default function DevVisionTestScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { showToast } = useFeedback();
-
-  // Selected Hydrometer
-  const [selected, setSelected] = useState<FlattenedHydrometer | null>(null);
-
-  // List & Selector Modal state
-  const [modalVisible, setModalVisible] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [hydrometersList, setHydrometersList] = useState<FlattenedHydrometer[]>([]);
-  const [loadingList, setLoadingList] = useState(false);
 
   // Verdict processing states
   const [verdictLoading, setVerdictLoading] = useState(false);
@@ -112,72 +73,9 @@ export default function DevVisionTestScreen() {
   const photoBase64 = params.photoBase64;
   const framesBase64 = params.framesBase64 || [];
 
-  // Load hydrometers from SecureStore route cache
-  useEffect(() => {
-    const loadHydrometers = async () => {
-      setLoadingList(true);
-      try {
-        const cached = await SecureStore.getItemAsync(ROUTE_CACHE_KEY).catch(() => null);
-        let list: FlattenedHydrometer[] = [];
-
-        if (cached) {
-          const parsed = JSON.parse(cached) as { customers?: Customer[] };
-          if (parsed.customers) {
-            parsed.customers.forEach(cust => {
-              if (cust.hydrometers && cust.hydrometers.length > 0) {
-                cust.hydrometers.forEach(hydro => {
-                  list.push({
-                    customerName: cust.name,
-                    hydrometer: hydro,
-                  });
-                });
-              }
-            });
-          }
-        }
-
-        // If cache empty, query customers endpoint
-        if (list.length === 0) {
-          const res = await api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=150');
-          if (res?.items) {
-            res.items.forEach(cust => {
-              if (cust.hydrometers && cust.hydrometers.length > 0) {
-                cust.hydrometers.forEach(hydro => {
-                  list.push({
-                    customerName: cust.name,
-                    hydrometer: hydro,
-                  });
-                });
-              }
-            });
-          }
-        }
-
-        setHydrometersList(list);
-      } catch (error) {
-        console.error('Erro ao carregar hidrômetros:', error);
-      } finally {
-        setLoadingList(false);
-      }
-    };
-
-    void loadHydrometers();
-  }, []);
-
-  // Sync selected hydrometer when returning from camera with a selected ID
-  useEffect(() => {
-    if (params.hydrometerId && hydrometersList.length > 0) {
-      const found = hydrometersList.find(h => h.hydrometer.id === params.hydrometerId);
-      if (found) {
-        setSelected(found);
-        setSelectedRedDigits(params.redDigits ?? found.hydrometer.red_digits ?? 3);
-      }
-    }
-  }, [params.hydrometerId, hydrometersList]);
-
   // When photo is received, call the local vision model verdict API
   useEffect(() => {
-    if (!photoBase64 || !selected) return;
+    if (!photoBase64) return;
 
     let active = true;
     setVerdictLoading(true);
@@ -188,13 +86,13 @@ export default function DevVisionTestScreen() {
     api.post<VisionVerdict>('/hydrometers/vision-verdict', {
         photo_base64: photoBase64,
         frames_base64: framesBase64,
-        hydrometer_id: selected.hydrometer.id,
+        hydrometer_id: null,
         stage: 'dev_test',
         red_digits: selectedRedDigits,
-        black_digits: selected.hydrometer.black_digits,
-        previous_value: selected.hydrometer.last_reading_value,
-        hydrometer_brand: selected.hydrometer.brand || null,
-        hydrometer_model: selected.hydrometer.model || null,
+        black_digits: 4,
+        previous_value: null,
+        hydrometer_brand: null,
+        hydrometer_model: null,
       }, 45000)
       .then(res => {
         if (!active) return;
@@ -216,37 +114,13 @@ export default function DevVisionTestScreen() {
     };
     // A tentativa precisa ocorrer também quando o hidrômetro é restaurado do
     // cache depois que a foto já chegou da câmera.
-  }, [photoBase64, selected?.hydrometer.id, verdictAttempt]);
-
-  const filteredHydrometers = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return hydrometersList;
-    return hydrometersList.filter(
-      item =>
-        item.customerName.toLowerCase().includes(query) ||
-        item.hydrometer.code.toLowerCase().includes(query),
-    );
-  }, [hydrometersList, searchQuery]);
+  }, [photoBase64, selectedRedDigits, verdictAttempt]);
 
   const handleOpenCamera = () => {
-    if (!selected) {
-      showToast('Selecione um ponto', 'É necessário selecionar um hidrômetro antes de abrir a câmera.', 'warning');
-      return;
-    }
     navigation.navigate('Camera', {
       stage: 'dev_test',
-      expectedCustomerId: null,
-      expectedCustomerName: selected.customerName,
-      expectedHydrometerId: selected.hydrometer.id,
-      expectedHydrometerCode: selected.hydrometer.code,
-      expectedQrCodeToken: selected.hydrometer.qr_code_token || null,
-      lastReading: selected.hydrometer.last_reading_value || 0,
       redDigits: selectedRedDigits,
-      blackDigits: selected.hydrometer.black_digits || null,
-      hydrometerBrand: selected.hydrometer.brand || '',
-      hydrometerModel: selected.hydrometer.model || '',
-      locationDescription: selected.hydrometer.location_description || '',
-      isInstallation: !selected.hydrometer.last_reading_date,
+      blackDigits: 4,
     });
   };
 
@@ -255,7 +129,7 @@ export default function DevVisionTestScreen() {
   }, [manualValue, selectedRedDigits]);
 
   const submitFeedback = async () => {
-    if (!selected || parsedManualValue === null || !photoBase64) return;
+    if (parsedManualValue === null || !photoBase64) return;
 
     setSubmittingFeedback(true);
     try {
@@ -270,13 +144,13 @@ export default function DevVisionTestScreen() {
         predicted_code: predCode,
         predicted_value: predVal,
         confidence: verdict?.confidence || null,
-        confirmed_code: selected.hydrometer.code,
+        confirmed_code: null,
         confirmed_value: parsedManualValue,
-        hydrometer_id: selected.hydrometer.id,
+        hydrometer_id: null,
         red_digits: selectedRedDigits,
-        black_digits: selected.hydrometer.black_digits || verdict?.black_digits || null,
-        hydrometer_brand: selected.hydrometer.brand || null,
-        hydrometer_model: selected.hydrometer.model || null,
+        black_digits: 4,
+        hydrometer_brand: null,
+        hydrometer_model: null,
       });
 
       const wasCorrect = res.was_correct;
@@ -330,60 +204,30 @@ export default function DevVisionTestScreen() {
         </View>
       </View>
 
-      <Text style={styles.title}>Coleta e Testes de OCR</Text>
+      <Text style={styles.title}>Teste de leitura visual</Text>
       <Text style={styles.subtitle}>
-        Registre amostras, compare a precisão do motor de visão local e alimente o dataset de treinamento.
+        Fotografe qualquer hidrômetro, confira a leitura encontrada e informe o valor correto se necessário.
       </Text>
 
-      {/* STEP 1: Select Hydrometer */}
+      {/* STEP 1: Capture Photo */}
       <View style={shared.card}>
-        <Text style={shared.sectionTitle}>1. Hidrômetro selecionado</Text>
-        {selected ? (
-          <View>
-            <Text style={styles.customerName}>{selected.customerName}</Text>
-            <View style={styles.detailsRow}>
-              <View style={styles.detailCol}>
-                <Text style={styles.detailLabel}>CÓDIGO</Text>
-                <Text style={styles.detailValue}>{selected.hydrometer.code}</Text>
-              </View>
-              <View style={styles.detailCol}>
-                <Text style={styles.detailLabel}>ÚLTIMA LEITURA</Text>
-                <Text style={styles.detailValue}>
-                  {formatMeterReading(selected.hydrometer.last_reading_value)} m³
-                </Text>
-              </View>
-            </View>
-            {!!selected.hydrometer.brand && (
-              <Text style={styles.brandHint}>
-                Marca/Modelo: {selected.hydrometer.brand} {selected.hydrometer.model || ''}
-              </Text>
-            )}
-            {!!selected.hydrometer.location_description && (
-              <Text style={styles.locationHint}>
-                📍 Local: {selected.hydrometer.location_description}
-              </Text>
-            )}
-            <TouchableOpacity
-              style={[shared.btnSecondary, { marginTop: 14 }]}
-              onPress={() => setModalVisible(true)}
-            >
-              <Text style={shared.btnSecondaryText}>Alterar hidrômetro</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.emptySelector}>
-            <Text style={styles.emptySelectorText}>Nenhum hidrômetro selecionado ainda.</Text>
-            <TouchableOpacity style={shared.btnPrimary} onPress={() => setModalVisible(true)}>
-              <Text style={shared.btnPrimaryText}>Selecionar Ponto da Rota</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
+          <Text style={shared.sectionTitle}>1. Captura de teste</Text>
 
-      {/* STEP 2: Capture Photo */}
-      {selected && (
-        <View style={shared.card}>
-          <Text style={shared.sectionTitle}>2. Imagem de teste</Text>
+          <Text style={shared.label}>Formato do visor</Text>
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
+            <TouchableOpacity
+              style={[styles.redOpt, selectedRedDigits === 2 && styles.redOptActive]}
+              onPress={() => setSelectedRedDigits(2)}
+            >
+              <Text style={[styles.redOptText, selectedRedDigits === 2 && styles.redOptTextActive]}>2 vermelhos</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.redOpt, selectedRedDigits === 3 && styles.redOptActive]}
+              onPress={() => setSelectedRedDigits(3)}
+            >
+              <Text style={[styles.redOptText, selectedRedDigits === 3 && styles.redOptTextActive]}>3 vermelhos</Text>
+            </TouchableOpacity>
+          </View>
 
           {photoUri ? (
             <View>
@@ -406,11 +250,10 @@ export default function DevVisionTestScreen() {
               <Text style={styles.btnCapturePlaceholderText}>Abrir Câmera de Teste</Text>
             </TouchableOpacity>
           )}
-        </View>
-      )}
+      </View>
 
-      {/* STEP 3: Verdict and Quality Metrics */}
-      {photoUri && selected && (
+      {/* STEP 2: Verdict and Quality Metrics */}
+      {photoUri && (
         <View>
           {verdictLoading ? (
             <View style={shared.card}>
@@ -421,7 +264,7 @@ export default function DevVisionTestScreen() {
             <View>
               {/* Verdict metrics card */}
               <View style={shared.card}>
-                <Text style={shared.sectionTitle}>3. Análise da inferência local</Text>
+                <Text style={shared.sectionTitle}>2. Resultado da leitura</Text>
 
                 <View style={styles.predictionRow}>
                   <View style={{ flex: 1.2 }}>
@@ -518,23 +361,7 @@ export default function DevVisionTestScreen() {
 
               {/* Step 4: Ground Truth / Manual confirmation */}
               <View style={shared.card}>
-                <Text style={shared.sectionTitle}>4. Verdade operacional (Gabarito)</Text>
-
-                <Text style={shared.label}>Dígitos vermelhos do visor</Text>
-                <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
-                  <TouchableOpacity
-                    style={[styles.redOpt, selectedRedDigits === 2 && styles.redOptActive]}
-                    onPress={() => setSelectedRedDigits(2)}
-                  >
-                    <Text style={[styles.redOptText, selectedRedDigits === 2 && styles.redOptTextActive]}>2 vermelhos</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.redOpt, selectedRedDigits === 3 && styles.redOptActive]}
-                    onPress={() => setSelectedRedDigits(3)}
-                  >
-                    <Text style={[styles.redOptText, selectedRedDigits === 3 && styles.redOptTextActive]}>3 vermelhos</Text>
-                  </TouchableOpacity>
-                </View>
+                <Text style={shared.sectionTitle}>3. Confirmar resultado</Text>
 
                 <Text style={shared.label}>Valor Real no Visor (sem vírgula)</Text>
                 <TextInput
@@ -608,62 +435,6 @@ export default function DevVisionTestScreen() {
         </View>
       )}
 
-      {/* Selection Modal */}
-      <Modal
-        visible={modalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Selecionar Hidrômetro</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}>
-                <Text style={styles.closeModalText}>Fechar</Text>
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={styles.modalSearch}
-              placeholder="Buscar por cliente ou código"
-              placeholderTextColor={colors.textMuted}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-
-            {loadingList ? (
-              <ActivityIndicator size="large" color={colors.cyan} style={{ marginVertical: 32 }} />
-            ) : (
-              <FlatList
-                data={filteredHydrometers}
-                keyExtractor={item => item.hydrometer.id}
-                style={{ maxHeight: 350 }}
-                renderItem={({ item }) => (
-                  <TouchableOpacity
-                    style={styles.modalItem}
-                    onPress={() => {
-                      setSelected(item);
-                      setSelectedRedDigits(item.hydrometer.red_digits ?? 3);
-                      setVerdict(null);
-                      setTestResult(null);
-                      setModalVisible(false);
-                    }}
-                  >
-                    <Text style={styles.modalItemCust}>{item.customerName}</Text>
-                    <Text style={styles.modalItemCode}>
-                      Código: {item.hydrometer.code} • Última: {formatMeterReading(item.hydrometer.last_reading_value)} m³
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                ListEmptyComponent={
-                  <Text style={styles.modalEmptyText}>Nenhum ponto da rota encontrado.</Text>
-                }
-              />
-            )}
-          </View>
-        </View>
-      </Modal>
     </ScrollView>
   );
 }
