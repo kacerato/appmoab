@@ -96,6 +96,7 @@ export default function CameraScreen() {
   } = route.params || {};
 
   const [permission, requestPermission] = useCameraPermissions();
+  const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [resolvingQr, setResolvingQr] = useState(false);
   const cameraRef = useRef<any>(null);
@@ -245,18 +246,26 @@ export default function CameraScreen() {
   }
 
   const capturePhoto = async () => {
-    if (!cameraRef.current || capturing) return;
+    if (capturing) return;
+    if (!cameraRef.current || !cameraReady) {
+      showToast('Câmera iniciando', 'Aguarde um instante e tente novamente.', 'warning');
+      return;
+    }
     setCapturing(true);
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
-        quality: 0.8,
+        quality: stage === 'dev_test' ? 0.9 : 0.8,
       });
+      if (!photo?.base64 || !photo?.uri) {
+        throw new Error('A câmera não retornou a imagem. Tente novamente mantendo o aparelho firme.');
+      }
       const framesBase64: string[] = [];
-      if (stage === 'reading' || stage === 'dev_test') {
+      if (stage === 'reading') {
         for (let index = 0; index < 2; index += 1) {
           try {
+            await new Promise(resolve => setTimeout(resolve, 120));
             const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.72, skipProcessing: true });
             if (frame?.base64) framesBase64.push(frame.base64);
           } catch {
@@ -288,18 +297,10 @@ export default function CameraScreen() {
         navigation.navigate('DevVisionTest', {
           photoBase64: photo.base64,
           photoUri: photo.uri,
-          framesBase64,
+          framesBase64: [],
           capturedAt: new Date().toISOString(),
-          hydrometerId: activeHydrometerId,
-          hydrometerCode: activeHydrometerCode,
-          customerName: activeCustomerName,
-          lastReading,
           redDigits,
-          blackDigits,
-          hydrometerBrand,
-          hydrometerModel,
-          locationDescription,
-          isInstallation,
+          blackDigits: 4,
         });
         return;
       }
@@ -363,6 +364,11 @@ export default function CameraScreen() {
           style={styles.camera}
           ref={cameraRef}
           facing="back"
+          onCameraReady={() => setCameraReady(true)}
+          onMountError={event => {
+            setCameraReady(false);
+            showToast('Falha ao iniciar câmera', event.message || 'Não foi possível acessar a câmera.', 'error');
+          }}
           onBarcodeScanned={stage === 'code' && !resolvingQr ? handleQrScanned : undefined}
           barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
         />
@@ -394,6 +400,8 @@ export default function CameraScreen() {
               <Text style={styles.infoValue}>
                 {stage === 'code'
                   ? activeHydrometerCode
+                  : stage === 'dev_test'
+                    ? `${redDigits} vermelhos - teste livre`
                   : isInstallation
                     ? `${redDigits} vermelhos - instalacao`
                     : `${redDigits} vermelhos - base ${Number(lastReading || 0).toFixed(2)} m3`}
@@ -402,11 +410,11 @@ export default function CameraScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.btnCapture, (capturing || resolvingQr) && { opacity: 0.5 }]}
+              style={[styles.btnCapture, (capturing || resolvingQr || !cameraReady) && { opacity: 0.5 }]}
               onPress={capturePhoto}
-              disabled={capturing || resolvingQr}
+              disabled={capturing || resolvingQr || !cameraReady}
             >
-              {capturing || resolvingQr ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
+              {capturing || resolvingQr || !cameraReady ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
             </TouchableOpacity>
 
             <Text style={styles.captureLabel}>
