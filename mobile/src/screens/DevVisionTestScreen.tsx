@@ -91,6 +91,8 @@ export default function DevVisionTestScreen() {
   // Verdict processing states
   const [verdictLoading, setVerdictLoading] = useState(false);
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
+  const [verdictError, setVerdictError] = useState<string | null>(null);
+  const [verdictAttempt, setVerdictAttempt] = useState(0);
 
   // User input/feedback states
   const [manualValue, setManualValue] = useState('');
@@ -175,12 +177,15 @@ export default function DevVisionTestScreen() {
 
   // When photo is received, call the local vision model verdict API
   useEffect(() => {
-    if (photoBase64 && selected) {
-      setVerdictLoading(true);
-      setVerdict(null);
-      setTestResult(null);
+    if (!photoBase64 || !selected) return;
 
-      api.post<VisionVerdict>('/hydrometers/vision-verdict', {
+    let active = true;
+    setVerdictLoading(true);
+    setVerdict(null);
+    setVerdictError(null);
+    setTestResult(null);
+
+    api.post<VisionVerdict>('/hydrometers/vision-verdict', {
         photo_base64: photoBase64,
         frames_base64: framesBase64,
         hydrometer_id: selected.hydrometer.id,
@@ -190,27 +195,28 @@ export default function DevVisionTestScreen() {
         previous_value: selected.hydrometer.last_reading_value,
         hydrometer_brand: selected.hydrometer.brand || null,
         hydrometer_model: selected.hydrometer.model || null,
+      }, 45000)
+      .then(res => {
+        if (!active) return;
+        setVerdict(res);
+        setManualValue(res.predicted_value !== null ? String(res.predicted_value) : '');
       })
-        .then(res => {
-          setVerdict(res);
-          if (res.predicted_value !== null) {
-            setManualValue(String(res.predicted_value));
-          } else {
-            setManualValue('');
-          }
-        })
-        .catch(err => {
-          showToast(
-            'Falha na inferência local',
-            err instanceof Error ? err.message : 'Erro ao processar imagem no OCR.',
-            'error',
-          );
-        })
-        .finally(() => {
-          setVerdictLoading(false);
-        });
-    }
-  }, [photoBase64]);
+      .catch(err => {
+        if (!active) return;
+        const message = err instanceof Error ? err.message : 'Erro ao processar a imagem.';
+        setVerdictError(message);
+        showToast('Falha na inferência local', message, 'error');
+      })
+      .finally(() => {
+        if (active) setVerdictLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+    // A tentativa precisa ocorrer também quando o hidrômetro é restaurado do
+    // cache depois que a foto já chegou da câmera.
+  }, [photoBase64, selected?.hydrometer.id, verdictAttempt]);
 
   const filteredHydrometers = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -307,6 +313,7 @@ export default function DevVisionTestScreen() {
       framesBase64: [],
     });
     setVerdict(null);
+    setVerdictError(null);
     setManualValue('');
     setTestResult(null);
   };
@@ -584,7 +591,15 @@ export default function DevVisionTestScreen() {
             </View>
           ) : (
             <View style={shared.card}>
-              <Text style={{ color: colors.danger, textAlign: 'center' }}>Não foi possível computar a inferência para esta foto.</Text>
+              <Text style={{ color: colors.danger, textAlign: 'center' }}>
+                {verdictError || 'A inferência não retornou um resultado.'}
+              </Text>
+              <TouchableOpacity
+                style={[shared.btnPrimary, { marginTop: 12 }]}
+                onPress={() => setVerdictAttempt(value => value + 1)}
+              >
+                <Text style={shared.btnPrimaryText}>Tentar processar novamente</Text>
+              </TouchableOpacity>
               <TouchableOpacity style={[shared.btnSecondary, { marginTop: 12 }]} onPress={resetCapture}>
                 <Text style={shared.btnSecondaryText}>Limpar e tentar novamente</Text>
               </TouchableOpacity>
