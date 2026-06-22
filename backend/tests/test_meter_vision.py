@@ -6,6 +6,7 @@ import numpy as np
 from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
+    _fuse_digit_sequences,
     _red_roller_strip_candidate,
     _temporal_candidates,
     _trained_classifier,
@@ -60,6 +61,24 @@ def test_bundled_field_model_and_red_roller_anchor_are_available():
     corners = _red_roller_strip_candidate(image, red_digits=3, black_digits=4)
     assert corners is not None
     assert corners.shape == (4, 2)
+
+
+def test_sequence_fusion_handles_transition_and_false_separator():
+    fused, mode = _fuse_digit_sequences(
+        [0, 0, 9, 0, 6, 4, 5],
+        [0, 0, 9, 0, 6, 4],
+        0.96,
+    )
+    assert fused == [0, 0, 9, 0, 6, 4, 5]
+    assert mode == "sequence_missing_transition"
+
+    fused, mode = _fuse_digit_sequences(
+        [0, 0, 2, 5, 7, 4, 8],
+        [0, 0, 2, 5, 1, 7, 4, 8],
+        0.91,
+    )
+    assert fused == [0, 0, 2, 5, 7, 4, 8]
+    assert mode == "sequence_removed_separator"
 
 
 def test_transition_decoder_considers_both_visible_digits_and_history():

@@ -10,6 +10,8 @@ import io
 import logging
 import math
 import os
+import re
+import threading
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 
@@ -31,6 +33,13 @@ try:
     import onnxruntime as ort
 except ImportError:  # pragma: no cover
     ort = None
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except ImportError:  # pragma: no cover
+    RapidOCR = None
+
+_sequence_ocr_lock = threading.Lock()
 
 
 @dataclass
@@ -177,8 +186,16 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
         return None
     height, width = image.shape[:2]
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    red = cv2.inRange(hsv, np.array([0, 42, 35]), np.array([23, 255, 255]))
-    red |= cv2.inRange(hsv, np.array([154, 42, 35]), np.array([179, 255, 255]))
+    red = cv2.inRange(hsv, np.array([0, 52, 35]), np.array([24, 255, 255]))
+    red |= cv2.inRange(hsv, np.array([153, 52, 35]), np.array([179, 255, 255]))
+    blue, green, red_channel = cv2.split(image)
+    # Flash quente torna todo o mostrador amarelado e também cai perto do hue
+    # vermelho. Exigir dominância real do canal R elimina tampa, pele, ferrugem
+    # e fundo bege sem perder os glifos vermelhos desbotados.
+    red_dominance = (
+        red_channel.astype("int16") - np.maximum(green, blue).astype("int16") > 18
+    ).astype("uint8") * 255
+    red &= red_dominance
 
     # Exclui o ponteiro inferior e elementos das bordas antes de agrupar os
     # tres algarismos coloridos da janela.
@@ -389,7 +406,7 @@ class _OpenCvKnnClassifier:
 @lru_cache(maxsize=1)
 def _trained_classifier():
     bundled_path = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "assets", "meter-field-v2-20260622.yml")
+        os.path.join(os.path.dirname(__file__), "..", "assets", "meter-field-v3-20260622.yml")
     )
     path = settings.vision_model_path.strip() or bundled_path
     if not path or not os.path.exists(path):
@@ -403,6 +420,88 @@ def _trained_classifier():
     except Exception:
         logger.exception("Nao foi possivel carregar o modelo ONNX de hidrometros")
         return None
+
+
+@lru_cache(maxsize=1)
+def _sequence_ocr_engine():
+    return RapidOCR() if RapidOCR is not None else None
+
+
+def _sequence_ocr(rectified) -> tuple[list[int], float]:
+    """Reconhece a faixa completa sem detector de texto externo.
+
+    O reconhecedor sequencial e forte nos digitos estaveis, mas pode omitir um
+    rolete que mostra dois numeros. A fusao posterior preserva o classificador
+    mecanico por slot justamente nessa posicao.
+    """
+    engine = _sequence_ocr_engine()
+    if engine is None:
+        return [], 0.0
+    enlarged = cv2.resize(rectified, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+    try:
+        with _sequence_ocr_lock:
+            result, _ = engine(enlarged, use_det=False, use_cls=False, use_rec=True)
+    except Exception:
+        logger.exception("Falha no reconhecedor sequencial local")
+        return [], 0.0
+    if not result:
+        return [], 0.0
+    candidates = []
+    for item in result:
+        if not item:
+            continue
+        text = "".join(re.findall(r"\d", str(item[0])))
+        score = float(item[1]) if len(item) > 1 else 0.0
+        if text:
+            candidates.append((text, score))
+    if not candidates:
+        return [], 0.0
+    text, score = max(candidates, key=lambda item: (len(item[0]), item[1]))
+    return [int(char) for char in text], _clamp(score)
+
+
+def _fuse_digit_sequences(
+    slot_digits: list[int],
+    ocr_digits: list[int],
+    ocr_confidence: float,
+) -> tuple[list[int], str | None]:
+    """Alinha OCR de faixa e slots, tolerando uma omissao ou insercao."""
+    total = len(slot_digits)
+    if ocr_confidence < 0.78 or not slot_digits:
+        return slot_digits, None
+    if len(ocr_digits) == total:
+        return ocr_digits, "sequence_exact"
+    if len(ocr_digits) == total - 1:
+        # O rolete em transicao costuma ser omitido. Encontra a posicao cuja
+        # retirada do resultado por slots melhor explica a sequencia OCR.
+        position = max(
+            range(total),
+            key=lambda missing: sum(
+                left == right
+                for left, right in zip(
+                    slot_digits[:missing] + slot_digits[missing + 1:],
+                    ocr_digits,
+                )
+            ),
+        )
+        fused = list(ocr_digits)
+        fused.insert(position, slot_digits[position])
+        return fused, "sequence_missing_transition"
+    if len(ocr_digits) == total + 1:
+        # Uma divisoria vertical pode virar o algarismo 1. Remove o caractere
+        # que maximiza a concordancia com os sete classificadores posicionais.
+        position = max(
+            range(len(ocr_digits)),
+            key=lambda extra: sum(
+                left == right
+                for left, right in zip(
+                    ocr_digits[:extra] + ocr_digits[extra + 1:],
+                    slot_digits,
+                )
+            ),
+        )
+        return ocr_digits[:position] + ocr_digits[position + 1:], "sequence_removed_separator"
+    return slot_digits, None
 
 
 def _normalize_slot(slot, size=(64, 96)):
@@ -624,13 +723,16 @@ class MeterVisionService:
                 "recapture_reason": "Não foi possível abrir a imagem capturada.",
             }, [], [], ["decode_failed"])
 
-        quality = _quality(image)
+        frame_quality = _quality(image)
         resolved_black_digits = black_digits or 4
         corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
         used_fallback_roi = corners is None
         if corners is None:
             corners, used_fallback_roi = _display_candidate(image)
         rectified, perspective = _rectify(image, corners)
+        # Nitidez do cenário inteiro (tampa, chão, tubos) não representa a
+        # legibilidade dos roletes. A decisão deve usar a faixa retificada.
+        quality = _quality(rectified)
         quality.perspective = perspective
         if perspective > 0.72 and quality.recapture_reason is None:
             quality.usable = False
@@ -648,7 +750,17 @@ class MeterVisionService:
             end = min(usable_roi.shape[1], int((index + 1) * slot_width + slot_width * 0.08))
             observations.append(_slot_observation(usable_roi[:, start:end], index))
 
-        predicted_value, alternatives, flags = _temporal_candidates(observations, red_digits, previous_value)
+        slot_digits = [int(item.value) for item in observations if item.value is not None]
+        ocr_digits, ocr_confidence = _sequence_ocr(rectified)
+        fused_digits, fusion_mode = _fuse_digit_sequences(slot_digits, ocr_digits, ocr_confidence)
+        if fusion_mode and len(fused_digits) == total_digits:
+            for observation, digit in zip(observations, fused_digits):
+                observation.value = digit
+            predicted_value = int("".join(map(str, fused_digits))) / (10 ** max(red_digits, 0))
+            alternatives = [predicted_value]
+            flags = [fusion_mode]
+        else:
+            predicted_value, alternatives, flags = _temporal_candidates(observations, red_digits, previous_value)
         confidences = [item.confidence for item in observations if item.value is not None]
         confidence = float(math.prod(confidences) ** (1 / len(confidences))) if len(confidences) == total_digits else 0.0
         confidence *= max(0.0, 1 - quality.blur * 0.35 - quality.glare * 0.25 - perspective * 0.2)
@@ -666,6 +778,13 @@ class MeterVisionService:
             and "implausible_consumption_jump" not in flags
         )
         ok, encoded = cv2.imencode(".jpg", rectified, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+        quality_payload = asdict(quality)
+        quality_payload["source_frame"] = asdict(frame_quality)
+        quality_payload["sequence_ocr"] = {
+            "digits": "".join(map(str, ocr_digits)) if ocr_digits else None,
+            "confidence": ocr_confidence,
+            "fusion": fusion_mode,
+        }
         return VisionResult(
             predicted_code=None,
             predicted_value=predicted_value,
@@ -674,7 +793,7 @@ class MeterVisionService:
             red_digits=red_digits,
             black_digits=black_digits,
             model_version=settings.vision_model_version,
-            quality=asdict(quality),
+            quality=quality_payload,
             digits=[asdict(item) for item in observations],
             alternatives=alternatives,
             flags=list(dict.fromkeys(flags)),
