@@ -85,7 +85,7 @@ export default function OCRResultScreen() {
       previous_value: lastReading,
       hydrometer_brand: hydrometerBrand || null,
       hydrometer_model: hydrometerModel || null,
-    }, 45000)
+    }, 75000)
       .then(result => {
         setVerdict(result);
         if (result.auto_fill_allowed && result.predicted_value !== null) {

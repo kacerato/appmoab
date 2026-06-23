@@ -891,6 +891,7 @@ class MeterVisionService:
         red_digits: int | None = 3,
         black_digits: int | None = None,
         previous_value: float | None = None,
+        expensive_ocr: bool = True,
     ) -> VisionResult:
         red_digits = red_digits if red_digits is not None and red_digits >= 0 else 3
         try:
@@ -909,7 +910,7 @@ class MeterVisionService:
         corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
         used_fallback_roi = corners is None
         used_ocr_window = False
-        if corners is None:
+        if corners is None and expensive_ocr:
             corners = _ocr_counter_window_candidate(image, total_digits)
             used_ocr_window = corners is not None
             used_fallback_roi = corners is None
@@ -965,7 +966,7 @@ class MeterVisionService:
         full_frame_digits: list[int] = []
         full_frame_confidence = 0.0
         full_frame_mode = None
-        if fusion_mode is None or used_fallback_roi:
+        if expensive_ocr and (fusion_mode is None or used_fallback_roi):
             full_frame_digits, full_frame_confidence, full_frame_mode = _full_frame_ocr_sequences(
                 image,
                 total_digits,

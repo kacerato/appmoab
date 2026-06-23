@@ -34,7 +34,7 @@ from app.services.hydrometer_codes import assign_numeric_code_if_needed, normali
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.services.meter_vision import VisionResult, meter_vision_service
 from app.utils.security import get_current_user, require_admin
-from app.utils.storage import decode_base64_upload, save_binary
+from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
 
@@ -355,8 +355,9 @@ async def kimi_vision_verdict(
             red_digits=data.red_digits,
             black_digits=data.black_digits,
             previous_value=data.previous_value,
+            expensive_ocr=index == 0,
         )
-        for frame in frames
+        for index, frame in enumerate(frames)
     ])
     best_index, vision_result = max(
         enumerate(results),
@@ -489,6 +490,84 @@ async def kimi_memory_summary(
                 "created_at": item.created_at,
             }
             for item in recent
+        ],
+    }
+
+
+@router.get("/vision-training/export")
+async def export_vision_training_dataset(
+    limit: int = 500,
+    only_approved: bool = True,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Exporta amostras corrigidas para treino externo do detector/modelo OCR.
+
+    Esse endpoint é o contrato do Sprint 1: cada confirmação humana vira linha
+    de dataset com imagem original, crop retificado, leitura confirmada, leitura
+    prevista, flags e métricas. YOLO/slot-model usam esse JSON para montar
+    `images/` + `labels/` sem depender do banco em tempo de treino.
+    """
+    safe_limit = max(1, min(limit, 2000))
+    query = (
+        select(VisionInference)
+        .where(VisionInference.confirmed_value.is_not(None))
+        .order_by(VisionInference.created_at.desc())
+        .limit(safe_limit)
+    )
+    if only_approved:
+        query = query.where(VisionInference.approved_for_training.is_(True))
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    samples = []
+    for item in items:
+        original_url = build_public_upload_url(item.original_object_key) if item.original_object_key else None
+        rectified_url = build_public_upload_url(item.rectified_object_key) if item.rectified_object_key else None
+        confirmed_code = item.confirmed_code
+        if not confirmed_code and item.confirmed_value is not None:
+            red_digits = item.red_digits if item.red_digits is not None else 3
+            black_digits = item.black_digits if item.black_digits is not None else 4
+            total_digits = max(3, min(red_digits + black_digits, 10))
+            confirmed_code = str(int(round(float(item.confirmed_value) * (10 ** max(red_digits, 0))))).zfill(total_digits)
+        predicted_code = None
+        if item.predicted_value is not None:
+            red_digits = item.red_digits if item.red_digits is not None else 3
+            black_digits = item.black_digits if item.black_digits is not None else 4
+            total_digits = max(3, min(red_digits + black_digits, 10))
+            predicted_code = str(int(round(float(item.predicted_value) * (10 ** max(red_digits, 0))))).zfill(total_digits)
+        samples.append({
+            "id": str(item.id),
+            "stage": item.stage,
+            "created_at": item.created_at.isoformat(),
+            "original_object_key": item.original_object_key,
+            "rectified_object_key": item.rectified_object_key,
+            "original_url": original_url,
+            "rectified_url": rectified_url,
+            "confirmed_code": confirmed_code,
+            "confirmed_value": item.confirmed_value,
+            "predicted_code": predicted_code,
+            "predicted_value": item.predicted_value,
+            "was_correct": item.was_correct,
+            "confidence": item.confidence,
+            "red_digits": item.red_digits,
+            "black_digits": item.black_digits,
+            "brand": item.hydrometer_brand,
+            "model": item.hydrometer_model,
+            "quality": item.quality or {},
+            "digits": item.digits or [],
+            "alternatives": item.alternatives or [],
+            "flags": item.flags or [],
+        })
+    return {
+        "version": "aqua-meter-training-v1",
+        "count": len(samples),
+        "only_approved": only_approved,
+        "samples": samples,
+        "next_steps": [
+            "Annotate counter_window OBB on original_url.",
+            "Annotate 7 digit slots on rectified_url.",
+            "Train detector and slot transition model.",
         ],
     }
 

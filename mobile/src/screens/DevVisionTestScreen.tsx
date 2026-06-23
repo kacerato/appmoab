@@ -128,7 +128,7 @@ export default function DevVisionTestScreen() {
         previous_value: null,
         hydrometer_brand: null,
         hydrometer_model: null,
-      }, 45000)
+      }, 75000)
       .then(res => {
         if (!active) return;
         setVerdict(res);
