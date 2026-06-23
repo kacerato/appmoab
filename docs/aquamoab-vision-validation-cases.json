@@ -1,0 +1,86 @@
+{
+  "red_digits": 3,
+  "black_digits": 4,
+  "cases": [
+    {
+      "id": "office-close-01",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538767_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "office-close-02",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538766_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "office-far-01",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538765_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "office-side-01",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538764_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "office-side-02",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538763_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "office-glare-01",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538762_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "office-low-angle-01",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538761_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "field-akvo-0138087",
+      "path": "C:/Users/jamaa/Downloads/photo_5179523542012333135_w.jpg",
+      "expected": "0138087"
+    },
+    {
+      "id": "field-akvo-0090645",
+      "path": "C:/Users/jamaa/Downloads/photo_5028347320327670831_w.jpg",
+      "expected": "0090645"
+    },
+    {
+      "id": "field-hidro-0220135",
+      "path": "C:/Users/jamaa/Downloads/photo_5179523542012333139_w.jpg",
+      "expected": "0220135"
+    },
+    {
+      "id": "field-hidro-0025748",
+      "path": "C:/Users/jamaa/Downloads/photo_5179523542012333138_w.jpg",
+      "expected": "0025748"
+    },
+    {
+      "id": "field-akvo-0010467",
+      "path": "C:/Users/jamaa/Downloads/photo_5179523542012333137_w.jpg",
+      "expected": "0010467"
+    },
+    {
+      "id": "field-akvo-0072381",
+      "path": "C:/Users/jamaa/Downloads/photo_5179523542012333136_w.jpg",
+      "expected": "0072381"
+    }
+  ],
+  "bursts": [
+    {
+      "id": "office-0090645-burst",
+      "case_ids": [
+        "office-close-01",
+        "office-close-02",
+        "office-far-01",
+        "office-side-01",
+        "office-side-02",
+        "office-glare-01",
+        "office-low-angle-01"
+      ],
+      "expected": "0090645"
+    }
+  ]
+}

@@ -438,8 +438,31 @@ def _trained_classifier():
 
 
 @lru_cache(maxsize=1)
+@lru_cache(maxsize=1)
 def _sequence_ocr_engine():
     return RapidOCR() if RapidOCR is not None else None
+
+
+def _ocr_detect_items(image):
+    engine = _sequence_ocr_engine()
+    if engine is None:
+        return []
+    try:
+        with _sequence_ocr_lock:
+            result, _ = engine(image, use_det=True, use_cls=False, use_rec=True)
+    except Exception:
+        logger.exception("Falha no OCR detector local")
+        return []
+    items = []
+    for item in result or []:
+        if len(item) < 3:
+            continue
+        items.append((
+            np.asarray(item[0], dtype="float32").reshape(4, 2),
+            str(item[1]),
+            float(item[2]),
+        ))
+    return items
 
 
 def _sequence_ocr(rectified) -> tuple[list[int], float]:
@@ -492,7 +515,33 @@ def _candidate_sequences_from_digits(raw_digits: list[int], total_digits: int) -
     return candidates
 
 
-def _full_frame_ocr_sequences(image, total_digits: int, slot_digits: list[int]) -> tuple[list[int], float, str | None]:
+def _candidate_prefixes_from_digits(raw_digits: list[int], target_digits: int) -> list[tuple[list[int], float]]:
+    if len(raw_digits) == target_digits:
+        return [(raw_digits, 0.0)]
+    excess = len(raw_digits) - target_digits
+    if excess <= 0 or excess > 8:
+        return []
+    candidates = []
+    for drop_positions in combinations(range(len(raw_digits)), excess):
+        sequence = [digit for index, digit in enumerate(raw_digits) if index not in drop_positions]
+        penalty = excess * 0.035
+        for index in drop_positions:
+            if raw_digits[index] == 1:
+                continue
+            # Quando a linha vem como `0090649m`, o ultimo caractere antes da
+            # unidade costuma ser o rolete/unidade colados. Remover pela cauda
+            # preserva o prefixo mecanico.
+            penalty += 0.012 + 0.006 * (len(raw_digits) - 1 - index)
+        candidates.append((sequence, penalty))
+    return candidates
+
+
+def _full_frame_ocr_sequences(
+    image,
+    total_digits: int,
+    slot_digits: list[int],
+    ocr_items=None,
+) -> tuple[list[int], float, str | None]:
     """Busca a leitura no quadro inteiro como camada de resgate.
 
     Esse detector é propositalmente secundário. Ele é mais caro e pode ler
@@ -500,32 +549,14 @@ def _full_frame_ocr_sequences(image, total_digits: int, slot_digits: list[int]) 
     que parecem a linha do hidrômetro e, quando possível, concordam com os
     slots já recortados.
     """
-    engine = _sequence_ocr_engine()
-    if engine is None:
-        return [], 0.0, None
     max_side = max(image.shape[:2])
     frame = image
-    if max_side < 1500:
+    if ocr_items is None and max_side < 1500:
         scale = 1500 / max_side
         frame = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-    try:
-        with _sequence_ocr_lock:
-            result, _ = engine(frame, use_det=True, use_cls=False, use_rec=True)
-    except Exception:
-        logger.exception("Falha no OCR local de quadro inteiro")
-        return [], 0.0, None
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(frame)
     best: tuple[float, list[int], str] | None = None
-    for item in result or []:
-        box = None
-        if len(item) >= 3:
-            box = np.asarray(item[0], dtype="float32")
-            text = str(item[1])
-            score = float(item[2])
-        elif len(item) >= 2:
-            text = str(item[0])
-            score = float(item[1])
-        else:
-            continue
+    for box, text, score in items:
         lowered = text.lower()
         if any(
             token in lowered
@@ -574,31 +605,17 @@ def _full_frame_ocr_sequences(image, total_digits: int, slot_digits: list[int]) 
     return best[1], best[0], best[2]
 
 
-def _ocr_missing_tail_sequence(image, total_digits: int) -> tuple[list[int], float, str | None]:
+def _ocr_missing_tail_sequence(image, total_digits: int, ocr_items=None) -> tuple[list[int], float, str | None]:
     """Recupera ultimo rolete quando OCR le prefixo e confunde o fim com `m3`.
 
     Fotos inclinadas podem sair como `009064m2`: o texto sequencial tem seis
     digitos confiaveis, mas o ultimo rolete vermelho fica colado na unidade.
     Neste caso isolamos a cauda da mesma linha OCR e classificamos como slot.
     """
-    engine = _sequence_ocr_engine()
-    if engine is None:
-        return [], 0.0, None
-    try:
-        with _sequence_ocr_lock:
-            result, _ = engine(image, use_det=True, use_cls=False, use_rec=True)
-    except Exception:
-        logger.exception("Falha no OCR local para resgate do ultimo rolete")
-        return [], 0.0, None
-
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
     best: tuple[float, list[int]] | None = None
     height, width = image.shape[:2]
-    for item in result or []:
-        if len(item) < 3:
-            continue
-        box = np.asarray(item[0], dtype="float32").reshape(4, 2)
-        text = str(item[1])
-        score = float(item[2])
+    for box, text, score in items:
         lowered = text.lower()
         if not any(token in lowered for token in ("m", "b", "h", "）", ")")):
             continue
@@ -640,7 +657,96 @@ def _ocr_missing_tail_sequence(image, total_digits: int) -> tuple[list[int], flo
     return best[1], best[0], "ocr_missing_tail_slot"
 
 
-def _ocr_counter_window_candidate(image, total_digits: int):
+def _ocr_meter_tail_sequence(image, total_digits: int, ocr_items=None) -> tuple[list[int], float, str | None]:
+    """Le linha do contador e reclassifica a cauda antes da unidade.
+
+    Em fotos de longe/lado, OCR costuma ler `0101910164m` ou `0090649m`:
+    prefixo tem separadores falsos e o ultimo rolete gruda na unidade. Aqui
+    normalizamos prefixo para N-1 digitos e usamos crop fisico da cauda.
+    """
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
+    meter_hints = [
+        box for box, text, _ in items
+        if re.fullmatch(r"\s*[mMhHbB][\d³²]?\s*", text)
+        or text.strip().lower() in {"m", "m3", "m³", "m2", "m²"}
+    ]
+
+    best: tuple[float, list[int]] | None = None
+    height, width = image.shape[:2]
+    for box, text, score in items:
+        lowered = text.lower()
+        if any(token in lowered for token in ("pma", "dn", "classe", "inmetro", "ml", "t50", "r80", "uj", "akvo")):
+            continue
+        ordered = _order_corners(box)
+        tl, tr, br, bl = ordered
+        horizontal = ((tr - tl) + (br - bl)) / 2
+        vertical = ((bl - tl) + (br - tr)) / 2
+        box_width = float(np.linalg.norm(horizontal))
+        box_height = float(np.linalg.norm(vertical))
+        if box_width < width * 0.08 or box_height < height * 0.010:
+            continue
+
+        has_meter_hint = any(token in lowered for token in ("m", "h", "b", "）", ")"))
+        if not has_meter_hint:
+            center_y = float(box[:, 1].mean())
+            right_x = float(box[:, 0].max())
+            for hint_box in meter_hints:
+                hint_center_y = float(hint_box[:, 1].mean())
+                hint_left_x = float(hint_box[:, 0].min())
+                if abs(hint_center_y - center_y) <= box_height * 1.7 and 0 <= hint_left_x - right_x <= box_width * 0.22:
+                    has_meter_hint = True
+                    hint_width = float(hint_box[:, 0].max() - hint_box[:, 0].min())
+                    extra = max(0.0, hint_left_x + hint_width - right_x)
+                    tr = tr + horizontal / max(box_width, 1.0) * extra
+                    br = br + horizontal / max(box_width, 1.0) * extra
+                    horizontal = ((tr - tl) + (br - bl)) / 2
+                    box_width = float(np.linalg.norm(horizontal))
+                    break
+        if not has_meter_hint:
+            continue
+
+        digit_source = re.split(r"[mMhHbB）)]", text, maxsplit=1)[0]
+        raw_digits = [int(char) for char in re.findall(r"[0-9]", digit_source)]
+        if len(raw_digits) < total_digits - 1 or len(raw_digits) > total_digits + 8:
+            continue
+        prefixes = _candidate_prefixes_from_digits(raw_digits, total_digits - 1)
+        if not prefixes:
+            continue
+        prefix, prefix_penalty = min(
+            prefixes,
+            key=lambda item: (
+                item[1],
+                abs((item[0][0] if item[0] else 0) - (raw_digits[0] if raw_digits else 0)),
+            ),
+        )
+
+        unit_x = horizontal / max(box_width, 1.0)
+        unit_y = vertical / max(box_height, 1.0)
+        slot_width = box_width / max(total_digits + 0.75, 1)
+        tail_start = slot_width * (total_digits - 1 - 0.72)
+        tail_end = slot_width * (total_digits + 0.28)
+        corners = np.array([
+            tl + unit_x * tail_start - unit_y * box_height * 0.55,
+            tl + unit_x * tail_end - unit_y * box_height * 0.55,
+            bl + unit_x * tail_end + unit_y * box_height * 1.35,
+            bl + unit_x * tail_start + unit_y * box_height * 1.35,
+        ], dtype="float32")
+        corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+        corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+        tail, _ = _rectify(image, corners)
+        observation = _slot_observation(tail, total_digits - 1)
+        if observation.value is None or observation.confidence < 0.52:
+            continue
+        sequence = [*prefix, int(observation.value)]
+        candidate_score = _clamp(score * 0.68 + observation.confidence * 0.32 - prefix_penalty)
+        if best is None or candidate_score > best[0]:
+            best = (candidate_score, sequence)
+    if best is None:
+        return [], 0.0, None
+    return best[1], best[0], "ocr_meter_tail_slot"
+
+
+def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
     """Usa detector OCR como localizador da janela quando a ancora vermelha falha.
 
     Em fotos de longe, os glifos vermelhos ficam pequenos demais para a mascara
@@ -648,24 +754,10 @@ def _ocr_counter_window_candidate(image, total_digits: int):
     perder o ultimo rolete; por isso expandimos a caixa para a direita e para
     baixo antes da retificacao.
     """
-    engine = _sequence_ocr_engine()
-    if engine is None:
-        return None
-    try:
-        with _sequence_ocr_lock:
-            result, _ = engine(image, use_det=True, use_cls=False, use_rec=True)
-    except Exception:
-        logger.exception("Falha no OCR detector para janela do hidrometro")
-        return None
-
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
     best: tuple[float, np.ndarray] | None = None
     height, width = image.shape[:2]
-    for item in result or []:
-        if len(item) < 3:
-            continue
-        box = np.asarray(item[0], dtype="float32").reshape(4, 2)
-        text = str(item[1])
-        score = float(item[2])
+    for box, text, score in items:
         lowered = text.lower()
         if any(token in lowered for token in ("pma", "dn", "q", "classe", "inmetro", "ml", "t50", "r80", "uj")):
             continue
@@ -990,8 +1082,10 @@ class MeterVisionService:
         corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
         used_fallback_roi = corners is None
         used_ocr_window = False
+        ocr_items = None
         if corners is None and expensive_ocr:
-            corners = _ocr_counter_window_candidate(image, total_digits)
+            ocr_items = _ocr_detect_items(image)
+            corners = _ocr_counter_window_candidate(image, total_digits, ocr_items)
             used_ocr_window = corners is not None
             used_fallback_roi = corners is None
         if corners is None:
@@ -1054,15 +1148,27 @@ class MeterVisionService:
         missing_tail_digits: list[int] = []
         missing_tail_confidence = 0.0
         missing_tail_mode = None
+        meter_tail_digits: list[int] = []
+        meter_tail_confidence = 0.0
+        meter_tail_mode = None
         if expensive_ocr and (fusion_mode is None or used_fallback_roi or used_ocr_window):
+            if ocr_items is None:
+                ocr_items = _ocr_detect_items(image)
             full_frame_digits, full_frame_confidence, full_frame_mode = _full_frame_ocr_sequences(
                 image,
                 total_digits,
                 slot_digits,
+                ocr_items,
             )
             missing_tail_digits, missing_tail_confidence, missing_tail_mode = _ocr_missing_tail_sequence(
                 image,
                 total_digits,
+                ocr_items,
+            )
+            meter_tail_digits, meter_tail_confidence, meter_tail_mode = _ocr_meter_tail_sequence(
+                image,
+                total_digits,
+                ocr_items,
             )
         full_frame_applied = False
         if (
@@ -1090,10 +1196,25 @@ class MeterVisionService:
             alternatives = sorted({*(alternatives or []), predicted_value})[:8]
             flags = [missing_tail_mode] + flags
             missing_tail_applied = True
+        meter_tail_applied = False
+        if (
+            meter_tail_mode
+            and len(meter_tail_digits) == total_digits
+            and meter_tail_confidence >= 0.58
+            and (predicted_value is None or used_fallback_roi or used_ocr_window or "full_frame_sequence_exact" in flags)
+        ):
+            for observation, digit in zip(observations, meter_tail_digits):
+                observation.value = digit
+            predicted_value = int("".join(map(str, meter_tail_digits))) / (10 ** max(red_digits, 0))
+            alternatives = sorted({*(alternatives or []), predicted_value})[:8]
+            flags = [meter_tail_mode] + flags
+            meter_tail_applied = True
         if (
             fusion_mode is None
             and not full_frame_applied
             and not missing_tail_applied
+            and not meter_tail_applied
+            and (used_fallback_roi or used_ocr_window)
             and (
                 used_fallback_roi
                 or ocr_confidence < 0.72
@@ -1173,6 +1294,11 @@ class MeterVisionService:
             "digits": "".join(map(str, missing_tail_digits)) if missing_tail_digits else None,
             "confidence": missing_tail_confidence,
             "fusion": missing_tail_mode if missing_tail_applied else None,
+        }
+        quality_payload["meter_tail_ocr"] = {
+            "digits": "".join(map(str, meter_tail_digits)) if meter_tail_digits else None,
+            "confidence": meter_tail_confidence,
+            "fusion": meter_tail_mode if meter_tail_applied else None,
         }
         predicted_code_result = None
         if predicted_value is not None:

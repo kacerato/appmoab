@@ -8,6 +8,7 @@ from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
     VisionResult,
+    _candidate_prefixes_from_digits,
     _candidate_sequences_from_digits,
     _decode_image,
     _fuse_digit_sequences,
@@ -113,6 +114,13 @@ def test_full_frame_candidate_normalization_prefers_false_separator_ones():
     assert best[2] is False
 
 
+def test_meter_tail_prefix_normalization_prefers_trailing_unit_noise():
+    candidates = _candidate_prefixes_from_digits([0, 0, 9, 0, 6, 4, 9], 6)
+    best = min(candidates, key=lambda item: item[1])
+
+    assert best[0] == [0, 0, 9, 0, 6, 4]
+
+
 def test_burst_consensus_uses_median_for_partial_last_digit():
     def result(code: str, confidence: float) -> VisionResult:
         return VisionResult(
@@ -138,6 +146,7 @@ def test_burst_consensus_uses_median_for_partial_last_digit():
 
     assert selected_index == 0
     assert selected.predicted_value == 90.645
+    assert selected.predicted_code == "0090645"
     assert "burst_consensus_median" in selected.flags
     assert selected.quality["burst_consensus"]["selected"] == "0090645"
 

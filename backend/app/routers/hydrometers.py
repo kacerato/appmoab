@@ -85,6 +85,7 @@ def _apply_burst_consensus(
         key=lambda row: (abs(row[1] - consensus_code), -row[2].confidence),
     )
     consensus_result.predicted_value = consensus_code / (10 ** max(red_digits, 0))
+    consensus_result.predicted_code = str(consensus_code).zfill(total_digits)
     consensus_result.alternatives = sorted({
         *(consensus_result.alternatives or []),
         *(code / (10 ** max(red_digits, 0)) for _, code, _ in group),
@@ -348,6 +349,9 @@ async def kimi_vision_verdict(
 ):
     """Executa o motor local especializado; GLM, quando habilitado, fica apenas em sombra."""
     frames = [data.photo_base64, *data.frames_base64[:4]]
+    expensive_probe_indexes = {0}
+    if len(frames) > 1:
+        expensive_probe_indexes.update({len(frames) // 2, len(frames) - 1})
     results = await asyncio.gather(*[
         asyncio.to_thread(
             meter_vision_service.analyze,
@@ -355,7 +359,7 @@ async def kimi_vision_verdict(
             red_digits=data.red_digits,
             black_digits=data.black_digits,
             previous_value=data.previous_value,
-            expensive_ocr=index == 0,
+            expensive_ocr=index in expensive_probe_indexes,
         )
         for index, frame in enumerate(frames)
     ])
@@ -373,6 +377,36 @@ async def kimi_vision_verdict(
         red_digits=data.red_digits or 3,
         black_digits=data.black_digits or 4,
     )
+    if len(frames) > 1 and "burst_consensus_median" not in vision_result.flags:
+        missing_probe_indexes = [index for index in range(len(frames)) if index not in expensive_probe_indexes]
+        if missing_probe_indexes:
+            refreshed = await asyncio.gather(*[
+                asyncio.to_thread(
+                    meter_vision_service.analyze,
+                    frames[index],
+                    red_digits=data.red_digits,
+                    black_digits=data.black_digits,
+                    previous_value=data.previous_value,
+                    expensive_ocr=True,
+                )
+                for index in missing_probe_indexes
+            ])
+            for index, result in zip(missing_probe_indexes, refreshed):
+                results[index] = result
+            best_index, vision_result = max(
+                enumerate(results),
+                key=lambda item: (
+                    bool(item[1].quality.get("usable")),
+                    item[1].confidence,
+                    -float(item[1].quality.get("blur", 1.0)),
+                ),
+            )
+            best_index, vision_result = _apply_burst_consensus(
+                list(results),
+                selected_index=best_index,
+                red_digits=data.red_digits or 3,
+                black_digits=data.black_digits or 4,
+            )
     selected_frame = frames[best_index]
     inference_id = uuid.uuid4()
     original_key = None
