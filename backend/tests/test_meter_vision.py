@@ -3,9 +3,11 @@ import base64
 import cv2
 import numpy as np
 
+from app.routers.hydrometers import _apply_burst_consensus
 from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
+    VisionResult,
     _candidate_sequences_from_digits,
     _decode_image,
     _fuse_digit_sequences,
@@ -99,6 +101,35 @@ def test_full_frame_candidate_normalization_prefers_false_separator_ones():
 
     assert best[0] == [0, 0, 2, 5, 7, 4, 8]
     assert best[2] is False
+
+
+def test_burst_consensus_uses_median_for_partial_last_digit():
+    def result(code: str, confidence: float) -> VisionResult:
+        return VisionResult(
+            predicted_code=None,
+            predicted_value=int(code) / 1000,
+            confidence=confidence,
+            auto_fill_allowed=False,
+            red_digits=3,
+            black_digits=4,
+            model_version="test",
+            quality={"usable": True, "blur": 0.1},
+            digits=[{"position": index, "value": int(digit), "confidence": confidence} for index, digit in enumerate(code)],
+            alternatives=[],
+            flags=[],
+        )
+
+    selected_index, selected = _apply_burst_consensus(
+        [result("0090645", 0.17), result("0090642", 0.96), result("0090646", 0.72)],
+        selected_index=1,
+        red_digits=3,
+        black_digits=4,
+    )
+
+    assert selected_index == 0
+    assert selected.predicted_value == 90.645
+    assert "burst_consensus_median" in selected.flags
+    assert selected.quality["burst_consensus"]["selected"] == "0090645"
 
 
 def test_transition_decoder_considers_both_visible_digits_and_history():

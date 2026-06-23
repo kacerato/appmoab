@@ -264,11 +264,11 @@ export default function CameraScreen() {
         throw new Error('A câmera não retornou a imagem. Tente novamente mantendo o aparelho firme.');
       }
       const framesBase64: string[] = [];
-      if (stage === 'reading') {
-        for (let index = 0; index < 2; index += 1) {
+      if (stage === 'reading' || stage === 'dev_test') {
+        for (let index = 0; index < 4; index += 1) {
           try {
-            await new Promise(resolve => setTimeout(resolve, 120));
-            const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.72, skipProcessing: true });
+            await new Promise(resolve => setTimeout(resolve, 90));
+            const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.74, skipProcessing: true });
             if (frame?.base64) framesBase64.push(frame.base64);
           } catch {
             break;
@@ -298,7 +298,7 @@ export default function CameraScreen() {
       if (stage === 'dev_test') {
         navigation.navigate('DevVisionTest', {
           photoUri: photo.uri,
-          framesBase64: [],
+          framesBase64,
           capturedAt: new Date().toISOString(),
           redDigits,
           blackDigits: 4,
