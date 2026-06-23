@@ -41,6 +41,8 @@ def test_local_meter_vision_returns_structured_contract():
     assert len(result.digits) == 7
     assert 0 <= result.confidence <= 1
     assert "usable" in result.quality
+    if result.predicted_value is not None:
+        assert result.predicted_code
     assert result.rectified_jpeg and result.rectified_jpeg.startswith(b"\xff\xd8")
 
 
@@ -93,6 +95,14 @@ def test_sequence_fusion_handles_transition_and_false_separator():
     )
     assert fused == [0, 0, 2, 5, 7, 4, 8]
     assert mode == "sequence_removed_separator"
+
+    fused, mode = _fuse_digit_sequences(
+        [0, 0, 9, 0, 6, 4, 5],
+        [0, 0, 1, 9, 1, 0, 1, 6, 4, 5],
+        0.91,
+    )
+    assert fused == [0, 0, 9, 0, 6, 4, 5]
+    assert mode == "sequence_removed_separators"
 
 
 def test_full_frame_candidate_normalization_prefers_false_separator_ones():
