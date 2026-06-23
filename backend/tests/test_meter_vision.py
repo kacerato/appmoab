@@ -6,6 +6,7 @@ import numpy as np
 from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
+    _candidate_sequences_from_digits,
     _decode_image,
     _fuse_digit_sequences,
     _red_roller_strip_candidate,
@@ -90,6 +91,14 @@ def test_sequence_fusion_handles_transition_and_false_separator():
     )
     assert fused == [0, 0, 2, 5, 7, 4, 8]
     assert mode == "sequence_removed_separator"
+
+
+def test_full_frame_candidate_normalization_prefers_false_separator_ones():
+    candidates = _candidate_sequences_from_digits([0, 0, 2, 1, 5, 1, 7, 4, 8], 7)
+    best = min(candidates, key=lambda item: item[1])
+
+    assert best[0] == [0, 0, 2, 5, 7, 4, 8]
+    assert best[2] is False
 
 
 def test_transition_decoder_considers_both_visible_digits_and_history():

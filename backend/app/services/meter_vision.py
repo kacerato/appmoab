@@ -14,6 +14,7 @@ import re
 import threading
 from dataclasses import asdict, dataclass
 from functools import lru_cache
+from itertools import combinations
 
 from PIL import Image, ImageDraw, ImageFile, ImageFont
 
@@ -474,6 +475,105 @@ def _sequence_ocr(rectified) -> tuple[list[int], float]:
     return [int(char) for char in text], _clamp(score)
 
 
+def _candidate_sequences_from_digits(raw_digits: list[int], total_digits: int) -> list[tuple[list[int], float, bool]]:
+    if len(raw_digits) == total_digits:
+        return [(raw_digits, 0.0, True)]
+    excess = len(raw_digits) - total_digits
+    if excess <= 0 or excess > 3:
+        return []
+    candidates = []
+    for drop_positions in combinations(range(len(raw_digits)), excess):
+        sequence = [digit for index, digit in enumerate(raw_digits) if index not in drop_positions]
+        # Divisórias verticais são frequentemente reconhecidas como "1".
+        # Dar preferência a remover esses falsos uns conserva leituras como
+        # 00251748 -> 0025748 e 002151748 -> 0025748.
+        penalty = excess * 0.035 + sum(0.025 for index in drop_positions if raw_digits[index] != 1)
+        candidates.append((sequence, penalty, False))
+    return candidates
+
+
+def _full_frame_ocr_sequences(image, total_digits: int, slot_digits: list[int]) -> tuple[list[int], float, str | None]:
+    """Busca a leitura no quadro inteiro como camada de resgate.
+
+    Esse detector é propositalmente secundário. Ele é mais caro e pode ler
+    textos como Qn, DN20, INMETRO e ponteiros; por isso só retorna sequências
+    que parecem a linha do hidrômetro e, quando possível, concordam com os
+    slots já recortados.
+    """
+    engine = _sequence_ocr_engine()
+    if engine is None:
+        return [], 0.0, None
+    max_side = max(image.shape[:2])
+    frame = image
+    if max_side < 1500:
+        scale = 1500 / max_side
+        frame = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    try:
+        with _sequence_ocr_lock:
+            result, _ = engine(frame, use_det=True, use_cls=False, use_rec=True)
+    except Exception:
+        logger.exception("Falha no OCR local de quadro inteiro")
+        return [], 0.0, None
+    best: tuple[float, list[int], str] | None = None
+    for item in result or []:
+        box = None
+        if len(item) >= 3:
+            box = np.asarray(item[0], dtype="float32")
+            text = str(item[1])
+            score = float(item[2])
+        elif len(item) >= 2:
+            text = str(item[0])
+            score = float(item[1])
+        else:
+            continue
+        lowered = text.lower()
+        if any(
+            token in lowered
+            for token in (
+                "pma",
+                "dn",
+                "q",
+                "classe",
+                "inmetro",
+                "ml",
+                "t50",
+                "r80",
+                "v-r",
+                "uj",
+            )
+        ):
+            continue
+        digits = [int(char) for char in re.findall(r"\d", text)]
+        if len(digits) < total_digits or len(digits) > total_digits + 3:
+            continue
+        has_meter_hint = any(token in lowered for token in ("m", "b", "h", "）", ")"))
+        if not has_meter_hint and len(digits) != total_digits:
+            continue
+        geometry_bonus = 0.0
+        if box is not None and box.size:
+            center_y = float(box[:, 1].mean()) / max(frame.shape[0], 1)
+            center_x = float(box[:, 0].mean()) / max(frame.shape[1], 1)
+            # A leitura principal normalmente fica na metade superior do
+            # mostrador e ocupa uma linha horizontal comprida. Penaliza textos
+            # técnicos mais baixos sem matar enquadramentos inclinados.
+            geometry_bonus += max(0.0, 0.58 - center_y) * 0.18
+            geometry_bonus -= max(0.0, center_y - 0.64) * 0.24
+            geometry_bonus -= max(0.0, 0.10 - center_x) * 0.16
+        for sequence, penalty, exact_length in _candidate_sequences_from_digits(digits, total_digits):
+            agreement = 0
+            if len(slot_digits) == total_digits:
+                agreement = sum(left == right for left, right in zip(sequence, slot_digits))
+            # Score composto: texto do OCR + concordância com os slots, punindo
+            # deleções extras. O limiar fica no chamador.
+            candidate_score = _clamp(score * 0.78 + (agreement / total_digits) * 0.22 + geometry_bonus - penalty)
+            if best is None or candidate_score > best[0]:
+                mode = "full_frame_sequence_exact" if exact_length else "full_frame_sequence_normalized"
+                best = (candidate_score, sequence, mode)
+    if best is None:
+        return [], 0.0, None
+    return best[1], best[0], best[2]
+
+
 def _fuse_digit_sequences(
     slot_digits: list[int],
     ocr_digits: list[int],
@@ -767,6 +867,23 @@ class MeterVisionService:
         slot_digits = [int(item.value) for item in observations if item.value is not None]
         ocr_digits, ocr_confidence = _sequence_ocr(rectified)
         fused_digits, fusion_mode = _fuse_digit_sequences(slot_digits, ocr_digits, ocr_confidence)
+        if fusion_mode == "sequence_exact" and len(fused_digits) == total_digits and len(slot_digits) == total_digits:
+            guarded_digits = list(fused_digits)
+            guarded_positions = []
+            for index, (observation, ocr_digit) in enumerate(zip(observations, fused_digits)):
+                if observation.value is None or int(observation.value) == int(ocr_digit):
+                    continue
+                # Quando o rolete está subindo, o OCR sequencial enxerga uma
+                # "foto inteira" do caractere e frequentemente escolhe o número
+                # errado (ex.: metade de 5 parecendo 0). O classificador por slot
+                # olha a janela física daquele rolete e preserva a hipótese
+                # mecânica nas posições instáveis.
+                if ocr_confidence < 0.94 and not observation.transitional and observation.confidence >= 0.88:
+                    guarded_digits[index] = int(observation.value)
+                    guarded_positions.append(index)
+            if guarded_positions:
+                fused_digits = guarded_digits
+                fusion_mode = "sequence_exact_slot_guard"
         if fusion_mode and len(fused_digits) == total_digits:
             for observation, digit in zip(observations, fused_digits):
                 observation.value = digit
@@ -775,6 +892,40 @@ class MeterVisionService:
             flags = [fusion_mode]
         else:
             predicted_value, alternatives, flags = _temporal_candidates(observations, red_digits, previous_value)
+        full_frame_digits: list[int] = []
+        full_frame_confidence = 0.0
+        full_frame_mode = None
+        if fusion_mode is None or used_fallback_roi:
+            full_frame_digits, full_frame_confidence, full_frame_mode = _full_frame_ocr_sequences(
+                image,
+                total_digits,
+                slot_digits,
+            )
+        full_frame_applied = False
+        if (
+            full_frame_mode
+            and len(full_frame_digits) == total_digits
+            and (fusion_mode is None or used_fallback_roi)
+            and full_frame_confidence >= (0.60 if full_frame_mode == "full_frame_sequence_exact" else 0.68)
+        ):
+            for observation, digit in zip(observations, full_frame_digits):
+                observation.value = digit
+            predicted_value = int("".join(map(str, full_frame_digits))) / (10 ** max(red_digits, 0))
+            alternatives = [predicted_value]
+            flags = [full_frame_mode] + flags
+            full_frame_applied = True
+        if (
+            fusion_mode is None
+            and not full_frame_applied
+            and (
+                used_fallback_roi
+                or ocr_confidence < 0.72
+                or (len(ocr_digits) != total_digits and ocr_confidence < 0.80)
+            )
+        ):
+            predicted_value = None
+            alternatives = []
+            flags.append("insufficient_text_evidence")
         confidences = [item.confidence for item in observations if item.value is not None]
         confidence = float(math.prod(confidences) ** (1 / len(confidences))) if len(confidences) == total_digits else 0.0
         confidence *= max(0.0, 1 - quality.blur * 0.35 - quality.glare * 0.25 - perspective * 0.2)
@@ -784,6 +935,8 @@ class MeterVisionService:
         if not quality.usable:
             confidence *= 0.25
             flags.append("recapture_recommended")
+        if predicted_value is None:
+            confidence = 0.0
         confidence = round(_clamp(confidence), 4)
         auto_fill = bool(
             predicted_value is not None
@@ -798,6 +951,11 @@ class MeterVisionService:
             "digits": "".join(map(str, ocr_digits)) if ocr_digits else None,
             "confidence": ocr_confidence,
             "fusion": fusion_mode,
+        }
+        quality_payload["full_frame_ocr"] = {
+            "digits": "".join(map(str, full_frame_digits)) if full_frame_digits else None,
+            "confidence": full_frame_confidence,
+            "fusion": full_frame_mode if full_frame_applied else None,
         }
         return VisionResult(
             predicted_code=None,
