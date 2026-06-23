@@ -61,10 +61,13 @@ export default function DevVisionTestScreen() {
   // User input/feedback states
   const [manualValue, setManualValue] = useState('');
   const [selectedRedDigits, setSelectedRedDigits] = useState<number>(3);
+  const [approveForTraining, setApproveForTraining] = useState(true);
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const [testResult, setTestResult] = useState<{
     submitted: boolean;
     wasCorrect: boolean;
+    approvedForTraining: boolean;
+    datasetStatus: string;
     difference: number;
     predicted: number;
     confirmed: number;
@@ -170,7 +173,11 @@ export default function DevVisionTestScreen() {
       const predCode = verdict?.predicted_code ?? null;
 
       // Submit feedback to populate VisionInference and active_learning dataset
-      const res = await api.post<{ was_correct: boolean }>('/hydrometers/vision-feedback', {
+      const res = await api.post<{
+        was_correct: boolean | null;
+        approved_for_training: boolean;
+        dataset_status: string;
+      }>('/hydrometers/vision-feedback', {
         inference_id: verdict?.inference_id || null,
         photo_base64: photoBase64,
         stage: 'dev_test',
@@ -184,22 +191,27 @@ export default function DevVisionTestScreen() {
         black_digits: 4,
         hydrometer_brand: null,
         hydrometer_model: null,
+        approve_for_training: approveForTraining,
       });
 
-      const wasCorrect = res.was_correct;
+      const wasCorrect = res.was_correct === true;
       const difference = predVal !== null ? Math.abs(parsedManualValue - predVal) : 0;
 
       setTestResult({
         submitted: true,
         wasCorrect,
+        approvedForTraining: res.approved_for_training,
+        datasetStatus: res.dataset_status,
         difference,
         predicted: predVal ?? 0,
         confirmed: parsedManualValue,
       });
 
       showToast(
-        wasCorrect ? 'Sucesso! Acerto' : 'Enviado! Divergência registrada',
-        wasCorrect ? 'O motor local acertou a leitura!' : 'A imagem e a correção foram salvas para treinamento.',
+        res.approved_for_training ? 'Amostra aprovada para treino' : 'Diagnóstico salvo',
+        res.approved_for_training
+          ? 'A imagem confirmada virou combustível do modelo.'
+          : 'A imagem ficou registrada fora do treino.',
         wasCorrect ? 'success' : 'warning',
       );
     } catch (error) {
@@ -410,6 +422,22 @@ export default function DevVisionTestScreen() {
                   Interpretado como {formatMeterReading(parsedManualValue)} m³ com {selectedRedDigits} dígitos vermelhos.
                 </Text>
 
+                <TouchableOpacity
+                  style={[styles.trainingToggle, approveForTraining && styles.trainingToggleActive]}
+                  onPress={() => setApproveForTraining(value => !value)}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.trainingCheck, approveForTraining && styles.trainingCheckActive]}>
+                    <Text style={styles.trainingCheckText}>{approveForTraining ? '✓' : ''}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.trainingToggleTitle}>Usar captura confirmada no treino</Text>
+                    <Text style={styles.trainingToggleHint}>
+                      Ligue quando o valor digitado foi conferido no visor. Desligue para salvar apenas diagnóstico.
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
                 {/* Submit Action */}
                 {!testResult?.submitted ? (
                   <TouchableOpacity
@@ -435,10 +463,16 @@ export default function DevVisionTestScreen() {
                         {testResult.wasCorrect ? 'ACERTOU!' : 'DIVERGÊNCIA REGISTRADA'}
                       </Text>
                     </View>
+                    <View style={[styles.trainingResultBadge, { backgroundColor: testResult.approvedForTraining ? colors.successSoft : colors.warningSoft }]}>
+                      <Text style={[styles.trainingResultText, { color: testResult.approvedForTraining ? colors.success : colors.warning }]}>
+                        {testResult.approvedForTraining ? 'ENTROU NO TREINO' : 'SALVO COMO DIAGNÓSTICO'}
+                      </Text>
+                    </View>
                     <Text style={styles.resultDetails}>
                       Predição: {testResult.predicted.toFixed(3)} m³{'\n'}
                       Confirmado: {testResult.confirmed.toFixed(3)} m³{'\n'}
-                      Diferença: {testResult.difference.toFixed(3)} m³
+                      Diferença: {testResult.difference.toFixed(3)} m³{'\n'}
+                      Dataset: {testResult.datasetStatus}
                     </Text>
                     <TouchableOpacity
                       style={[shared.btnPrimary, { marginTop: 14 }]}
@@ -776,6 +810,51 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: 'center',
   },
+  trainingToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.navy700,
+    padding: 12,
+  },
+  trainingToggleActive: {
+    borderColor: colors.success,
+    backgroundColor: colors.successSoft,
+  },
+  trainingCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.navy900,
+  },
+  trainingCheckActive: {
+    borderColor: colors.success,
+    backgroundColor: colors.success,
+  },
+  trainingCheckText: {
+    color: '#fff',
+    fontWeight: '900',
+    fontSize: 15,
+  },
+  trainingToggleTitle: {
+    color: colors.textPrimary,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  trainingToggleHint: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    lineHeight: 16,
+    marginTop: 2,
+  },
   resultBox: {
     marginTop: 18,
     paddingTop: 16,
@@ -791,6 +870,16 @@ const styles = StyleSheet.create({
   },
   resultBadgeText: {
     fontSize: 13,
+    fontWeight: '900',
+  },
+  trainingResultBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginBottom: 12,
+  },
+  trainingResultText: {
+    fontSize: 11,
     fontWeight: '900',
   },
   resultDetails: {

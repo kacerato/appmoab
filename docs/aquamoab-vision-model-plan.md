@@ -21,6 +21,11 @@ Cada amostra aprovada precisa guardar:
 - decisao do motor: aceito, revisao, recaptura;
 - latencia do caminho usado.
 
+Capturas de teste tambem entram nesse fluxo. Quando o operador confirma o valor
+real do visor, a tela de teste marca a amostra como `approved_for_training` por
+padrao. Se a captura ainda for duvidosa, ela pode ser salva apenas como
+diagnostico, sem contaminar o treino.
+
 Meta inicial para treinar/promover:
 
 - 300 fotos confirmadas;
@@ -74,3 +79,4 @@ Para fechar os angulos onde ainda ha perda:
 - 1 burst de 5 frames para cada leitura real.
 
 O app deve preferir burst automatico quando detectar distancia grande ou janela pequena.
+No teste livre, cada captura confirmada deve alimentar a mesma fila de treino das leituras reais.

@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from app.routers.hydrometers import _apply_burst_consensus
+from app.schemas.hydrometer import KimiVisionFeedbackRequest
 from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
@@ -191,3 +192,15 @@ def test_storage_decoder_and_sha_are_deterministic():
     assert (ext, mime) == ("pdf", "application/pdf")
     assert raw.startswith(b"%PDF")
     assert binary_sha256(raw) == binary_sha256(raw)
+
+
+def test_dev_vision_feedback_can_mark_confirmed_capture_for_training():
+    request = KimiVisionFeedbackRequest(
+        stage="dev_test",
+        predicted_value=90.64,
+        confirmed_value=90.645,
+        approve_for_training=True,
+    )
+
+    assert request.stage == "dev_test"
+    assert request.approve_for_training is True

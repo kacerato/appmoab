@@ -99,6 +99,7 @@ class KimiVisionFeedbackRequest(BaseModel):
     hydrometer_model: str | None = None
     reasoning_log: str | None = None
     divergence_reason: str | None = None
+    approve_for_training: bool | None = None
 
 
 class HydrometerIdentifyResponse(BaseModel):

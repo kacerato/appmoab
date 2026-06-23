@@ -301,6 +301,19 @@ async def store_kimi_vision_feedback(
     elif data.stage in ("reading", "dev_test") and data.confirmed_value is not None and data.predicted_value is not None:
         was_correct = abs(float(data.confirmed_value) - float(data.predicted_value)) <= 0.01
 
+    has_confirmed_label = bool(confirmed_code) or data.confirmed_value is not None
+    training_requested = data.approve_for_training
+    if training_requested is None:
+        training_requested = data.stage == "dev_test" and has_confirmed_label
+    training_approved = bool(training_requested and has_confirmed_label)
+    dataset_status = (
+        "approved_for_training"
+        if training_approved
+        else "diagnostic_confirmed"
+        if has_confirmed_label
+        else "diagnostic_pending_label"
+    )
+
     lesson = "Aguardando confirmacao humana."
     divergence_reason = data.divergence_reason
     if was_correct is True:
@@ -337,8 +350,25 @@ async def store_kimi_vision_feedback(
     inference.was_correct = was_correct
     inference.divergence_reason = divergence_reason
     inference.confirmed_at = datetime.now(timezone.utc)
+    if training_approved:
+        inference.approved_for_training = True
+    elif data.approve_for_training is False:
+        inference.approved_for_training = False
+    inference.quality = {
+        **(inference.quality or {}),
+        "dataset_source": data.stage,
+        "dataset_status": dataset_status,
+        "training_requested": bool(training_requested),
+        "has_confirmed_label": has_confirmed_label,
+    }
     await db.flush()
-    return {"id": str(inference.id), "was_correct": was_correct, "lesson": lesson}
+    return {
+        "id": str(inference.id),
+        "was_correct": was_correct,
+        "lesson": lesson,
+        "approved_for_training": inference.approved_for_training,
+        "dataset_status": dataset_status,
+    }
 
 
 @router.post("/vision-verdict")
@@ -583,6 +613,12 @@ async def export_vision_training_dataset(
             "predicted_code": predicted_code,
             "predicted_value": item.predicted_value,
             "was_correct": item.was_correct,
+            "approved_for_training": item.approved_for_training,
+            "dataset_source": (item.quality or {}).get("dataset_source", item.stage),
+            "dataset_status": (item.quality or {}).get(
+                "dataset_status",
+                "approved_for_training" if item.approved_for_training else "diagnostic_confirmed",
+            ),
             "confidence": item.confidence,
             "red_digits": item.red_digits,
             "black_digits": item.black_digits,
