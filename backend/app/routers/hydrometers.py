@@ -32,11 +32,79 @@ from app.schemas.hydrometer import (
 )
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
-from app.services.meter_vision import meter_vision_service
+from app.services.meter_vision import VisionResult, meter_vision_service
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import decode_base64_upload, save_binary
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
+
+
+def _meter_result_code(result: VisionResult, total_digits: int, red_digits: int) -> int | None:
+    if result.predicted_value is None:
+        return None
+    return int(round(float(result.predicted_value) * (10 ** max(red_digits, 0)))) % (10 ** total_digits)
+
+
+def _apply_burst_consensus(
+    results: list[VisionResult],
+    *,
+    selected_index: int,
+    red_digits: int,
+    black_digits: int,
+) -> tuple[int, VisionResult]:
+    """Combina frames da mesma captura para reduzir erro no ultimo rolete.
+
+    O caso comum de longe/parcial é: todos concordam no prefixo `009064`, mas
+    o ultimo rolete vira 2/5/6 conforme blur e fase. A mediana do burst remove
+    outlier sem inventar valor quando não há votos suficientes.
+    """
+    total_digits = max(3, min(black_digits + red_digits, 10))
+    candidates: list[tuple[int, int, VisionResult]] = []
+    for index, result in enumerate(results):
+        code = _meter_result_code(result, total_digits, red_digits)
+        if code is None:
+            continue
+        candidates.append((index, code, result))
+    if len(candidates) < 3:
+        return selected_index, results[selected_index]
+
+    groups: dict[int, list[tuple[int, int, VisionResult]]] = {}
+    for candidate in candidates:
+        prefix = candidate[1] // 10
+        groups.setdefault(prefix, []).append(candidate)
+    prefix, group = max(groups.items(), key=lambda item: (len(item[1]), sum(row[2].confidence for row in item[1])))
+    if len(group) < 3:
+        return selected_index, results[selected_index]
+    ordered_codes = sorted(code for _, code, _ in group)
+    consensus_code = ordered_codes[len(ordered_codes) // 2]
+    if consensus_code // 10 != prefix:
+        return selected_index, results[selected_index]
+
+    consensus_index, _, consensus_result = min(
+        group,
+        key=lambda row: (abs(row[1] - consensus_code), -row[2].confidence),
+    )
+    consensus_result.predicted_value = consensus_code / (10 ** max(red_digits, 0))
+    consensus_result.alternatives = sorted({
+        *(consensus_result.alternatives or []),
+        *(code / (10 ** max(red_digits, 0)) for _, code, _ in group),
+    })[:8]
+    consensus_result.flags = list(dict.fromkeys(["burst_consensus_median", *consensus_result.flags]))
+    consensus_result.confidence = round(max(consensus_result.confidence, min(0.93, 0.72 + 0.05 * len(group))), 4)
+    consensus_result.auto_fill_allowed = False
+    if len(consensus_result.digits) == total_digits:
+        digits = str(consensus_code).zfill(total_digits)
+        for item, digit in zip(consensus_result.digits, digits):
+            item["value"] = int(digit)
+    consensus_result.quality = {
+        **consensus_result.quality,
+        "burst_consensus": {
+            "prefix": str(prefix).zfill(total_digits - 1),
+            "votes": [str(code).zfill(total_digits) for _, code, _ in group],
+            "selected": str(consensus_code).zfill(total_digits),
+        },
+    }
+    return consensus_index, consensus_result
 
 
 async def _fetch_hydrometer_response(db: AsyncSession, hydrometer_id: uuid.UUID) -> Hydrometer | None:
@@ -297,6 +365,12 @@ async def kimi_vision_verdict(
             item[1].confidence,
             -float(item[1].quality.get("blur", 1.0)),
         ),
+    )
+    best_index, vision_result = _apply_burst_consensus(
+        list(results),
+        selected_index=best_index,
+        red_digits=data.red_digits or 3,
+        black_digits=data.black_digits or 4,
     )
     selected_frame = frames[best_index]
     inference_id = uuid.uuid4()

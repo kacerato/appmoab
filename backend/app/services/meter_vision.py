@@ -574,6 +574,71 @@ def _full_frame_ocr_sequences(image, total_digits: int, slot_digits: list[int]) 
     return best[1], best[0], best[2]
 
 
+def _ocr_counter_window_candidate(image, total_digits: int):
+    """Usa detector OCR como localizador da janela quando a ancora vermelha falha.
+
+    Em fotos de longe, os glifos vermelhos ficam pequenos demais para a mascara
+    HSV, mas o detector de texto ainda encontra a linha `009064m`. O texto pode
+    perder o ultimo rolete; por isso expandimos a caixa para a direita e para
+    baixo antes da retificacao.
+    """
+    engine = _sequence_ocr_engine()
+    if engine is None:
+        return None
+    try:
+        with _sequence_ocr_lock:
+            result, _ = engine(image, use_det=True, use_cls=False, use_rec=True)
+    except Exception:
+        logger.exception("Falha no OCR detector para janela do hidrometro")
+        return None
+
+    best: tuple[float, np.ndarray] | None = None
+    height, width = image.shape[:2]
+    for item in result or []:
+        if len(item) < 3:
+            continue
+        box = np.asarray(item[0], dtype="float32").reshape(4, 2)
+        text = str(item[1])
+        score = float(item[2])
+        lowered = text.lower()
+        if any(token in lowered for token in ("pma", "dn", "q", "classe", "inmetro", "ml", "t50", "r80", "uj")):
+            continue
+        digits = re.findall(r"\d", text)
+        if not (total_digits - 1 <= len(digits) <= total_digits + 2):
+            continue
+        if not any(token in lowered for token in ("m", "b", "h", "）", ")")) and len(digits) != total_digits:
+            continue
+        ordered = _order_corners(box)
+        tl, tr, br, bl = ordered
+        horizontal = ((tr - tl) + (br - bl)) / 2
+        vertical = ((bl - tl) + (br - tr)) / 2
+        box_width = float(np.linalg.norm(horizontal))
+        box_height = float(np.linalg.norm(vertical))
+        if box_width < width * 0.08 or box_height < height * 0.010:
+            continue
+        unit_x = horizontal / max(box_width, 1.0)
+        unit_y = vertical / max(box_height, 1.0)
+        slot_width = box_width / max(len(digits), total_digits - 1, 1)
+        missing = max(total_digits - len(digits), 0)
+        # OCR da linha costuma terminar antes do ultimo rolete vermelho.
+        left_extension = slot_width * 0.20
+        right_extension = slot_width * (0.78 + missing)
+        vertical_padding = max(box_height * 0.38, slot_width * 0.14)
+        corners = np.array([
+            tl - unit_x * left_extension - unit_y * vertical_padding,
+            tr + unit_x * right_extension - unit_y * vertical_padding,
+            br + unit_x * right_extension + unit_y * vertical_padding,
+            bl - unit_x * left_extension + unit_y * vertical_padding,
+        ], dtype="float32")
+        corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+        corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+        center_y = float(box[:, 1].mean()) / max(height, 1)
+        score = score + min(len(digits), total_digits) * 0.05 - max(0.0, center_y - 0.66) * 0.3
+        if best is None or score > best[0]:
+            best = (score, corners)
+    return best[1] if best else None
+
+
 def _fuse_digit_sequences(
     slot_digits: list[int],
     ocr_digits: list[int],
@@ -839,8 +904,15 @@ class MeterVisionService:
 
         frame_quality = _quality(image)
         resolved_black_digits = black_digits or 4
+        total_digits = resolved_black_digits + red_digits
+        total_digits = max(3, min(total_digits, 10))
         corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
         used_fallback_roi = corners is None
+        used_ocr_window = False
+        if corners is None:
+            corners = _ocr_counter_window_candidate(image, total_digits)
+            used_ocr_window = corners is not None
+            used_fallback_roi = corners is None
         if corners is None:
             corners, used_fallback_roi = _display_candidate(image)
         rectified, perspective = _rectify(image, corners)
@@ -852,8 +924,6 @@ class MeterVisionService:
             quality.usable = False
             quality.recapture_reason = "Angulo muito lateral. Posicione a camera mais de frente para o visor."
 
-        total_digits = resolved_black_digits + red_digits
-        total_digits = max(3, min(total_digits, 10))
         margin_x = max(int(rectified.shape[1] * 0.025), 1)
         margin_y = max(int(rectified.shape[0] * 0.08), 1)
         usable_roi = rectified[margin_y:rectified.shape[0] - margin_y, margin_x:rectified.shape[1] - margin_x]
@@ -932,6 +1002,9 @@ class MeterVisionService:
         if used_fallback_roi:
             confidence *= 0.72
             flags.append("fallback_roi")
+        if used_ocr_window:
+            confidence *= 0.92
+            flags.append("ocr_window")
         if not quality.usable:
             confidence *= 0.25
             flags.append("recapture_recommended")
