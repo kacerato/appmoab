@@ -930,12 +930,17 @@ class MeterVisionService:
         usable_roi = rectified[margin_y:rectified.shape[0] - margin_y, margin_x:rectified.shape[1] - margin_x]
         slot_width = usable_roi.shape[1] / total_digits
         observations = []
+        slots = []
         for index in range(total_digits):
             start = max(0, int(index * slot_width - slot_width * 0.08))
             end = min(usable_roi.shape[1], int((index + 1) * slot_width + slot_width * 0.08))
-            observations.append(_slot_observation(usable_roi[:, start:end], index))
+            slot = usable_roi[:, start:end]
+            slots.append(slot)
+            observations.append(_slot_observation(slot, index))
 
         slot_digits = [int(item.value) for item in observations if item.value is not None]
+        original_slot_values = [item.value for item in observations]
+        original_slot_confidences = [item.confidence for item in observations]
         ocr_digits, ocr_confidence = _sequence_ocr(rectified)
         fused_digits, fusion_mode = _fuse_digit_sequences(slot_digits, ocr_digits, ocr_confidence)
         if fusion_mode == "sequence_exact" and len(fused_digits) == total_digits and len(slot_digits) == total_digits:
@@ -997,6 +1002,38 @@ class MeterVisionService:
             predicted_value = None
             alternatives = []
             flags.append("insufficient_text_evidence")
+        if predicted_value is not None and slots and total_digits >= 2:
+            total_scale = 10 ** max(red_digits, 0)
+            predicted_code = str(int(round(float(predicted_value) * total_scale))).zfill(total_digits)[-total_digits:]
+            last_index = total_digits - 1
+            last_slot = slots[last_index]
+            top_digit, top_confidence, _ = _classify(last_slot[: max(int(last_slot.shape[0] * 0.72), 1)])
+            slot_digit = original_slot_values[last_index]
+            slot_confidence = original_slot_confidences[last_index]
+            current_last_digit = int(predicted_code[-1])
+            corrected_last_digit = None
+            if (
+                slot_digit is not None
+                and int(slot_digit) != current_last_digit
+                and int(slot_digit) == top_digit
+                and slot_confidence >= 0.94
+                and top_confidence >= 0.94
+            ):
+                corrected_last_digit = int(slot_digit)
+            elif (
+                top_digit is not None
+                and int(top_digit) != current_last_digit
+                and top_confidence >= 0.94
+                and slot_confidence < 0.90
+            ):
+                corrected_last_digit = int(top_digit)
+            if corrected_last_digit is not None:
+                corrected_code = predicted_code[:-1] + str(corrected_last_digit)
+                predicted_value = int(corrected_code) / total_scale
+                alternatives = sorted({*(alternatives or []), int(predicted_code) / total_scale, predicted_value})[:8]
+                observations[last_index].value = corrected_last_digit
+                observations[last_index].confidence = round(max(observations[last_index].confidence, top_confidence), 4)
+                flags.append("roller_top_digit_correction")
         confidences = [item.confidence for item in observations if item.value is not None]
         confidence = float(math.prod(confidences) ** (1 / len(confidences))) if len(confidences) == total_digits else 0.0
         confidence *= max(0.0, 1 - quality.blur * 0.35 - quality.glare * 0.25 - perspective * 0.2)
