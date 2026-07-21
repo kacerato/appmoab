@@ -5,6 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import { api } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { useFeedback } from '../lib/feedback';
+import { useMobileTheme } from '../lib/mobile-theme';
 import { formatMeterReading } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
 
@@ -12,8 +13,8 @@ interface ReadingItem {
   id: string;
   hydrometer_id: string;
   collaborator_id: string;
-  current_value: number;
-  consumption: number;
+  current_value: number | null;
+  consumption: number | null;
   captured_at: string;
   status: string;
   customer_name: string | null;
@@ -28,6 +29,8 @@ export default function DayHistoryScreen() {
   const navigation = useNavigation<any>();
   const { user } = useAuth();
   const { showToast } = useFeedback();
+  const { mode } = useMobileTheme();
+  styles = useMemo(createStyles, [mode]);
   const [readings, setReadings] = useState<ReadingItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -100,7 +103,9 @@ export default function DayHistoryScreen() {
                 </View>
 
                 <Text style={styles.valueLine}>
-                  Leitura {formatMeterReading(item.current_value)} m³ • Consumo {formatMeterReading(item.consumption)} m³
+                  {item.current_value === null || item.consumption === null
+                    ? 'Captura aguardando conferência no dashboard'
+                    : `Leitura ${formatMeterReading(item.current_value)} m³ • Consumo ${formatMeterReading(item.consumption)} m³`}
                 </Text>
               </View>
             )}
@@ -144,7 +149,10 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+let styles = createStyles();
+
+function createStyles() {
+  return StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.navy950,
@@ -258,4 +266,5 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginTop: 8,
   },
-});
+  });
+}

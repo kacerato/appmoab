@@ -5,67 +5,80 @@
     {
       "id": "office-close-01",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538767_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "close", "transition"]
     },
     {
       "id": "office-close-02",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538766_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "close", "transition"]
     },
     {
       "id": "office-far-01",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538765_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "far", "transition"]
     },
     {
       "id": "office-side-01",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538764_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "side", "transition"]
     },
     {
       "id": "office-side-02",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538763_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "side", "transition"]
     },
     {
       "id": "office-glare-01",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538762_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "glare", "transition"]
     },
     {
       "id": "office-low-angle-01",
       "path": "C:/Users/jamaa/Downloads/photo_5030535533150538761_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["office", "low-angle", "transition"]
     },
     {
       "id": "field-akvo-0138087",
       "path": "C:/Users/jamaa/Downloads/photo_5179523542012333135_w.jpg",
-      "expected": "0138087"
+      "expected": "0138087",
+      "tags": ["field", "akvometer"]
     },
     {
       "id": "field-akvo-0090645",
       "path": "C:/Users/jamaa/Downloads/photo_5028347320327670831_w.jpg",
-      "expected": "0090645"
+      "expected": "0090645",
+      "tags": ["field", "akvometer", "transition"]
     },
     {
       "id": "field-hidro-0220135",
       "path": "C:/Users/jamaa/Downloads/photo_5179523542012333139_w.jpg",
-      "expected": "0220135"
+      "expected": "0220135",
+      "tags": ["field", "hidrometer"]
     },
     {
       "id": "field-hidro-0025748",
       "path": "C:/Users/jamaa/Downloads/photo_5179523542012333138_w.jpg",
-      "expected": "0025748"
+      "expected": "0025748",
+      "tags": ["field", "hidrometer", "dirty"]
     },
     {
       "id": "field-akvo-0010467",
       "path": "C:/Users/jamaa/Downloads/photo_5179523542012333137_w.jpg",
-      "expected": "0010467"
+      "expected": "0010467",
+      "tags": ["field", "akvometer"]
     },
     {
       "id": "field-akvo-0072381",
       "path": "C:/Users/jamaa/Downloads/photo_5179523542012333136_w.jpg",
-      "expected": "0072381"
+      "expected": "0072381",
+      "tags": ["field", "akvometer"]
     }
   ],
   "bursts": [

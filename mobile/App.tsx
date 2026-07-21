@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { ActivityIndicator, AppState, AppStateStatus, View } from 'react-native';
+import { ActivityIndicator, AppState, AppStateStatus, StatusBar as NativeStatusBar, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as NavigationBar from 'expo-navigation-bar';
 import { NavigationContainer } from '@react-navigation/native';
@@ -53,10 +53,24 @@ function AppNavigator() {
 
 function AppShell() {
   const { mode } = useMobileTheme();
+
+  useEffect(() => {
+    // Android owns the pixels above the safe area. Keep them in the same
+    // palette as the active screen instead of letting the system fall back to
+    // its (light) window background when the theme changes.
+    void NavigationBar.setButtonStyleAsync(mode === 'dark' ? 'light' : 'dark');
+  }, [mode]);
+
   return (
     <FeedbackProvider>
       <NavigationContainer>
-        <StatusBar hidden style={mode === 'dark' ? 'light' : 'dark'} translucent />
+        <StatusBar
+          animated
+          backgroundColor={colors.navy950}
+          hidden
+          style={mode === 'dark' ? 'light' : 'dark'}
+          translucent={false}
+        />
         <AppNavigator />
       </NavigationContainer>
     </FeedbackProvider>
@@ -66,6 +80,7 @@ function AppShell() {
 export default function App() {
   useEffect(() => {
     const applyImmersiveMode = () => {
+      NativeStatusBar.setHidden(true, 'fade');
       void NavigationBar.setBehaviorAsync('overlay-swipe');
       void NavigationBar.setVisibilityAsync('hidden');
       void NavigationBar.setButtonStyleAsync('light');

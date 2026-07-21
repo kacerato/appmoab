@@ -41,6 +41,45 @@ class WhatsAppService:
             )
         return self._client
 
+    async def health(self) -> dict:
+        """Consulta a sessao real da Evolution sem expor URL, chave ou instancia."""
+        configured = bool(
+            settings.whatsapp_enabled
+            and settings.evolution_api_url
+            and settings.evolution_api_key
+            and settings.evolution_instance_name
+        )
+        result = {
+            "enabled": settings.whatsapp_enabled,
+            "configured": configured,
+            "reachable": False,
+            "connected": False,
+            "instance_state": "disabled" if not settings.whatsapp_enabled else "unknown",
+            "error": None,
+        }
+        if not configured:
+            result["error"] = "Configuracao da Evolution incompleta."
+            return result
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/instance/connectionState/{settings.evolution_instance_name}")
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            instance = payload.get("instance") if isinstance(payload.get("instance"), dict) else {}
+            state = str(instance.get("state") or payload.get("state") or "unknown").lower()
+            result.update({
+                "reachable": True,
+                "connected": state in {"open", "connected"},
+                "instance_state": state,
+            })
+        except httpx.HTTPStatusError as exc:
+            result["error"] = f"Evolution respondeu HTTP {exc.response.status_code}."
+        except Exception as exc:
+            logger.warning("Falha ao consultar estado da Evolution: %s", exc)
+            result["error"] = "Nao foi possivel consultar a Evolution."
+        return result
+
     async def send_template(
         self,
         phone: str,

@@ -1,4 +1,3 @@
-import { StyleSheet } from 'react-native';
 
 export const lightColors = {
   navy950: '#F8FAFC',
@@ -58,20 +57,30 @@ export function applyColorMode(mode: 'light' | 'dark') {
   Object.assign(colors, mode === 'dark' ? darkColors : lightColors);
 }
 
-export const shared = StyleSheet.create({
-  container: {
+// These styles deliberately stay as plain objects instead of StyleSheet.create.
+// `colors` is updated at runtime when the operator changes the theme; styles
+// registered by StyleSheet.create capture the initial (light) color values.
+export const shared: any = {
+  get container() {
+    return {
     flex: 1,
     backgroundColor: colors.navy950,
+    };
   },
-  safeArea: {
+  get safeArea() {
+    return {
     flex: 1,
     backgroundColor: colors.navy950,
+    };
   },
-  pagePadding: {
+  get pagePadding() {
+    return {
     paddingHorizontal: 20,
     paddingVertical: 18,
+    };
   },
-  card: {
+  get card() {
+    return {
     backgroundColor: colors.navy900,
     borderRadius: 14,
     borderWidth: 1,
@@ -83,16 +92,20 @@ export const shared = StyleSheet.create({
     shadowOpacity: 0.06,
     shadowRadius: 14,
     elevation: 2,
+    };
   },
-  sectionTitle: {
+  get sectionTitle() {
+    return {
     color: colors.textMuted,
     fontSize: 11,
     fontWeight: '800',
     marginBottom: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
+    };
   },
-  input: {
+  get input() {
+    return {
     backgroundColor: colors.navy900,
     borderWidth: 1,
     borderColor: colors.border,
@@ -101,16 +114,20 @@ export const shared = StyleSheet.create({
     fontSize: 15,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    };
   },
-  label: {
+  get label() {
+    return {
     fontSize: 11,
     fontWeight: '700',
     color: colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 6,
+    };
   },
-  btnPrimary: {
+  get btnPrimary() {
+    return {
     backgroundColor: colors.accent,
     borderRadius: 12,
     paddingVertical: 14,
@@ -118,13 +135,17 @@ export const shared = StyleSheet.create({
     justifyContent: 'center' as const,
     flexDirection: 'row' as const,
     gap: 8,
+    };
   },
-  btnPrimaryText: {
+  get btnPrimaryText() {
+    return {
     color: '#fff',
     fontSize: 15,
     fontWeight: '700',
+    };
   },
-  btnSecondary: {
+  get btnSecondary() {
+    return {
     backgroundColor: colors.navy700,
     borderWidth: 1,
     borderColor: colors.border,
@@ -132,24 +153,32 @@ export const shared = StyleSheet.create({
     paddingVertical: 12,
     alignItems: 'center' as const,
     justifyContent: 'center' as const,
+    };
   },
-  btnSecondaryText: {
+  get btnSecondaryText() {
+    return {
     color: colors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
+    };
   },
-  title: {
+  get title() {
+    return {
     fontSize: 24,
     fontWeight: '800',
     color: colors.textPrimary,
     letterSpacing: 0,
+    };
   },
-  subtitle: {
+  get subtitle() {
+    return {
     fontSize: 13,
     color: colors.textMuted,
     marginTop: 2,
+    };
   },
-  headerBar: {
+  get headerBar() {
+    return {
     paddingHorizontal: 20,
     paddingVertical: 18,
     backgroundColor: colors.navy900,
@@ -158,22 +187,29 @@ export const shared = StyleSheet.create({
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
     justifyContent: 'space-between' as const,
+    };
   },
-  glassCard: {
+  get glassCard() {
+    return {
     backgroundColor: colors.navy900,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
     padding: 18,
+    };
   },
-  badge: {
+  get badge() {
+    return {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
     alignSelf: 'flex-start' as const,
+    };
   },
-  badgeText: {
+  get badgeText() {
+    return {
     fontSize: 11,
     fontWeight: '700',
+    };
   },
-});
+};

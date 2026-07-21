@@ -91,6 +91,30 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "readings", "validation_flags JSONB NOT NULL DEFAULT '[]'::jsonb", "validation_flags")
     await _add_column_if_missing(conn, "readings", "anomaly_override_reason TEXT", "anomaly_override_reason")
     await _add_column_if_missing(conn, "readings", "vision_inference_id UUID REFERENCES vision_inferences(id) ON DELETE SET NULL", "vision_inference_id")
+    if await _column_is_not_null(conn, "readings", "current_value"):
+        await conn.execute(text("ALTER TABLE readings ALTER COLUMN current_value DROP NOT NULL"))
+    if await _column_is_not_null(conn, "readings", "consumption"):
+        await conn.execute(text("ALTER TABLE readings ALTER COLUMN consumption DROP NOT NULL"))
+    dashboard_confirmation_was_missing = not await _column_exists(conn, "readings", "review_adjustment_reason")
+    await _add_column_if_missing(conn, "readings", "review_adjustment_reason TEXT", "review_adjustment_reason")
+    if dashboard_confirmation_was_missing:
+        await conn.execute(text("""
+            UPDATE readings
+            SET photo_extracted_value = COALESCE(photo_extracted_value, current_value),
+                current_value = NULL,
+                consumption = NULL
+            WHERE status = 'pending'
+        """))
+
+    await _add_column_if_missing(conn, "vision_inferences", "frame_object_keys JSONB", "frame_object_keys")
+    await _add_column_if_missing(conn, "vision_inferences", "capture_id UUID", "capture_id")
+    await _add_column_if_missing(conn, "vision_inferences", "capture_metadata JSONB", "capture_metadata")
+    await _add_column_if_missing(conn, "vision_inferences", "decision VARCHAR(30) NOT NULL DEFAULT 'confirm'", "decision")
+    await _add_column_if_missing(conn, "vision_inferences", "calibrated_confidence DOUBLE PRECISION", "calibrated_confidence")
+    await _add_column_if_missing(conn, "vision_inferences", "decoder_version VARCHAR(100)", "decoder_version")
+    await _add_column_if_missing(conn, "vision_inferences", "calibration_version VARCHAR(100)", "calibration_version")
+    await _add_column_if_missing(conn, "vision_inferences", "slot_labels JSONB", "slot_labels")
+    await _add_column_if_missing(conn, "vision_inferences", "dataset_version VARCHAR(100)", "dataset_version")
 
     await _add_column_if_missing(conn, "invoices", "original_amount DOUBLE PRECISION", "original_amount")
     if await _has_rows_matching(conn, "invoices", "original_amount IS NULL"):
@@ -122,6 +146,11 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "system_settings", "default_due_day INTEGER NOT NULL DEFAULT 10", "default_due_day")
     await _add_column_if_missing(conn, "system_settings", "auto_send_invoice_on_approval BOOLEAN NOT NULL DEFAULT true", "auto_send_invoice_on_approval")
     await _add_column_if_missing(conn, "system_settings", "notification_flows JSONB NOT NULL DEFAULT '{}'::jsonb", "notification_flows")
+
+    await _add_column_if_missing(conn, "notifications", "idempotency_key VARCHAR(255)", "idempotency_key")
+    await _add_column_if_missing(conn, "notifications", "attempt_count INTEGER NOT NULL DEFAULT 0", "attempt_count")
+    await _add_column_if_missing(conn, "notifications", "last_attempt_at TIMESTAMP WITH TIME ZONE", "last_attempt_at")
+    await _add_column_if_missing(conn, "notifications", "next_attempt_at TIMESTAMP WITH TIME ZONE", "next_attempt_at")
 
     if not await _table_exists(conn, "whatsapp_messages"):
         await conn.execute(text("""
@@ -160,9 +189,14 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _create_index_if_missing(conn, "ix_invoices_customer_paid_date", "CREATE INDEX ix_invoices_customer_paid_date ON invoices (customer_id, paid_date DESC) WHERE paid_date IS NOT NULL")
     await _create_index_if_missing(conn, "ix_invoices_reference_month", "CREATE INDEX ix_invoices_reference_month ON invoices (reference_month)")
     await _create_index_if_missing(conn, "ix_invoices_efi_charge_id", "CREATE INDEX ix_invoices_efi_charge_id ON invoices (efi_charge_id)")
+    await _create_index_if_missing(conn, "ux_invoices_reading_id", "CREATE UNIQUE INDEX ux_invoices_reading_id ON invoices (reading_id) WHERE reading_id IS NOT NULL")
     await _create_index_if_missing(conn, "ix_invoice_documents_invoice_created", "CREATE INDEX ix_invoice_documents_invoice_created ON invoice_documents (invoice_id, created_at DESC)")
     await _create_index_if_missing(conn, "ix_invoice_documents_customer_id", "CREATE INDEX ix_invoice_documents_customer_id ON invoice_documents (customer_id)")
     await _create_index_if_missing(conn, "ix_vision_inferences_created", "CREATE INDEX ix_vision_inferences_created ON vision_inferences (created_at DESC)")
     await _create_index_if_missing(conn, "ix_vision_inferences_training_queue", "CREATE INDEX ix_vision_inferences_training_queue ON vision_inferences (approved_for_training, was_correct, created_at DESC)")
+    await _create_index_if_missing(conn, "ix_vision_inferences_capture_id", "CREATE INDEX ix_vision_inferences_capture_id ON vision_inferences (capture_id)")
+    await _create_index_if_missing(conn, "ix_vision_inferences_decision", "CREATE INDEX ix_vision_inferences_decision ON vision_inferences (decision)")
     await _create_index_if_missing(conn, "ix_whatsapp_messages_phone_created_at", "CREATE INDEX ix_whatsapp_messages_phone_created_at ON whatsapp_messages (phone, created_at DESC)")
     await _create_index_if_missing(conn, "ix_whatsapp_messages_external_message_id", "CREATE INDEX ix_whatsapp_messages_external_message_id ON whatsapp_messages (external_message_id)")
+    await _create_index_if_missing(conn, "ix_notifications_idempotency_key", "CREATE UNIQUE INDEX ix_notifications_idempotency_key ON notifications (idempotency_key) WHERE idempotency_key IS NOT NULL")
+    await _create_index_if_missing(conn, "ix_notifications_retry", "CREATE INDEX ix_notifications_retry ON notifications (status, next_attempt_at) WHERE status IN ('queued', 'failed')")

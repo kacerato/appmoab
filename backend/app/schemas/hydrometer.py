@@ -69,7 +69,10 @@ class HydrometerListResponse(BaseModel):
 
 class HydrometerIdentifyRequest(BaseModel):
     photo_base64: str
-    frames_base64: list[str] = Field(default_factory=list)
+    frames_base64: list[str] = Field(default_factory=list, max_length=7)
+    capture_id: UUID | None = None
+    capture_metadata: dict = Field(default_factory=dict)
+    frame_metadata: list[dict] = Field(default_factory=list, max_length=8)
     hydrometer_id: UUID | None = None
     stage: str = "reading"
     red_digits: int | None = 3
@@ -100,6 +103,7 @@ class KimiVisionFeedbackRequest(BaseModel):
     reasoning_log: str | None = None
     divergence_reason: str | None = None
     approve_for_training: bool | None = None
+    slot_labels: list[dict] = Field(default_factory=list, max_length=10)
 
 
 class HydrometerIdentifyResponse(BaseModel):

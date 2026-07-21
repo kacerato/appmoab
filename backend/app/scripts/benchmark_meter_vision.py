@@ -59,7 +59,9 @@ def _case_result(result: VisionResult, expected: str, latency_ms: float) -> dict
         "exact": exact,
         "digit_accuracy": round(_digit_accuracy(result.predicted_code, expected), 6),
         "confidence": round(result.confidence, 6),
+        "calibrated_confidence": result.calibrated_confidence,
         "auto_fill_allowed": result.auto_fill_allowed,
+        "decision": result.decision,
         "latency_ms": round(latency_ms, 3),
         "flags": result.flags,
     }
@@ -89,6 +91,7 @@ def run_benchmark(case_file: Path, expensive_ocr: bool = True) -> dict[str, Any]
         per_case.append({
             "id": item["id"],
             "path": item["path"],
+            "tags": list(item.get("tags") or []),
             **_case_result(result, str(item["expected"]), latency_ms),
         })
 
@@ -119,6 +122,20 @@ def run_benchmark(case_file: Path, expensive_ocr: bool = True) -> dict[str, Any]
         for item in per_case
         if not item["exact"] and item["predicted"] and item["auto_fill_allowed"]
     )
+    transition_cases = [item for item in per_case if "transition" in item.get("tags", [])]
+    auto_fill_cases = [item for item in per_case if item["auto_fill_allowed"]]
+    scenario_metrics = {}
+    for tag in sorted({tag for item in per_case for tag in item.get("tags", [])}):
+        tagged = [item for item in per_case if tag in item.get("tags", [])]
+        scenario_metrics[tag] = {
+            "count": len(tagged),
+            "exact_accuracy": round(sum(1 for item in tagged if item["exact"]) / len(tagged), 6),
+            "digit_accuracy": round(statistics.mean(float(item["digit_accuracy"]) for item in tagged), 6),
+        }
+    burst_exact_accuracy = (
+        sum(1 for item in burst_results if item["exact"]) / len(burst_results)
+        if burst_results else 0.0
+    )
 
     return {
         "red_digits": red_digits,
@@ -129,11 +146,20 @@ def run_benchmark(case_file: Path, expensive_ocr: bool = True) -> dict[str, Any]
         "avg_ms": round(statistics.mean(latencies), 3) if latencies else 0.0,
         "p95_ms": round(_p95(latencies), 3),
         "silent_errors": silent_errors,
+        "auto_fill_precision": round(
+            sum(1 for item in auto_fill_cases if item["exact"]) / len(auto_fill_cases), 6
+        ) if auto_fill_cases else None,
+        "transition_count": len(transition_cases),
+        "transition_exact_accuracy": round(
+            sum(1 for item in transition_cases if item["exact"]) / len(transition_cases), 6
+        ) if transition_cases else 0.0,
+        "burst_exact_accuracy": round(burst_exact_accuracy, 6),
         "review_or_recapture": sum(
             1 for item in per_case if "recapture_recommended" in item["flags"] or not item["predicted"]
         ),
         "cases": per_case,
         "bursts": burst_results,
+        "scenarios": scenario_metrics,
     }
 
 
@@ -141,8 +167,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case-file", type=Path, required=True)
     parser.add_argument("--fast", action="store_true", help="Desliga OCR caro para medir caminho rapido.")
+    parser.add_argument("--output", type=Path, help="Também grava o relatório JSON neste caminho.")
     args = parser.parse_args()
-    print(json.dumps(run_benchmark(args.case_file, expensive_ocr=not args.fast), indent=2, ensure_ascii=False))
+    report = run_benchmark(args.case_file, expensive_ocr=not args.fast)
+    rendered = json.dumps(report, indent=2, ensure_ascii=False)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered, encoding="utf-8")
+    print(rendered)
 
 
 if __name__ == "__main__":

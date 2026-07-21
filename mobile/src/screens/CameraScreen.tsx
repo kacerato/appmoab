@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -11,6 +11,39 @@ import { colors } from '../styles/theme';
 
 const GPS_TARGET_ACCURACY_METERS = 25;
 const GPS_MAX_WAIT_MS = 4200;
+const BURST_EXTRA_FRAMES = 4;
+const BURST_INTERVAL_MS = 120;
+
+interface VisionQualityResult {
+  usable: boolean;
+  recapture_reason?: string | null;
+  guidance_code?: string | null;
+  blur?: number;
+  glare?: number;
+  darkness?: number;
+  contrast?: number;
+  perspective?: number;
+  display_area_ratio?: number;
+}
+
+function createCaptureId() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, token => {
+    const random = Math.floor(Math.random() * 16);
+    const value = token === 'x' ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function selectPictureSize(sizes: string[]) {
+  const parsed = sizes
+    .map(size => {
+      const [width, height] = size.split('x').map(Number);
+      return { size, width, height, pixels: width * height };
+    })
+    .filter(item => Number.isFinite(item.pixels) && item.pixels > 0 && item.pixels <= 8_500_000)
+    .sort((left, right) => right.pixels - left.pixels);
+  return parsed[0]?.size || sizes[0] || null;
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   return Promise.race([
@@ -99,9 +132,24 @@ export default function CameraScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [resolvingQr, setResolvingQr] = useState(false);
+  const [qualityChecking, setQualityChecking] = useState(false);
+  const [torchEnabled, setTorchEnabled] = useState(false);
+  const [pictureSize, setPictureSize] = useState<string | null>(null);
+  const [captureGuidance, setCaptureGuidance] = useState<string | null>(null);
   const cameraRef = useRef<any>(null);
   const qrScanLockRef = useRef(false);
   const lastQrScanRef = useRef<{ value: string; at: number } | null>(null);
+
+  const handleCameraReady = async () => {
+    setCameraReady(true);
+    if (pictureSize || !cameraRef.current?.getAvailablePictureSizesAsync) return;
+    try {
+      const sizes = await cameraRef.current.getAvailablePictureSizesAsync();
+      setPictureSize(selectPictureSize(Array.isArray(sizes) ? sizes : []));
+    } catch {
+      setPictureSize(null);
+    }
+  };
 
   const activeHydrometerId = hydrometerId || expectedHydrometerId;
   const activeHydrometerCode = hydrometerCode || expectedHydrometerCode;
@@ -252,29 +300,79 @@ export default function CameraScreen() {
       return;
     }
     setCapturing(true);
+    setCaptureGuidance(null);
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        // No teste livre, o arquivo e lido diretamente pelo URI na tela
-        // seguinte. Evita transportar megabytes dentro do estado de navegacao.
-        base64: stage !== 'dev_test',
-        quality: stage === 'dev_test' ? 0.9 : 0.8,
+        base64: true,
+        quality: 0.90,
       });
-      if (!photo?.uri || (stage !== 'dev_test' && !photo?.base64)) {
+      if (!photo?.uri || !photo?.base64) {
         throw new Error('A câmera não retornou a imagem. Tente novamente mantendo o aparelho firme.');
       }
+      const captureId = createCaptureId();
+      const capturedAt = new Date().toISOString();
+      const frameMetadata: Array<Record<string, unknown>> = [{
+        index: 0,
+        captured_at: capturedAt,
+        width: photo.width || null,
+        height: photo.height || null,
+        quality: 0.90,
+        primary: true,
+      }];
+
+      if (stage === 'reading' || stage === 'dev_test') {
+        setQualityChecking(true);
+        let quality: VisionQualityResult;
+        try {
+          quality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
+            photo_base64: photo.base64,
+            stage,
+            red_digits: redDigits,
+            black_digits: blackDigits || 4,
+          }, 20000);
+        } finally {
+          setQualityChecking(false);
+        }
+        if (!quality.usable) {
+          const message = quality.recapture_reason || 'A imagem não ficou segura para leitura. Refaça a captura.';
+          setCaptureGuidance(message);
+          showToast('Vamos melhorar esta foto', message, 'warning');
+          return;
+        }
+      }
+
       const framesBase64: string[] = [];
       if (stage === 'reading' || stage === 'dev_test') {
-        for (let index = 0; index < 4; index += 1) {
+        for (let index = 0; index < BURST_EXTRA_FRAMES; index += 1) {
           try {
-            await new Promise(resolve => setTimeout(resolve, 90));
-            const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.74, skipProcessing: true });
-            if (frame?.base64) framesBase64.push(frame.base64);
+            await new Promise(resolve => setTimeout(resolve, BURST_INTERVAL_MS));
+            const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.82 });
+            if (frame?.base64) {
+              framesBase64.push(frame.base64);
+              frameMetadata.push({
+                index: index + 1,
+                captured_at: new Date().toISOString(),
+                width: frame.width || null,
+                height: frame.height || null,
+                quality: 0.82,
+                primary: false,
+              });
+            }
           } catch {
             break;
           }
         }
       }
+      const captureMetadata = {
+        capture_pipeline: 'mobile-burst-v2',
+        platform: Platform.OS,
+        picture_size: pictureSize,
+        torch_enabled: torchEnabled,
+        requested_frames: 1 + BURST_EXTRA_FRAMES,
+        captured_frames: 1 + framesBase64.length,
+        burst_interval_ms: BURST_INTERVAL_MS,
+      };
 
       if (stage === 'code') {
         navigation.navigate('ManualCode', {
@@ -299,7 +397,10 @@ export default function CameraScreen() {
         navigation.navigate('DevVisionTest', {
           photoUri: photo.uri,
           framesBase64,
-          capturedAt: new Date().toISOString(),
+          captureId,
+          captureMetadata,
+          frameMetadata,
+          capturedAt,
           redDigits,
           blackDigits: 4,
         });
@@ -317,10 +418,13 @@ export default function CameraScreen() {
         photoBase64: photo.base64,
         photoUri: photo.uri,
         framesBase64,
+        captureId,
+        captureMetadata,
+        frameMetadata,
         latitude: location?.coords.latitude || null,
         longitude: location?.coords.longitude || null,
         locationAccuracyMeters: location?.coords.accuracy || null,
-        capturedAt: new Date().toISOString(),
+        capturedAt,
         hydrometerId: activeHydrometerId,
         hydrometerCode: activeHydrometerCode,
         customerName: activeCustomerName,
@@ -365,7 +469,9 @@ export default function CameraScreen() {
           style={styles.camera}
           ref={cameraRef}
           facing="back"
-          onCameraReady={() => setCameraReady(true)}
+          enableTorch={torchEnabled}
+          pictureSize={pictureSize || undefined}
+          onCameraReady={handleCameraReady}
           onMountError={event => {
             setCameraReady(false);
             showToast('Falha ao iniciar câmera', event.message || 'Não foi possível acessar a câmera.', 'error');
@@ -393,6 +499,11 @@ export default function CameraScreen() {
               <View style={[styles.corner, styles.cornerBR]} />
             </View>
             <Text style={styles.guideText}>{guideText}</Text>
+            {!!captureGuidance && (
+              <View style={styles.guidanceCard}>
+                <Text style={styles.guidanceText}>{captureGuidance}</Text>
+              </View>
+            )}
           </View>
 
           <View style={styles.overlayBottom}>
@@ -411,15 +522,25 @@ export default function CameraScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.btnCapture, (capturing || resolvingQr || !cameraReady) && { opacity: 0.5 }]}
+              style={[styles.btnCapture, (capturing || resolvingQr || qualityChecking || !cameraReady) && { opacity: 0.5 }]}
               onPress={capturePhoto}
-              disabled={capturing || resolvingQr || !cameraReady}
+              disabled={capturing || resolvingQr || qualityChecking || !cameraReady}
             >
-              {capturing || resolvingQr || !cameraReady ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
+              {capturing || resolvingQr || qualityChecking || !cameraReady ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
             </TouchableOpacity>
 
+            {stage !== 'code' && (
+              <TouchableOpacity style={[styles.torchButton, torchEnabled && styles.torchButtonActive]} onPress={() => setTorchEnabled(value => !value)}>
+                <Text style={styles.torchButtonText}>{torchEnabled ? 'Luz ligada' : 'Ligar luz'}</Text>
+              </TouchableOpacity>
+            )}
+
             <Text style={styles.captureLabel}>
-              {stage === 'code'
+              {qualityChecking
+                ? 'Validando foco, reflexo e enquadramento'
+                : capturing && stage !== 'code'
+                  ? 'Capturando sequência de evidências'
+                  : stage === 'code'
                 ? 'QR automatico ou toque para digitar'
                 : stage === 'dev_test'
                   ? 'Toque para testar visao'
@@ -512,6 +633,21 @@ const styles = StyleSheet.create({
     maxWidth: 280,
     lineHeight: 18,
   },
+  guidanceCard: {
+    marginTop: 14,
+    maxWidth: 320,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(245, 158, 11, 0.94)',
+  },
+  guidanceText: {
+    color: '#111827',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+    textAlign: 'center',
+  },
   overlayBottom: {
     paddingHorizontal: 20,
     paddingBottom: 32,
@@ -561,6 +697,23 @@ const styles = StyleSheet.create({
     height: 62,
     borderRadius: 31,
     backgroundColor: '#fff',
+  },
+  torchButton: {
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.28)',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  torchButtonActive: {
+    borderColor: colors.cyan,
+    backgroundColor: 'rgba(34,211,238,0.18)',
+  },
+  torchButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
   },
   captureLabel: {
     color: '#fff',

@@ -7,7 +7,7 @@ import asyncio
 from datetime import date, datetime, timezone
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, case, inspect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +39,11 @@ from app.services.invoice_documents import (
     read_invoice_document,
     store_invoice_document,
     validate_receipt_upload,
+)
+from app.services.invoice_whatsapp import (
+    dispatch_invoice_notification,
+    dispatch_invoice_notification_task,
+    enqueue_invoice_whatsapp,
 )
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
@@ -612,6 +617,7 @@ async def download_pdf(
 @router.post("/manual", response_model=InvoiceResponse, status_code=201)
 async def create_manual_invoice(
     data: InvoiceCreateManual,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -667,6 +673,12 @@ async def create_manual_invoice(
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Nao foi possivel emitir cobranca Efí automatica: {e}")
+
+    notification = None
+    if settings.auto_send_invoice_on_approval:
+        notification = await enqueue_invoice_whatsapp(db, invoice, source="manual_invoice_creation")
+    if notification:
+        background_tasks.add_task(dispatch_invoice_notification_task, str(notification.id))
 
     await db.refresh(invoice)
     
@@ -1108,177 +1120,15 @@ async def send_invoice_whatsapp(
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
 
-    if invoice.status == "cancelled":
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="invoice_cancelled",
-            detail="Fatura cancelada não pode ser enviada. Reabra e emita uma nova cobrança antes do envio.",
-        )
-
-    if not whatsapp_service.is_enabled:
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="whatsapp_disabled",
-            detail="O envio por WhatsApp está desativado no backend.",
-        )
-
-    if not invoice.customer:
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="customer_missing",
-            detail="A fatura não possui cliente associado.",
-        )
-
-    if not invoice.customer.phone:
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="phone_missing",
-            detail="O cliente não possui telefone cadastrado.",
-        )
-
-    normalized_phone = whatsapp_service.normalize_phone(invoice.customer.phone)
-    if len(normalized_phone) < 12:
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="phone_invalid",
-            detail="O telefone do cliente está incompleto ou inválido para WhatsApp.",
-        )
-
-    settings = await _get_system_settings(db)
-    if not notification_flow_enabled(settings, "invoice_generated"):
+    notification = await enqueue_invoice_whatsapp(db, invoice, source="manual_button")
+    if not notification:
         return InvoiceWhatsAppDispatchResponse(
             invoice_id=invoice.id,
             status="failed",
             reason="flow_disabled",
-            detail="O fluxo de envio de fatura está desativado nas configurações.",
+            detail="O fluxo de envio de fatura esta desativado nas configuracoes.",
         )
 
-    base_message = _invoice_customer_message(settings, invoice)
-
-    if not invoice.efi_charge_id and not invoice.efi_payment_url:
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="boleto_missing",
-            detail="A fatura ainda não possui cobranca emitida na Efí.",
-        )
-
-    try:
-        pdf_data = await _get_or_fetch_boleto_pdf(db, invoice, source="whatsapp_dispatch")
-    except Exception as exc:
-        _record_invoice_event(
-            db,
-            invoice=invoice,
-            event_type="whatsapp_invoice_failed",
-            previous_status=invoice.status,
-            new_status=invoice.status,
-            user=admin,
-            reason="Falha ao baixar PDF da cobrança",
-            payload={"error": str(exc), "efi_pdf_url": invoice.efi_pdf_url},
-        )
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="pdf_fetch_error",
-            detail=f"Nao foi possivel obter o PDF da cobranca: {exc}",
-        )
-
-    if not pdf_data:
-        if invoice.efi_payment_url:
-            text = _append_payment_link(base_message, invoice)
-            wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
-            if wa_result and wa_result.get("status") == "sent":
-                previous_status = invoice.status
-                if invoice.status == "pending":
-                    invoice.status = "sent"
-                _record_outbound_whatsapp(
-                    db,
-                    invoice=invoice,
-                    phone=invoice.customer.phone,
-                    body=text,
-                    status="sent",
-                    message_id=wa_result.get("message_id"),
-                    payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "payment_link"},
-                )
-                _record_invoice_event(
-                    db,
-                    invoice=invoice,
-                    event_type="whatsapp_invoice_sent",
-                    previous_status=previous_status,
-                    new_status=invoice.status,
-                    user=admin,
-                    payload={"mode": "payment_link", "message_id": wa_result.get("message_id")},
-                )
-                await db.flush()
-                return InvoiceWhatsAppDispatchResponse(
-                    invoice_id=invoice.id,
-                    status="sent",
-                    reason="ok",
-                    detail="Link de pagamento enviado pelo WhatsApp.",
-                )
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="pdf_missing",
-            detail="A Efí ainda não disponibilizou o PDF nem um link de pagamento.",
-        )
-
-    wa_result = await whatsapp_service.send_invoice_document(
-        phone=invoice.customer.phone,
-        pdf_data=pdf_data,
-        filename=f"boleto_{str(invoice.id)[:8]}.pdf",
-        caption=_append_payment_link(base_message, invoice),
-    )
-
-    if not wa_result or wa_result.get("status") != "sent":
-        _record_invoice_event(
-            db,
-            invoice=invoice,
-            event_type="whatsapp_invoice_failed",
-            previous_status=invoice.status,
-            new_status=invoice.status,
-            user=admin,
-            reason="A Evolution API não confirmou o envio",
-            payload={"error": (wa_result or {}).get("error"), "mode": "document"},
-        )
-        return InvoiceWhatsAppDispatchResponse(
-            invoice_id=invoice.id,
-            status="failed",
-            reason="dispatch_failed",
-            detail=(wa_result or {}).get("error") or "A Evolution API não confirmou o envio.",
-        )
-
-    previous_status = invoice.status
-    if invoice.status == "pending":
-        invoice.status = "sent"
-    _record_outbound_whatsapp(
-        db,
-        invoice=invoice,
-        phone=invoice.customer.phone,
-        body=_append_payment_link(base_message, invoice),
-        status="sent",
-        message_id=(wa_result or {}).get("message_id"),
-        payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": "document"},
-    )
-    _record_invoice_event(
-        db,
-        invoice=invoice,
-        event_type="whatsapp_invoice_sent",
-        previous_status=previous_status,
-        new_status=invoice.status,
-        user=admin,
-        payload={"mode": "document", "message_id": (wa_result or {}).get("message_id")},
-    )
+    dispatch = await dispatch_invoice_notification(db, notification.id)
     await db.flush()
-
-    return InvoiceWhatsAppDispatchResponse(
-        invoice_id=invoice.id,
-        status="sent",
-        reason="ok",
-        detail=f"Fatura enviada com sucesso para {normalized_phone}.",
-    )
+    return InvoiceWhatsAppDispatchResponse(invoice_id=invoice.id, **dispatch)

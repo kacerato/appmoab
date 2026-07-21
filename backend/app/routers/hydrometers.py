@@ -33,6 +33,7 @@ from app.schemas.hydrometer import (
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.services.meter_vision import VisionResult, meter_vision_service
+from app.services.vision_decision import fuse_burst_results
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
 
@@ -51,61 +52,19 @@ def _apply_burst_consensus(
     selected_index: int,
     red_digits: int,
     black_digits: int,
+    previous_value: float | None = None,
+    hydrometer_brand: str | None = None,
+    hydrometer_model: str | None = None,
 ) -> tuple[int, VisionResult]:
-    """Combina frames da mesma captura para reduzir erro no ultimo rolete.
-
-    O caso comum de longe/parcial é: todos concordam no prefixo `009064`, mas
-    o ultimo rolete vira 2/5/6 conforme blur e fase. A mediana do burst remove
-    outlier sem inventar valor quando não há votos suficientes.
-    """
-    total_digits = max(3, min(black_digits + red_digits, 10))
-    candidates: list[tuple[int, int, VisionResult]] = []
-    for index, result in enumerate(results):
-        code = _meter_result_code(result, total_digits, red_digits)
-        if code is None:
-            continue
-        candidates.append((index, code, result))
-    if len(candidates) < 3:
-        return selected_index, results[selected_index]
-
-    groups: dict[int, list[tuple[int, int, VisionResult]]] = {}
-    for candidate in candidates:
-        prefix = candidate[1] // 10
-        groups.setdefault(prefix, []).append(candidate)
-    prefix, group = max(groups.items(), key=lambda item: (len(item[1]), sum(row[2].confidence for row in item[1])))
-    if len(group) < 3:
-        return selected_index, results[selected_index]
-    ordered_codes = sorted(code for _, code, _ in group)
-    consensus_code = ordered_codes[len(ordered_codes) // 2]
-    if consensus_code // 10 != prefix:
-        return selected_index, results[selected_index]
-
-    consensus_index, _, consensus_result = min(
-        group,
-        key=lambda row: (abs(row[1] - consensus_code), -row[2].confidence),
+    return fuse_burst_results(
+        results,
+        selected_index=selected_index,
+        red_digits=red_digits,
+        black_digits=black_digits,
+        previous_value=previous_value,
+        hydrometer_brand=hydrometer_brand,
+        hydrometer_model=hydrometer_model,
     )
-    consensus_result.predicted_value = consensus_code / (10 ** max(red_digits, 0))
-    consensus_result.predicted_code = str(consensus_code).zfill(total_digits)
-    consensus_result.alternatives = sorted({
-        *(consensus_result.alternatives or []),
-        *(code / (10 ** max(red_digits, 0)) for _, code, _ in group),
-    })[:8]
-    consensus_result.flags = list(dict.fromkeys(["burst_consensus_median", *consensus_result.flags]))
-    consensus_result.confidence = round(max(consensus_result.confidence, min(0.93, 0.72 + 0.05 * len(group))), 4)
-    consensus_result.auto_fill_allowed = False
-    if len(consensus_result.digits) == total_digits:
-        digits = str(consensus_code).zfill(total_digits)
-        for item, digit in zip(consensus_result.digits, digits):
-            item["value"] = int(digit)
-    consensus_result.quality = {
-        **consensus_result.quality,
-        "burst_consensus": {
-            "prefix": str(prefix).zfill(total_digits - 1),
-            "votes": [str(code).zfill(total_digits) for _, code, _ in group],
-            "selected": str(consensus_code).zfill(total_digits),
-        },
-    }
-    return consensus_index, consensus_result
 
 
 async def _fetch_hydrometer_response(db: AsyncSession, hydrometer_id: uuid.UUID) -> Hydrometer | None:
@@ -339,6 +298,7 @@ async def store_kimi_vision_feedback(
             predicted_value=data.predicted_value,
             confidence=data.confidence or 0.0,
             auto_fill_allowed=False,
+            decision="confirm",
             red_digits=data.red_digits,
             black_digits=data.black_digits,
             hydrometer_brand=data.hydrometer_brand,
@@ -350,8 +310,10 @@ async def store_kimi_vision_feedback(
     inference.was_correct = was_correct
     inference.divergence_reason = divergence_reason
     inference.confirmed_at = datetime.now(timezone.utc)
+    inference.slot_labels = data.slot_labels or inference.slot_labels
     if training_approved:
         inference.approved_for_training = True
+        inference.dataset_version = "aqua-meter-training-v2"
     elif data.approve_for_training is False:
         inference.approved_for_training = False
     inference.quality = {
@@ -371,6 +333,21 @@ async def store_kimi_vision_feedback(
     }
 
 
+@router.post("/vision-quality")
+async def inspect_vision_capture(
+    data: HydrometerIdentifyRequest,
+    user: User = Depends(get_current_user),
+):
+    """Valida foco, reflexo, distância e perspectiva sem executar OCR."""
+    del user
+    return await asyncio.to_thread(
+        meter_vision_service.inspect_capture,
+        data.photo_base64,
+        red_digits=data.red_digits,
+        black_digits=data.black_digits,
+    )
+
+
 @router.post("/vision-verdict")
 async def kimi_vision_verdict(
     data: HydrometerIdentifyRequest,
@@ -378,7 +355,7 @@ async def kimi_vision_verdict(
     user: User = Depends(get_current_user),
 ):
     """Executa o motor local especializado; GLM, quando habilitado, fica apenas em sombra."""
-    frames = [data.photo_base64, *data.frames_base64[:4]]
+    frames = [data.photo_base64, *data.frames_base64[:7]]
     expensive_probe_indexes = {0}
     if len(frames) > 1:
         expensive_probe_indexes.update({len(frames) // 2, len(frames) - 1})
@@ -390,6 +367,9 @@ async def kimi_vision_verdict(
             black_digits=data.black_digits,
             previous_value=data.previous_value,
             expensive_ocr=index in expensive_probe_indexes,
+            hydrometer_brand=data.hydrometer_brand,
+            hydrometer_model=data.hydrometer_model,
+            dataset_version="aqua-meter-capture-v2",
         )
         for index, frame in enumerate(frames)
     ])
@@ -406,6 +386,9 @@ async def kimi_vision_verdict(
         selected_index=best_index,
         red_digits=data.red_digits or 3,
         black_digits=data.black_digits or 4,
+        previous_value=data.previous_value,
+        hydrometer_brand=data.hydrometer_brand,
+        hydrometer_model=data.hydrometer_model,
     )
     if len(frames) > 1 and "burst_consensus_median" not in vision_result.flags:
         missing_probe_indexes = [index for index in range(len(frames)) if index not in expensive_probe_indexes]
@@ -418,6 +401,8 @@ async def kimi_vision_verdict(
                     black_digits=data.black_digits,
                     previous_value=data.previous_value,
                     expensive_ocr=True,
+                    hydrometer_brand=data.hydrometer_brand,
+                    hydrometer_model=data.hydrometer_model,
                 )
                 for index in missing_probe_indexes
             ])
@@ -436,34 +421,35 @@ async def kimi_vision_verdict(
                 selected_index=best_index,
                 red_digits=data.red_digits or 3,
                 black_digits=data.black_digits or 4,
+                previous_value=data.previous_value,
+                hydrometer_brand=data.hydrometer_brand,
+                hydrometer_model=data.hydrometer_model,
             )
-    selected_frame = frames[best_index]
     inference_id = uuid.uuid4()
     original_key = None
     rectified_key = None
+    frame_keys: list[str] = []
     try:
-        ext, raw, content_type = decode_base64_upload(selected_frame, "jpg")
         object_prefix = f"vision/{datetime.now(timezone.utc):%Y/%m/%d}/{inference_id}"
-        uploads = [
+        decoded_frames = [decode_base64_upload(frame, "jpg") for frame in frames]
+        frame_uploads = [
             asyncio.to_thread(
                 save_binary,
                 raw,
-                f"{object_prefix}/original.{ext}",
+                f"{object_prefix}/frames/frame-{index:02d}.{ext}",
                 content_type,
             )
+            for index, (ext, raw, content_type) in enumerate(decoded_frames)
         ]
+        frame_keys = list(await asyncio.gather(*frame_uploads))
+        original_key = frame_keys[best_index]
         if vision_result.rectified_jpeg:
-            uploads.append(
-                asyncio.to_thread(
-                    save_binary,
-                    vision_result.rectified_jpeg,
-                    f"{object_prefix}/rectified.jpg",
-                    "image/jpeg",
-                )
+            rectified_key = await asyncio.to_thread(
+                save_binary,
+                vision_result.rectified_jpeg,
+                f"{object_prefix}/rectified.jpg",
+                "image/jpeg",
             )
-        uploaded = await asyncio.gather(*uploads)
-        original_key = uploaded[0]
-        rectified_key = uploaded[1] if len(uploaded) > 1 else None
     except Exception as exc:
         vision_result.flags.append("artifact_storage_failed")
         vision_result.quality["storage_error"] = str(exc)[:240]
@@ -481,6 +467,9 @@ async def kimi_vision_verdict(
         except GlmOcrError as exc:
             shadow = {"error": str(exc)}
 
+    temporal_metadata = (vision_result.quality or {}).get("temporal_fusion") or {}
+    decision_metadata = (vision_result.quality or {}).get("decision") or {}
+    calibration_version = temporal_metadata.get("calibration_version") or decision_metadata.get("calibration_version")
     inference = VisionInference(
         id=inference_id,
         hydrometer_id=data.hydrometer_id,
@@ -488,11 +477,23 @@ async def kimi_vision_verdict(
         stage=data.stage,
         original_object_key=original_key,
         rectified_object_key=rectified_key,
+        frame_object_keys=frame_keys,
+        capture_id=data.capture_id,
+        capture_metadata={
+            **(data.capture_metadata or {}),
+            "frame_metadata": data.frame_metadata,
+            "received_frames": len(frames),
+            "selected_frame": best_index,
+        },
         model_version=vision_result.model_version,
         predicted_code=vision_result.predicted_code,
         predicted_value=vision_result.predicted_value,
         confidence=vision_result.confidence,
         auto_fill_allowed=vision_result.auto_fill_allowed,
+        decision=vision_result.decision,
+        calibrated_confidence=vision_result.calibrated_confidence,
+        decoder_version=vision_result.decoder_version,
+        calibration_version=calibration_version,
         quality={**vision_result.quality, **({"glm_shadow": shadow} if shadow else {})},
         digits=vision_result.digits,
         alternatives=vision_result.alternatives,
@@ -501,6 +502,7 @@ async def kimi_vision_verdict(
         black_digits=data.black_digits,
         hydrometer_brand=data.hydrometer_brand,
         hydrometer_model=data.hydrometer_model,
+        dataset_version="aqua-meter-capture-v2",
     )
     inference.quality = {**(inference.quality or {}), "burst_frames": len(frames), "selected_frame": best_index}
     db.add(inference)
@@ -602,10 +604,12 @@ async def export_vision_training_dataset(
             predicted_code = str(int(round(float(item.predicted_value) * (10 ** max(red_digits, 0))))).zfill(total_digits)
         samples.append({
             "id": str(item.id),
+            "hydrometer_id": str(item.hydrometer_id) if item.hydrometer_id else None,
             "stage": item.stage,
             "created_at": item.created_at.isoformat(),
             "original_object_key": item.original_object_key,
             "rectified_object_key": item.rectified_object_key,
+            "frame_object_keys": item.frame_object_keys or [],
             "original_url": original_url,
             "rectified_url": rectified_url,
             "confirmed_code": confirmed_code,
@@ -620,17 +624,24 @@ async def export_vision_training_dataset(
                 "approved_for_training" if item.approved_for_training else "diagnostic_confirmed",
             ),
             "confidence": item.confidence,
+            "calibrated_confidence": item.calibrated_confidence,
+            "decision": item.decision,
+            "decoder_version": item.decoder_version,
+            "calibration_version": item.calibration_version,
+            "capture_metadata": item.capture_metadata or {},
             "red_digits": item.red_digits,
             "black_digits": item.black_digits,
             "brand": item.hydrometer_brand,
             "model": item.hydrometer_model,
             "quality": item.quality or {},
             "digits": item.digits or [],
+            "slot_labels": item.slot_labels or [],
+            "dataset_version": item.dataset_version,
             "alternatives": item.alternatives or [],
             "flags": item.flags or [],
         })
     return {
-        "version": "aqua-meter-training-v1",
+        "version": "aqua-meter-training-v2",
         "count": len(samples),
         "only_approved": only_approved,
         "samples": samples,

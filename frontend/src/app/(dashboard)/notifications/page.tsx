@@ -6,8 +6,13 @@ import { api } from '@/lib/api';
 import { BrainCircuit, CheckCircle2, Loader2, MessageCircle, Send, ToggleLeft, Zap } from 'lucide-react';
 
 interface HealthData {
-  status: string;
-  whatsapp_enabled: boolean;
+  enabled: boolean;
+  configured: boolean;
+  reachable: boolean;
+  connected: boolean;
+  instance_state: string;
+  error: string | null;
+  pending_invoice_notifications: number;
 }
 
 interface OcrMemorySummary {
@@ -37,7 +42,7 @@ const FLOW_DEFINITIONS = [
   {
     key: 'invoice_generated',
     title: 'Fatura gerada',
-    description: 'Permite enviar a cobrança pela tela da fatura.',
+    description: 'Envia automaticamente cobranças de leituras e faturas avulsas.',
   },
   {
     key: 'reminder_before_due',
@@ -100,7 +105,7 @@ export default function NotificationsPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get<HealthData>('/health')
+    api.get<HealthData>('/whatsapp/health')
       .then(setHealth)
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -120,11 +125,11 @@ export default function NotificationsPage() {
   }, []);
 
   const statusTone = useMemo(() => {
-    if (!health?.whatsapp_enabled) {
+    if (!health?.connected) {
       return {
-        label: 'Pronto para ativação',
+        label: health?.reachable ? `Instância ${health.instance_state}` : 'Canal indisponível',
         color: 'var(--warning)',
-        description: 'Você pode deixar os avisos configurados. Eles só serão enviados quando o número estiver conectado.',
+        description: health?.error || `As faturas ficam na fila e serão tentadas novamente após a reconexão. Pendentes: ${health?.pending_invoice_notifications ?? 0}.`,
       };
     }
 
@@ -133,7 +138,7 @@ export default function NotificationsPage() {
       color: 'var(--success)',
       description: 'O número está conectado e pronto para enviar cobranças e avisos.',
     };
-  }, [health?.whatsapp_enabled]);
+  }, [health]);
 
   const updateFlow = (key: string, patch: Partial<NotificationFlowSetting>) => {
     setSettings(current => current ? ({
@@ -181,7 +186,7 @@ export default function NotificationsPage() {
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '8px 0' }}>
-            <div className={`kpi-icon ${health?.whatsapp_enabled ? 'blue' : 'orange'}`} style={{ width: 40, height: 40 }}>
+            <div className={`kpi-icon ${health?.connected ? 'blue' : 'orange'}`} style={{ width: 40, height: 40 }}>
               <MessageCircle size={18} />
             </div>
             <div>
@@ -264,7 +269,7 @@ export default function NotificationsPage() {
           </button>
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)', maxWidth: 720 }}>
-          Quando ligado, a aprovação da leitura gera a cobrança Efí e envia automaticamente o link da fatura por WhatsApp, sem esperar o dia do vencimento.
+          Quando ligado, toda cobrança emitida — por aprovação de leitura ou fatura avulsa — entra imediatamente na fila do WhatsApp, com novas tentativas se a sessão estiver desconectada.
         </div>
       </div>
 

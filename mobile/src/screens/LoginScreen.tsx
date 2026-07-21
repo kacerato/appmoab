@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -11,10 +11,13 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../lib/auth';
+import { useMobileTheme } from '../lib/mobile-theme';
 import { colors, shared } from '../styles/theme';
 
 export default function LoginScreen() {
   const { login } = useAuth();
+  const { mode } = useMobileTheme();
+  const styles = useMemo(createStyles, [mode]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -114,7 +117,8 @@ export default function LoginScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles() {
+  return StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: colors.navy950,
@@ -249,4 +253,5 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '900',
   },
-});
+  });
+}

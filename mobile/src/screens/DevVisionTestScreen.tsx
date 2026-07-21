@@ -14,6 +14,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import Svg, { Circle, Path } from 'react-native-svg';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
+import { useMobileTheme } from '../lib/mobile-theme';
 import { formatMeterReading, parseMeterReadingInput } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
 
@@ -23,6 +24,9 @@ interface VisionVerdict {
   predicted_value: number | null;
   confidence: number | null;
   auto_fill_allowed: boolean;
+  decision?: 'accepted' | 'confirm' | 'recapture' | 'unsupported';
+  calibrated_confidence?: number | null;
+  decoder_version?: string | null;
   red_digits: number | null;
   black_digits: number | null;
   quality?: {
@@ -36,16 +40,20 @@ interface VisionVerdict {
   };
   flags?: string[];
   digits?: Array<{
-    value: number;
-    next?: number;
-    phase?: number;
+    position: number;
+    value: number | null;
+    current_digit?: number | null;
+    next_digit?: number | null;
+    transition_phase?: number | null;
     confidence: number;
-    transition?: boolean;
+    transitional?: boolean;
   }>;
   model_version?: string | null;
 }
 
 export default function DevVisionTestScreen() {
+  const { mode } = useMobileTheme();
+  styles = useMemo(createStyles, [mode]);
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { showToast } = useFeedback();
@@ -63,6 +71,8 @@ export default function DevVisionTestScreen() {
   const [selectedRedDigits, setSelectedRedDigits] = useState<number>(3);
   const [approveForTraining, setApproveForTraining] = useState(true);
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [transitionPosition, setTransitionPosition] = useState<number | null>(null);
+  const [transitionPhase, setTransitionPhase] = useState<0.25 | 0.5 | 0.75>(0.5);
   const [testResult, setTestResult] = useState<{
     submitted: boolean;
     wasCorrect: boolean;
@@ -78,6 +88,9 @@ export default function DevVisionTestScreen() {
   const photoUri = params.photoUri;
   const incomingPhotoBase64 = params.photoBase64;
   const framesBase64 = params.framesBase64 || [];
+  const captureId = params.captureId || null;
+  const captureMetadata = params.captureMetadata || {};
+  const frameMetadata = params.frameMetadata || [];
 
   useEffect(() => {
     if (!photoUri && !incomingPhotoBase64) {
@@ -124,6 +137,9 @@ export default function DevVisionTestScreen() {
     api.post<VisionVerdict>('/hydrometers/vision-verdict', {
         photo_base64: photoBase64,
         frames_base64: framesBase64,
+        capture_id: captureId,
+        capture_metadata: captureMetadata,
+        frame_metadata: frameMetadata,
         hydrometer_id: null,
         stage: 'dev_test',
         red_digits: selectedRedDigits,
@@ -150,7 +166,7 @@ export default function DevVisionTestScreen() {
     return () => {
       active = false;
     };
-  }, [photoBase64, selectedRedDigits, verdictAttempt]);
+  }, [captureId, captureMetadata, frameMetadata, framesBase64, photoBase64, selectedRedDigits, verdictAttempt]);
 
   const handleOpenCamera = () => {
     navigation.navigate('Camera', {
@@ -163,6 +179,14 @@ export default function DevVisionTestScreen() {
   const parsedManualValue = useMemo(() => {
     return parseMeterReadingInput(manualValue, selectedRedDigits);
   }, [manualValue, selectedRedDigits]);
+  const confirmedDigits = useMemo(() => {
+    if (parsedManualValue === null) return [];
+    const totalDigits = 4 + selectedRedDigits;
+    return String(Math.round(parsedManualValue * (10 ** selectedRedDigits)))
+      .padStart(totalDigits, '0')
+      .slice(-totalDigits)
+      .split('');
+  }, [parsedManualValue, selectedRedDigits]);
 
   const submitFeedback = async () => {
     if (parsedManualValue === null || !photoBase64) return;
@@ -171,6 +195,15 @@ export default function DevVisionTestScreen() {
     try {
       const predVal = verdict?.predicted_value ?? null;
       const predCode = verdict?.predicted_code ?? null;
+      const totalDigits = 4 + selectedRedDigits;
+      const confirmedCode = String(Math.round(parsedManualValue * (10 ** selectedRedDigits))).padStart(totalDigits, '0').slice(-totalDigits);
+      const slotLabels = confirmedCode.split('').map((digit, position) => ({
+        position,
+        state: transitionPosition === position ? 'transition' : 'stable',
+        current_digit: Number(digit),
+        next_digit: transitionPosition === position ? (Number(digit) + 1) % 10 : null,
+        transition_phase: transitionPosition === position ? transitionPhase : null,
+      }));
 
       // Submit feedback to populate VisionInference and active_learning dataset
       const res = await api.post<{
@@ -192,6 +225,7 @@ export default function DevVisionTestScreen() {
         hydrometer_brand: null,
         hydrometer_model: null,
         approve_for_training: approveForTraining,
+        slot_labels: slotLabels,
       });
 
       const wasCorrect = res.was_correct === true;
@@ -235,6 +269,8 @@ export default function DevVisionTestScreen() {
     setVerdict(null);
     setVerdictError(null);
     setManualValue('');
+    setTransitionPosition(null);
+    setTransitionPhase(0.5);
     setTestResult(null);
   };
 
@@ -422,6 +458,49 @@ export default function DevVisionTestScreen() {
                   Interpretado como {formatMeterReading(parsedManualValue)} m³ com {selectedRedDigits} dígitos vermelhos.
                 </Text>
 
+                {confirmedDigits.length > 0 && (
+                  <View style={{ marginTop: 18, marginBottom: 18 }}>
+                    <Text style={shared.label}>Existe algum rolete mostrando dois números?</Text>
+                    <Text style={{ color: colors.textMuted, fontSize: 12, lineHeight: 18, marginBottom: 10 }}>
+                      Toque apenas na posição que está subindo. Isso ensina o modelo a distinguir o número atual do próximo.
+                    </Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
+                      <TouchableOpacity
+                        onPress={() => setTransitionPosition(null)}
+                        style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: transitionPosition === null ? colors.successSoft : colors.navy700, borderWidth: 1, borderColor: transitionPosition === null ? colors.success : colors.border }}
+                      >
+                        <Text style={{ color: transitionPosition === null ? colors.success : colors.textSecondary, fontWeight: '800' }}>Nenhum</Text>
+                      </TouchableOpacity>
+                      {confirmedDigits.map((digit, position) => (
+                        <TouchableOpacity
+                          key={`${digit}-${position}`}
+                          onPress={() => setTransitionPosition(position)}
+                          style={{ minWidth: 42, alignItems: 'center', paddingVertical: 9, borderRadius: 10, backgroundColor: transitionPosition === position ? colors.warningSoft : colors.navy700, borderWidth: 1, borderColor: transitionPosition === position ? colors.warning : colors.border }}
+                        >
+                          <Text style={{ color: transitionPosition === position ? colors.warning : colors.textPrimary, fontSize: 17, fontWeight: '900' }}>{digit}</Text>
+                          <Text style={{ color: colors.textMuted, fontSize: 9 }}>P{position + 1}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    {transitionPosition !== null && (
+                      <View style={{ marginTop: 12 }}>
+                        <Text style={shared.label}>Quanto do próximo número está visível?</Text>
+                        <View style={{ flexDirection: 'row', gap: 8 }}>
+                          {([0.25, 0.5, 0.75] as const).map(phase => (
+                            <TouchableOpacity
+                              key={phase}
+                              onPress={() => setTransitionPhase(phase)}
+                              style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 10, backgroundColor: transitionPhase === phase ? colors.accentSoft : colors.navy700, borderWidth: 1, borderColor: transitionPhase === phase ? colors.cyan : colors.border }}
+                            >
+                              <Text style={{ color: transitionPhase === phase ? colors.cyan : colors.textSecondary, fontWeight: '800' }}>{phase === 0.25 ? 'Pouco' : phase === 0.5 ? 'Metade' : 'Muito'}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                )}
+
                 <TouchableOpacity
                   style={[styles.trainingToggle, approveForTraining && styles.trainingToggleActive]}
                   onPress={() => setApproveForTraining(value => !value)}
@@ -535,7 +614,10 @@ function MetricProgress({ label, val, inverse }: { label: string; val: number; i
   );
 }
 
-const styles = StyleSheet.create({
+let styles = createStyles();
+
+function createStyles() {
+  return StyleSheet.create({
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -951,4 +1033,5 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
   },
-});
+  });
+}

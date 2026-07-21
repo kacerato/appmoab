@@ -110,6 +110,7 @@ async def _generate_fixed_async():
     from sqlalchemy import select
     from app.services.billing_policy import payment_due_date_for_provider
     from app.services.efi_api import efi_service
+    from app.services.invoice_whatsapp import dispatch_due_invoice_notifications, enqueue_invoice_whatsapp
 
     logger.info("Gerando faturas fixas para clientes sem hidrômetro...")
 
@@ -196,8 +197,13 @@ async def _generate_fixed_async():
                         from app.services.invoice_documents import persist_boleto_pdf
                         await persist_boleto_pdf(db, invoice, pdf, source="scheduled_billing")
 
+                if settings.auto_send_invoice_on_approval:
+                    await enqueue_invoice_whatsapp(db, invoice, source="scheduled_fixed_invoice")
+
             except Exception as e:
                 logger.error(f"Erro ao gerar cobranca Efí para {customer.name}: {e}")
 
         await db.commit()
+        if settings.auto_send_invoice_on_approval:
+            await dispatch_due_invoice_notifications()
         logger.info(f"Processados {len(customers)} clientes sem hidrômetro")

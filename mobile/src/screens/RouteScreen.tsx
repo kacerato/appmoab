@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   AppState,
@@ -50,8 +50,8 @@ interface ReadingItem {
   id?: string;
   hydrometer_id: string;
   collaborator_id: string;
-  current_value?: number;
-  consumption?: number;
+  current_value?: number | null;
+  consumption?: number | null;
   captured_at: string;
   status: string;
   customer_name?: string | null;
@@ -74,6 +74,8 @@ export default function RouteScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
+  const lastLoadedAtRef = useRef<number | null>(null);
+  const loadInFlightRef = useRef<Promise<void> | null>(null);
   const [query, setQuery] = useState('');
   const [taskFilter, setTaskFilter] = useState<'pending' | 'done' | 'all'>('pending');
 
@@ -89,46 +91,62 @@ export default function RouteScreen() {
     })).catch(() => undefined);
   }, []);
 
-  const load = useCallback(async (force = false) => {
+  const load = useCallback(async (force = false, notifyFailure = false) => {
     const now = Date.now();
-    if (!force && lastLoadedAt && now - lastLoadedAt < 45000) {
+    if (!force && lastLoadedAtRef.current && now - lastLoadedAtRef.current < 45000) {
       setLoading(false);
       setRefreshing(false);
       return;
     }
 
-    if (!force && !lastLoadedAt) setLoading(true);
-    const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=2000&route_scope=true');
-    const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
-    const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);
+    // The route can be resumed by both navigation and AppState. Reuse the
+    // current request so a wake-up never creates competing API calls.
+    if (loadInFlightRef.current) return loadInFlightRef.current;
 
-    let nextCustomers: Customer[] | null = null;
-    let nextReadings: ReadingItem[] | null = null;
-    if (customersResult.status === 'fulfilled') {
-      nextCustomers = (customersResult.value.items || []).filter(customer => customer.hydrometers?.length);
-      setCustomers(nextCustomers);
-    } else {
-      showToast('Falha ao carregar clientes', getMessage(customersResult.reason, 'Nao foi possivel buscar sua rota.'), 'error');
-    }
+    if (!force && !lastLoadedAtRef.current) setLoading(true);
+    const request = (async () => {
+      const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=2000&route_scope=true');
+      const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
+      const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);
 
-    if (readingsResult.status === 'fulfilled') {
-      const monthKey = new Date().toISOString().slice(0, 7);
-      nextReadings = (readingsResult.value.items || []).filter(
-        item => item.collaborator_id === user?.id && item.captured_at.slice(0, 7) === monthKey,
-      );
-      setTodayReadings(nextReadings);
-    } else {
-      setTodayReadings([]);
-      showToast('Historico parcial', getMessage(readingsResult.reason, 'Nao foi possivel carregar as leituras deste ciclo.'), 'warning');
-    }
+      let nextCustomers: Customer[] | null = null;
+      let nextReadings: ReadingItem[] | null = null;
+      if (customersResult.status === 'fulfilled') {
+        nextCustomers = (customersResult.value.items || []).filter(customer => customer.hydrometers?.length);
+        setCustomers(nextCustomers);
+      } else if (notifyFailure) {
+        showToast('Falha ao carregar clientes', getMessage(customersResult.reason, 'Nao foi possivel buscar sua rota.'), 'error');
+      }
 
-    if (nextCustomers && nextReadings) {
-      void saveRouteCache(nextCustomers, nextReadings);
+      if (readingsResult.status === 'fulfilled') {
+        const monthKey = new Date().toISOString().slice(0, 7);
+        nextReadings = (readingsResult.value.items || []).filter(
+          item => item.collaborator_id === user?.id && item.captured_at.slice(0, 7) === monthKey,
+        );
+        setTodayReadings(nextReadings);
+      } else if (notifyFailure) {
+        showToast('Historico parcial', getMessage(readingsResult.reason, 'Nao foi possivel carregar as leituras deste ciclo.'), 'warning');
+      }
+
+      if (nextCustomers && nextReadings) {
+        void saveRouteCache(nextCustomers, nextReadings);
+      }
+      if (nextCustomers) {
+        const loadedAt = Date.now();
+        lastLoadedAtRef.current = loadedAt;
+        setLastLoadedAt(loadedAt);
+      }
+      setLoading(false);
+      setRefreshing(false);
+    })();
+
+    loadInFlightRef.current = request;
+    try {
+      await request;
+    } finally {
+      if (loadInFlightRef.current === request) loadInFlightRef.current = null;
     }
-    setLastLoadedAt(Date.now());
-    setLoading(false);
-    setRefreshing(false);
-  }, [lastLoadedAt, saveRouteCache, showToast, user?.id]);
+  }, [saveRouteCache, showToast, user?.id]);
 
   useEffect(() => {
     let mounted = true;
@@ -139,7 +157,9 @@ export default function RouteScreen() {
           const parsed = JSON.parse(cached) as { customers?: Customer[]; todayReadings?: ReadingItem[]; savedAt?: number };
           setCustomers(parsed.customers || []);
           setTodayReadings(parsed.todayReadings || []);
-          setLastLoadedAt(parsed.savedAt || Date.now());
+          const savedAt = parsed.savedAt || Date.now();
+          lastLoadedAtRef.current = savedAt;
+          setLastLoadedAt(savedAt);
           setLoading(false);
         } catch {
           // Ignore invalid cache and load from the API.
@@ -155,14 +175,14 @@ export default function RouteScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      void load(true);
+      void load();
     }, [load]),
   );
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
-        void load(true);
+        void load();
       }
     });
     return () => subscription.remove();
@@ -235,7 +255,7 @@ export default function RouteScreen() {
 
   const onRefresh = () => {
     setRefreshing(true);
-    void load(true);
+    void load(true, true);
   };
 
   if (loading) {
@@ -472,7 +492,9 @@ function HistoryCard({ item }: { item: ReadingItem }) {
         <StatusBadge status={item.status} />
       </View>
       <Text style={styles.locationText}>
-        Leitura {formatMeterReading(item.current_value || 0)} m3 - Consumo {formatMeterReading(item.consumption || 0)} m3
+        {item.current_value === null || item.current_value === undefined || item.consumption === null || item.consumption === undefined
+          ? 'Captura aguardando conferencia no dashboard'
+          : `Leitura ${formatMeterReading(item.current_value)} m3 - Consumo ${formatMeterReading(item.consumption)} m3`}
       </Text>
     </View>
   );

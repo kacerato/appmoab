@@ -8,6 +8,7 @@ const apiUrlFromConfig =
 
 export const API_URL = apiUrlFromConfig.replace(/\/+$/, '');
 const REQUEST_TIMEOUT_MS = 15000;
+const GET_RETRY_DELAY_MS = 1200;
 
 let cachedToken: string | null = null;
 
@@ -98,7 +99,22 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = R
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>(path),
+  get: async <T>(path: string) => {
+    try {
+      return await request<T>(path);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const isTransient =
+        /demorou para responder|nao foi possivel conectar|Erro 5\d\d|Erro 429/i.test(message);
+
+      // A mobile app commonly wakes before its hosted API or radio is ready.
+      // Retrying an idempotent read once avoids exposing that short recovery
+      // window as an operational error to the field operator.
+      if (!isTransient) throw error;
+      await new Promise(resolve => setTimeout(resolve, GET_RETRY_DELAY_MS));
+      return request<T>(path);
+    }
+  },
   post: <T>(path: string, body?: unknown, timeoutMs?: number) =>
     request<T>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined }, timeoutMs),
   put: <T>(path: string, body?: unknown) =>

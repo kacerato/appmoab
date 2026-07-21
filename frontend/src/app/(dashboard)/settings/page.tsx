@@ -28,6 +28,16 @@ interface HealthData {
   efi_sandbox: boolean;
 }
 
+interface WhatsAppHealth {
+  enabled: boolean;
+  configured: boolean;
+  reachable: boolean;
+  connected: boolean;
+  instance_state: string;
+  error: string | null;
+  pending_invoice_notifications: number;
+}
+
 interface ManagedUser {
   id: string;
   name: string;
@@ -89,6 +99,7 @@ export default function SettingsPage() {
   const [deductions, setDeductions] = useState<Deduction[]>([]);
   const [total, setTotal] = useState(0);
   const [health, setHealth] = useState<HealthData | null>(null);
+  const [whatsAppHealth, setWhatsAppHealth] = useState<WhatsAppHealth | null>(null);
   const [loading, setLoading] = useState(true);
   const [editId, setEditId] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
@@ -145,14 +156,16 @@ export default function SettingsPage() {
       api.get<{ items: Deduction[]; total: number }>('/deductions'),
       api.get<HealthData>('/health'),
       api.get<SystemSetting>('/system-settings'),
+      user?.role === 'admin' ? api.get<WhatsAppHealth>('/whatsapp/health') : Promise.resolve(null),
       user?.role === 'admin'
         ? api.get<{ items: ManagedUser[]; total: number }>('/auth/users')
         : Promise.resolve(null),
     ])
-      .then(([deductionData, healthData, systemData, usersData]) => {
+      .then(([deductionData, healthData, systemData, whatsAppHealthData, usersData]) => {
         setDeductions(deductionData.items);
         setTotal(deductionData.total);
         setHealth(healthData);
+        setWhatsAppHealth(whatsAppHealthData);
         setSystemSettings({
           ...systemData,
           auto_send_invoice_on_approval: systemData.auto_send_invoice_on_approval ?? true,
@@ -405,9 +418,9 @@ export default function SettingsPage() {
           <SettingCard
             icon={<Globe size={18} />}
             title="WhatsApp"
-            desc={health?.whatsapp_enabled ? 'Número pronto para envios' : 'Conecte o número para enviar mensagens'}
-            status={health?.whatsapp_enabled ? 'Ativado' : 'Desativado'}
-            statusColor={health?.whatsapp_enabled ? 'var(--success)' : 'var(--warning)'}
+            desc={whatsAppHealth?.connected ? 'Sessão Evolution conectada e pronta para envios' : (whatsAppHealth?.error || `Instância ${whatsAppHealth?.instance_state || 'não verificada'}`)}
+            status={whatsAppHealth?.connected ? 'Conectado' : whatsAppHealth?.reachable ? 'Desconectado' : 'Indisponível'}
+            statusColor={whatsAppHealth?.connected ? 'var(--success)' : 'var(--warning)'}
           />
           <SettingCard icon={<Server size={18} />} title="Leitura por foto" desc="Ajuda na leitura dos hidrômetros" status="Configurado" statusColor="var(--success)" />
         </div>
@@ -495,7 +508,8 @@ export default function SettingsPage() {
         <div className="card-header"><span className="card-title">Status do Sistema</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sistema</span><span style={{ fontWeight: 600 }}>{health?.status === 'healthy' ? 'Funcionando' : 'Verificando'}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>WhatsApp</span><span style={{ fontWeight: 600 }}>{health?.whatsapp_enabled ? 'Conectado' : 'Aguardando conexão'}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>WhatsApp</span><span style={{ fontWeight: 600, color: whatsAppHealth?.connected ? 'var(--success)' : 'var(--warning)' }}>{whatsAppHealth?.connected ? 'Sessão conectada' : `Sessão ${whatsAppHealth?.instance_state || 'não verificada'}`}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Faturas aguardando WhatsApp</span><span style={{ fontWeight: 600 }}>{whatsAppHealth?.pending_invoice_notifications ?? '—'}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Cobrança</span><span style={{ fontWeight: 600 }}>{health?.efi_sandbox ? 'Efí homologação' : 'Efí produção'}</span></div>
         </div>
       </div>

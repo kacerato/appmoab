@@ -61,7 +61,10 @@ class Settings(BaseSettings):
     glm_api_key: str = ""
     vision_enabled: bool = True
     vision_model_path: str = ""
+    vision_detector_model_path: str = ""
     vision_model_version: str = "meter-field-v3-20260622"
+    vision_transition_model_path: str = ""
+    vision_calibration_path: str = ""
     vision_min_autofill_confidence: float = 0.985
     vision_glm_shadow_enabled: bool = False
     vision_store_debug_artifacts: bool = True

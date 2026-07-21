@@ -12,7 +12,7 @@ import math
 import os
 import re
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from itertools import combinations
 
@@ -55,6 +55,14 @@ class QualityMetrics:
 
 
 @dataclass
+class DisplayDetection:
+    corners: object
+    confidence: float
+    slot_boundaries: list[float] = field(default_factory=list)
+    source: str = "detector-onnx"
+
+
+@dataclass
 class DigitObservation:
     position: int
     value: int | None
@@ -63,6 +71,12 @@ class DigitObservation:
     lower_digit: int | None = None
     transition_phase: float | None = None
     transitional: bool = False
+    current_digit: int | None = None
+    next_digit: int | None = None
+    transition_confidence: float = 0.0
+    visibility: float = 1.0
+    probabilities: list[float] = field(default_factory=list)
+    source: str = "field-classifier"
 
 
 @dataclass
@@ -79,6 +93,9 @@ class VisionResult:
     alternatives: list[float]
     flags: list[str]
     rectified_jpeg: bytes | None = None
+    decision: str = "confirm"
+    calibrated_confidence: float | None = None
+    decoder_version: str = "single-frame-v1"
 
     def public_dict(self) -> dict:
         data = asdict(self)
@@ -396,6 +413,118 @@ class _OnnxClassifier:
         return digit, float(probs[digit]), probs.tolist()
 
 
+class _TransitionOnnxClassifier:
+    """Contrato do classificador multi-head de roletes.
+
+    Saídas esperadas, nesta ordem: logits do dígito estável (10), estado
+    mecânico (11: transições 0..9 e estável=10), fase (1) e visibilidade (1).
+    """
+
+    def __init__(self, path: str):
+        self.session = ort.InferenceSession(path, providers=["CPUExecutionProvider"]) if ort and path else None
+        self.input_name = self.session.get_inputs()[0].name if self.session else None
+
+    @staticmethod
+    def _softmax(values):
+        values = np.asarray(values, dtype="float32").reshape(-1)
+        values = values - values.max()
+        exp_values = np.exp(values)
+        return exp_values / max(float(exp_values.sum()), 1e-8)
+
+    @staticmethod
+    def _unit_interval(value: float) -> float:
+        if 0.0 <= value <= 1.0:
+            return value
+        return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, value))))
+
+    def observe(self, slot, position: int) -> DigitObservation | None:
+        if not self.session or np is None:
+            return None
+        normalized = _normalize_slot(slot, size=(64, 96)).astype("float32") / 255.0
+        outputs = self.session.run(None, {self.input_name: normalized[None, None, :, :]})
+        if len(outputs) < 4:
+            return None
+        stable = self._softmax(outputs[0])[:10]
+        transitions = self._softmax(outputs[1])[:10]
+        phase = self._unit_interval(float(np.asarray(outputs[2]).reshape(-1)[0]))
+        visibility = self._unit_interval(float(np.asarray(outputs[3]).reshape(-1)[0]))
+        digit = int(stable.argmax())
+        stable_confidence = float(stable[digit])
+        current = int(transitions.argmax())
+        transition_confidence = float(transitions[current])
+        next_digit = (current + 1) % 10
+        transitional = transition_confidence >= 0.55 and visibility >= 0.35
+        if transitional:
+            value = next_digit if phase >= 0.5 else current
+            fused = stable * 0.55
+            fused[current] += transition_confidence * max(0.05, 1.0 - phase) * 0.45
+            fused[next_digit] += transition_confidence * max(0.05, phase) * 0.45
+            fused = fused / max(float(fused.sum()), 1e-8)
+            return DigitObservation(
+                position=position,
+                value=value,
+                confidence=round(max(float(fused[value]), transition_confidence * 0.85), 4),
+                upper_digit=current,
+                lower_digit=next_digit,
+                transition_phase=round(phase, 4),
+                transitional=True,
+                current_digit=current,
+                next_digit=next_digit,
+                transition_confidence=round(transition_confidence, 4),
+                visibility=round(visibility, 4),
+                probabilities=[round(float(item), 6) for item in fused],
+                source="transition-onnx",
+            )
+        return DigitObservation(
+            position=position,
+            value=digit,
+            confidence=round(stable_confidence, 4),
+            visibility=round(visibility, 4),
+            probabilities=[round(float(item), 6) for item in stable],
+            source="transition-onnx",
+        )
+
+
+class _OnnxDisplayDetector:
+    """Detector opcional de quatro cantos e limites normalizados dos slots."""
+
+    def __init__(self, path: str):
+        self.session = ort.InferenceSession(path, providers=["CPUExecutionProvider"]) if ort and path else None
+        self.input_name = self.session.get_inputs()[0].name if self.session else None
+
+    def detect(self, image) -> DisplayDetection | None:
+        if not self.session or np is None:
+            return None
+        height, width = image.shape[:2]
+        resized = cv2.resize(image, (640, 640), interpolation=cv2.INTER_AREA)
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype("float32") / 255.0
+        outputs = self.session.run(None, {self.input_name: np.transpose(rgb, (2, 0, 1))[None, ...]})
+        if not outputs:
+            return None
+        corners = np.asarray(outputs[0], dtype="float32").reshape(-1)[:8]
+        if len(corners) != 8:
+            return None
+        confidence = float(np.asarray(outputs[1]).reshape(-1)[0]) if len(outputs) > 1 else 0.0
+        if confidence < 0.35:
+            return None
+        corners = corners.reshape(4, 2)
+        if float(corners.max()) <= 1.5:
+            corners[:, 0] *= width
+            corners[:, 1] *= height
+        else:
+            corners[:, 0] *= width / 640.0
+            corners[:, 1] *= height / 640.0
+        boundaries = []
+        if len(outputs) > 2:
+            boundaries = [float(value) for value in np.asarray(outputs[2]).reshape(-1)]
+            boundaries = [max(0.0, min(1.0, value)) for value in boundaries]
+        return DisplayDetection(
+            corners=_order_corners(corners),
+            confidence=_clamp(confidence),
+            slot_boundaries=sorted(set(boundaries)),
+        )
+
+
 def hog_features(slot):
     normalized = _normalize_slot(slot, size=(28, 28))
     hog = cv2.HOGDescriptor((28, 28), (14, 14), (7, 7), (7, 7), 9)
@@ -438,6 +567,29 @@ def _trained_classifier():
 
 
 @lru_cache(maxsize=1)
+def _trained_transition_classifier():
+    path = settings.vision_transition_model_path.strip()
+    if not path or not os.path.exists(path) or ort is None:
+        return None
+    try:
+        return _TransitionOnnxClassifier(path)
+    except Exception:
+        logger.exception("Não foi possível carregar o modelo ONNX de transição")
+        return None
+
+
+@lru_cache(maxsize=1)
+def _trained_display_detector():
+    path = settings.vision_detector_model_path.strip()
+    if not path or not os.path.exists(path) or ort is None:
+        return None
+    try:
+        return _OnnxDisplayDetector(path)
+    except Exception:
+        logger.exception("Não foi possível carregar o detector ONNX do visor")
+        return None
+
+
 @lru_cache(maxsize=1)
 def _sequence_ocr_engine():
     return RapidOCR() if RapidOCR is not None else None
@@ -986,34 +1138,77 @@ def _classify(slot) -> tuple[int | None, float, list[float]]:
 
 
 def _slot_observation(slot, position: int) -> DigitObservation:
-    value, confidence, _ = _classify(slot)
+    transition_classifier = _trained_transition_classifier()
+    if transition_classifier is not None:
+        learned = transition_classifier.observe(slot, position)
+        if learned is not None:
+            return learned
+    value, confidence, probabilities = _classify(slot)
     height = slot.shape[0]
-    upper, upper_conf, _ = _classify(slot[: max(int(height * 0.68), 1)])
-    lower, lower_conf, _ = _classify(slot[min(int(height * 0.32), height - 1):])
+    upper, upper_conf, upper_probabilities = _classify(slot[: max(int(height * 0.62), 1)])
+    lower, lower_conf, lower_probabilities = _classify(slot[min(int(height * 0.38), height - 1):])
+    center_start = max(int(height * 0.27), 0)
+    center_end = max(center_start + 1, min(int(height * 0.73), height))
+    center, center_conf, center_probabilities = _classify(slot[center_start:center_end])
+    normalized_probabilities = list(probabilities[:10])
+    normalized_probabilities.extend([0.0] * (10 - len(normalized_probabilities)))
+    contrast = float(cv2.cvtColor(slot, cv2.COLOR_BGR2GRAY).std()) if slot.ndim == 3 else float(slot.std())
+    visibility = _clamp(contrast / 58.0)
     transitional = (
         upper is not None
         and lower is not None
         and upper != lower
         and ((upper + 1) % 10 == lower or (lower + 1) % 10 == upper)
         and min(upper_conf, lower_conf) >= 0.32
+        and (confidence < 0.88 or value in (upper, lower))
     )
     if transitional:
-        # A energia na metade inferior aproxima quanto o proximo numero entrou no visor.
-        normalized = _normalize_slot(slot)
-        phase = _clamp(float(normalized[normalized.shape[0] // 2:].mean()) / 255.0)
         current = upper if (upper + 1) % 10 == lower else lower
         next_digit = (current + 1) % 10
-        chosen = next_digit if phase >= 0.68 else current
+
+        def support(scores: list[float], digit: int) -> float:
+            return float(scores[digit]) if len(scores) > digit else 0.0
+
+        # A fase agora é sustentada pela identidade visual nas regiões do
+        # rolete, sobretudo pela faixa central que representa a linha de leitura.
+        # Isso elimina o antigo uso da luminosidade como aproximação da fase.
+        phase = _clamp(
+            support(probabilities, next_digit) * 0.15
+            + support(center_probabilities, next_digit) * 0.55
+            + support(lower_probabilities, next_digit) * 0.20
+            + support(upper_probabilities, next_digit) * 0.10
+        )
+        center_choice = center if center in (current, next_digit) and center_conf >= 0.34 else None
+        chosen = center_choice if center_choice is not None else (next_digit if phase >= 0.5 else current)
+        transition_confidence = _clamp(
+            min(upper_conf, lower_conf) * 0.45
+            + center_conf * 0.35
+            + confidence * 0.20
+        )
+        normalized_probabilities[current] += max(0.05, 1.0 - phase) * transition_confidence
+        normalized_probabilities[next_digit] += max(0.05, phase) * transition_confidence
+        probability_total = sum(normalized_probabilities) or 1.0
         return DigitObservation(
             position=position,
             value=chosen,
-            confidence=round(min(confidence, max(upper_conf, lower_conf)) * 0.88, 4),
+            confidence=round(max(confidence * 0.65, transition_confidence * 0.88), 4),
             upper_digit=upper,
             lower_digit=lower,
             transition_phase=phase,
             transitional=True,
+            current_digit=current,
+            next_digit=next_digit,
+            transition_confidence=transition_confidence,
+            visibility=visibility,
+            probabilities=[round(item / probability_total, 6) for item in normalized_probabilities],
         )
-    return DigitObservation(position=position, value=value, confidence=round(confidence, 4))
+    return DigitObservation(
+        position=position,
+        value=value,
+        confidence=round(confidence, 4),
+        visibility=visibility,
+        probabilities=[round(item, 6) for item in normalized_probabilities],
+    )
 
 
 def _temporal_candidates(
@@ -1056,6 +1251,90 @@ def _temporal_candidates(
 
 
 class MeterVisionService:
+    def inspect_capture(
+        self,
+        image_base64: str,
+        *,
+        red_digits: int | None = 3,
+        black_digits: int | None = None,
+    ) -> dict:
+        """Quality gate rápido, sem OCR, usado antes de enviar o burst."""
+
+        try:
+            image = _decode_image(image_base64)
+        except Exception:
+            return {
+                "usable": False,
+                "recapture_reason": "Não foi possível abrir a imagem. Refaça a captura.",
+                "guidance_code": "decode_failed",
+            }
+
+        resolved_red = red_digits if red_digits is not None and red_digits >= 0 else 3
+        resolved_black = black_digits or 4
+        detector = _trained_display_detector()
+        learned_detection = detector.detect(image) if detector is not None else None
+        corners = learned_detection.corners if learned_detection is not None else None
+        if corners is None:
+            corners = _red_roller_strip_candidate(image, resolved_red, resolved_black)
+        used_fallback = corners is None
+        if corners is None:
+            corners, _ = _display_candidate(image)
+        rectified, perspective = _rectify(image, corners)
+        quality = _quality(rectified)
+        quality.perspective = perspective
+        # O preflight deve barrar somente defeitos inequívocos. O motor completo
+        # ainda possui detector OCR e caminhos de resgate que recuperam fotos
+        # que o detector geométrico rápido não localiza sozinho.
+        quality.usable = True
+        quality.recapture_reason = None
+
+        height, width = image.shape[:2]
+        ordered = _order_corners(corners)
+        display_width = max(
+            float(np.linalg.norm(ordered[1] - ordered[0])),
+            float(np.linalg.norm(ordered[2] - ordered[3])),
+        )
+        display_height = max(
+            float(np.linalg.norm(ordered[3] - ordered[0])),
+            float(np.linalg.norm(ordered[2] - ordered[1])),
+        )
+        display_area_ratio = (display_width * display_height) / max(float(width * height), 1.0)
+
+        guidance_code = None
+        if display_area_ratio < 0.008:
+            quality.usable = False
+            quality.recapture_reason = "O visor está pequeno na foto. Aproxime a câmera dos números."
+            guidance_code = "move_closer"
+        elif perspective > 0.86:
+            quality.usable = False
+            quality.recapture_reason = "Ângulo muito lateral. Posicione a câmera de frente para o visor."
+            guidance_code = "align_front"
+        elif quality.blur > 0.92:
+            quality.usable = False
+            quality.recapture_reason = "A imagem ficou muito desfocada. Firme o aparelho e toque novamente."
+            guidance_code = "hold_steady"
+        elif quality.glare > 0.82:
+            quality.usable = False
+            quality.recapture_reason = "O reflexo encobriu os números. Mude levemente o ângulo ou desligue a luz."
+            guidance_code = "reduce_glare"
+        elif quality.darkness > 0.86:
+            quality.usable = False
+            quality.recapture_reason = "O visor ficou escuro demais. Ilumine sem apontar a luz diretamente."
+            guidance_code = "increase_light"
+        elif quality.contrast < 0.10:
+            quality.usable = False
+            quality.recapture_reason = "Os números ficaram sem contraste suficiente. Aproxime e ajuste a iluminação."
+            guidance_code = "improve_contrast"
+
+        return {
+            **asdict(quality),
+            "guidance_code": guidance_code,
+            "display_found": not used_fallback,
+            "display_area_ratio": round(display_area_ratio, 6),
+            "image_width": width,
+            "image_height": height,
+        }
+
     def analyze(
         self,
         image_base64: str,
@@ -1064,6 +1343,8 @@ class MeterVisionService:
         black_digits: int | None = None,
         previous_value: float | None = None,
         expensive_ocr: bool = True,
+        hydrometer_brand: str | None = None,
+        hydrometer_model: str | None = None,
     ) -> VisionResult:
         red_digits = red_digits if red_digits is not None and red_digits >= 0 else 3
         try:
@@ -1079,7 +1360,12 @@ class MeterVisionService:
         resolved_black_digits = black_digits or 4
         total_digits = resolved_black_digits + red_digits
         total_digits = max(3, min(total_digits, 10))
-        corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
+        detector = _trained_display_detector()
+        learned_detection = detector.detect(image) if detector is not None else None
+        corners = learned_detection.corners if learned_detection is not None else None
+        display_source = "detector_onnx" if learned_detection is not None else "red_roller_anchor"
+        if corners is None:
+            corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
         used_fallback_roi = corners is None
         used_ocr_window = False
         ocr_items = None
@@ -1087,9 +1373,12 @@ class MeterVisionService:
             ocr_items = _ocr_detect_items(image)
             corners = _ocr_counter_window_candidate(image, total_digits, ocr_items)
             used_ocr_window = corners is not None
+            if used_ocr_window:
+                display_source = "ocr_window"
             used_fallback_roi = corners is None
         if corners is None:
             corners, used_fallback_roi = _display_candidate(image)
+            display_source = "geometric_fallback" if not used_fallback_roi else "guide_fallback"
         rectified, perspective = _rectify(image, corners)
         # Nitidez do cenário inteiro (tampa, chão, tubos) não representa a
         # legibilidade dos roletes. A decisão deve usar a faixa retificada.
@@ -1102,12 +1391,17 @@ class MeterVisionService:
         margin_x = max(int(rectified.shape[1] * 0.025), 1)
         margin_y = max(int(rectified.shape[0] * 0.08), 1)
         usable_roi = rectified[margin_y:rectified.shape[0] - margin_y, margin_x:rectified.shape[1] - margin_x]
+        learned_boundaries = learned_detection.slot_boundaries if learned_detection is not None else []
+        if len(learned_boundaries) == total_digits + 1:
+            boundaries = learned_boundaries
+        else:
+            boundaries = [index / total_digits for index in range(total_digits + 1)]
         slot_width = usable_roi.shape[1] / total_digits
         observations = []
         slots = []
         for index in range(total_digits):
-            start = max(0, int(index * slot_width - slot_width * 0.08))
-            end = min(usable_roi.shape[1], int((index + 1) * slot_width + slot_width * 0.08))
+            start = max(0, int(boundaries[index] * usable_roi.shape[1] - slot_width * 0.08))
+            end = min(usable_roi.shape[1], int(boundaries[index + 1] * usable_roi.shape[1] + slot_width * 0.08))
             slot = usable_roi[:, start:end]
             slots.append(slot)
             observations.append(_slot_observation(slot, index))
@@ -1115,7 +1409,7 @@ class MeterVisionService:
         slot_digits = [int(item.value) for item in observations if item.value is not None]
         original_slot_values = [item.value for item in observations]
         original_slot_confidences = [item.confidence for item in observations]
-        ocr_digits, ocr_confidence = _sequence_ocr(rectified)
+        ocr_digits, ocr_confidence = _sequence_ocr(rectified) if expensive_ocr else ([], 0.0)
         fused_digits, fusion_mode = _fuse_digit_sequences(slot_digits, ocr_digits, ocr_confidence)
         if fusion_mode == "sequence_exact" and len(fused_digits) == total_digits and len(slot_digits) == total_digits:
             guarded_digits = list(fused_digits)
@@ -1240,6 +1534,8 @@ class MeterVisionService:
                 and int(slot_digit) == top_digit
                 and slot_confidence >= 0.94
                 and top_confidence >= 0.94
+                and ocr_confidence < 0.88
+                and fusion_mode is None
             ):
                 corrected_last_digit = int(slot_digit)
             elif (
@@ -1247,6 +1543,8 @@ class MeterVisionService:
                 and int(top_digit) != current_last_digit
                 and top_confidence >= 0.94
                 and slot_confidence < 0.90
+                and ocr_confidence < 0.88
+                and fusion_mode is None
             ):
                 corrected_last_digit = int(top_digit)
             if corrected_last_digit is not None:
@@ -1271,14 +1569,41 @@ class MeterVisionService:
         if predicted_value is None:
             confidence = 0.0
         confidence = round(_clamp(confidence), 4)
-        auto_fill = bool(
+        raw_auto_fill = bool(
             predicted_value is not None
             and quality.usable
             and confidence >= settings.vision_min_autofill_confidence
             and "implausible_consumption_jump" not in flags
         )
+        from app.services.vision_decision import (
+            DECODER_VERSION,
+            calibrate_confidence,
+            load_calibration_profile,
+        )
+
+        profile = load_calibration_profile(hydrometer_brand, hydrometer_model)
+        has_transition = any(item.transitional for item in observations)
+        calibrated_confidence = calibrate_confidence(confidence, profile, transitional=has_transition)
+        decision = "confirm"
+        if predicted_value is None or not quality.usable:
+            decision = "recapture"
+        elif (
+            raw_auto_fill
+            and profile.calibrated
+            and calibrated_confidence >= profile.minimum_autofill
+            and (not has_transition or profile.allow_transition_autofill)
+        ):
+            decision = "accepted"
+        if not profile.calibrated:
+            flags.append("uncalibrated_confidence")
+        auto_fill = decision == "accepted"
         ok, encoded = cv2.imencode(".jpg", rectified, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
         quality_payload = asdict(quality)
+        quality_payload["display_detection"] = {
+            "source": display_source,
+            "confidence": learned_detection.confidence if learned_detection is not None else None,
+            "learned_slot_boundaries": learned_boundaries if len(learned_boundaries) == total_digits + 1 else None,
+        }
         quality_payload["source_frame"] = asdict(frame_quality)
         quality_payload["sequence_ocr"] = {
             "digits": "".join(map(str, ocr_digits)) if ocr_digits else None,
@@ -1300,6 +1625,13 @@ class MeterVisionService:
             "confidence": meter_tail_confidence,
             "fusion": meter_tail_mode if meter_tail_applied else None,
         }
+        quality_payload["decision"] = {
+            "status": decision,
+            "raw_confidence": confidence,
+            "calibrated_confidence": calibrated_confidence,
+            "calibration_version": profile.version,
+            "calibrated": profile.calibrated,
+        }
         predicted_code_result = None
         if predicted_value is not None:
             predicted_code_result = str(
@@ -1318,6 +1650,9 @@ class MeterVisionService:
             alternatives=alternatives,
             flags=list(dict.fromkeys(flags)),
             rectified_jpeg=encoded.tobytes() if ok else None,
+            decision=decision,
+            calibrated_confidence=calibrated_confidence,
+            decoder_version=DECODER_VERSION,
         )
 
 

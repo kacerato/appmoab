@@ -33,9 +33,10 @@ class Reading(Base):
     )
 
     # ── Valores de Leitura ─────────────────────────────────────
-    current_value: Mapped[float] = mapped_column(Float, nullable=False)
+    # A leitura capturada so vira valor oficial depois da conferencia no dashboard.
+    current_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     previous_value: Mapped[float] = mapped_column(Float, nullable=False)
-    consumption: Mapped[float] = mapped_column(Float, nullable=False)
+    consumption: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # ── Dados da Foto / OCR ────────────────────────────────────
     photo_url: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -70,6 +71,7 @@ class Reading(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_adjustment_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # ── Timestamps ─────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
@@ -81,6 +83,8 @@ class Reading(Base):
     collaborator = relationship("User", back_populates="readings_captured", foreign_keys=[collaborator_id])
     approver = relationship("User", back_populates="readings_approved", foreign_keys=[approved_by])
     invoice = relationship("Invoice", back_populates="reading", uselist=False)
+    vision_inference = relationship("VisionInference", foreign_keys=[vision_inference_id])
 
     def __repr__(self) -> str:
-        return f"<Reading {self.consumption:.2f}m³ [{self.status}]>"
+        consumption = f"{self.consumption:.2f}m³" if self.consumption is not None else "aguardando conferencia"
+        return f"<Reading {consumption} [{self.status}]>"

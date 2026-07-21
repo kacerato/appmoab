@@ -1,18 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Image,
   ScrollView,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
-import { formatMeterReading, parseMeterReadingInput } from '../lib/meter-reading';
 import { colors, shared } from '../styles/theme';
 
 interface OCRData {
@@ -30,10 +27,22 @@ interface VisionVerdict {
   predicted_value: number | null;
   confidence: number | null;
   auto_fill_allowed: boolean;
+  decision?: 'accepted' | 'confirm' | 'recapture' | 'unsupported';
+  calibrated_confidence?: number | null;
+  decoder_version?: string | null;
   red_digits: number | null;
   black_digits: number | null;
   quality?: { usable?: boolean; recapture_reason?: string | null };
   flags?: string[];
+  digits?: Array<{
+    position: number;
+    value: number | null;
+    confidence: number;
+    current_digit?: number | null;
+    next_digit?: number | null;
+    transition_phase?: number | null;
+    transitional?: boolean;
+  }>;
 }
 
 export default function OCRResultScreen() {
@@ -44,6 +53,9 @@ export default function OCRResultScreen() {
     photoBase64,
     photoUri,
     framesBase64 = [],
+    captureId,
+    captureMetadata = {},
+    frameMetadata = [],
     latitude,
     longitude,
     locationAccuracyMeters,
@@ -62,22 +74,17 @@ export default function OCRResultScreen() {
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [ocrData, setOcrData] = useState<OCRData | null>(null);
-  const [currentValue, setCurrentValue] = useState('');
-  const [selectedRedDigits, setSelectedRedDigits] = useState<number>(redDigits || 3);
-  const [readingId, setReadingId] = useState('');
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
-
-  const normalizedCurrentValue = useMemo(
-    () => parseMeterReadingInput(currentValue, selectedRedDigits),
-    [currentValue, selectedRedDigits],
-  );
+  const selectedRedDigits = Number(redDigits || 3);
 
   useEffect(() => {
-    setLoading(false);
+    setLoading(true);
     api.post<VisionVerdict>('/hydrometers/vision-verdict', {
       photo_base64: photoBase64,
       frames_base64: framesBase64,
+      capture_id: captureId || null,
+      capture_metadata: captureMetadata,
+      frame_metadata: frameMetadata,
       hydrometer_id: hydrometerId,
       stage: 'reading',
       red_digits: selectedRedDigits,
@@ -86,80 +93,38 @@ export default function OCRResultScreen() {
       hydrometer_brand: hydrometerBrand || null,
       hydrometer_model: hydrometerModel || null,
     }, 75000)
-      .then(result => {
-        setVerdict(result);
-        if (result.auto_fill_allowed && result.predicted_value !== null) {
-          setCurrentValue(current => current || String(result.predicted_value));
-        }
-      })
-      .catch(() => setVerdict(null));
-  }, [blackDigits, framesBase64, hydrometerBrand, hydrometerId, hydrometerModel, lastReading, photoBase64, selectedRedDigits]);
+      .then(setVerdict)
+      .catch(() => setVerdict(null))
+      .finally(() => setLoading(false));
+  }, [blackDigits, captureId, captureMetadata, frameMetadata, framesBase64, hydrometerBrand, hydrometerId, hydrometerModel, lastReading, photoBase64, selectedRedDigits]);
 
-  const confirmReading = async () => {
-    if (normalizedCurrentValue === null) return;
-    const rolloverLimit = 10 ** (blackDigits || 4);
-    const isRollover = normalizedCurrentValue < lastReading && lastReading >= rolloverLimit * 0.9;
-    if (!isInstallation && normalizedCurrentValue < lastReading && !isRollover) {
-      Alert.alert(
-        'Leitura menor que a anterior',
-        'Confira se o QR e o hidrômetro estão corretos. Essa leitura não será enviada como leitura normal.',
-      );
-      return;
-    }
-
+  const sendCapture = async () => {
     setSubmitting(true);
     try {
-      const result = await api.post<OCRData>('/readings', {
+      await api.post<OCRData>('/readings', {
         hydrometer_id: hydrometerId,
         photo_base64: photoBase64,
         latitude,
         longitude,
         location_accuracy_meters: locationAccuracyMeters,
         captured_at: capturedAt,
-        current_value: normalizedCurrentValue,
-        confirmed_code: hydrometerCode || null,
         vision_inference_id: verdict?.inference_id || null,
       });
-      setOcrData(result);
-      setReadingId(result.reading_id);
-      await api.post('/hydrometers/vision-feedback', {
-        inference_id: verdict?.inference_id || null,
-        photo_base64: photoBase64,
-        stage: 'reading',
-        predicted_code: verdict?.predicted_code || null,
-        predicted_value: verdict?.predicted_value || null,
-        confidence: verdict?.confidence || null,
-        confirmed_code: hydrometerCode || null,
-        confirmed_value: normalizedCurrentValue,
-        hydrometer_id: hydrometerId,
-        red_digits: selectedRedDigits,
-        black_digits: blackDigits || verdict?.black_digits || null,
-        hydrometer_brand: hydrometerBrand || null,
-        hydrometer_model: hydrometerModel || null,
-      }).catch(() => null);
       showToast(
-        isInstallation ? 'Instalacao enviada' : 'Leitura enviada',
+        isInstallation ? 'Captura da instalacao enviada' : 'Captura enviada',
         isInstallation
-          ? 'A instalacao foi registrada e aguarda aprovação para gerar o boleto.'
-          : 'A leitura foi registrada e aguarda aprovação no painel.',
+          ? 'O valor inicial sera conferido no dashboard antes de gerar a cobranca.'
+          : 'O OCR sugerira a medicao e o dashboard fara a confirmacao final.',
         'success',
       );
       navigation.navigate('Route');
     } catch (error) {
-      showToast('Falha ao confirmar leitura', error instanceof Error ? error.message : 'Não foi possível enviar a leitura.', 'error');
+      showToast('Falha ao enviar captura', error instanceof Error ? error.message : 'Não foi possível enviar a captura.', 'error');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const consumption = useMemo(() => {
-    if (normalizedCurrentValue === null) return 0;
-    const rolloverLimit = 10 ** (blackDigits || 4);
-    if (!isInstallation && normalizedCurrentValue < lastReading && lastReading >= rolloverLimit * 0.9) {
-      return (rolloverLimit - lastReading) + normalizedCurrentValue;
-    }
-    return Math.max(0, normalizedCurrentValue - lastReading);
-  }, [blackDigits, isInstallation, lastReading, normalizedCurrentValue]);
   const locationLabel = useMemo(() => {
     if (latitude && longitude) {
       return `${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
@@ -203,46 +168,24 @@ export default function OCRResultScreen() {
             <View style={[shared.card, { borderColor: colors.warning, borderWidth: 1 }] }>
               <Text style={[shared.sectionTitle, { color: colors.warning }]}>Foto precisa de atenção</Text>
               <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-                {verdict.quality.recapture_reason || 'A visão local encontrou baixa qualidade. Confirme manualmente ou refaça a captura.'}
+                {verdict.quality.recapture_reason || 'A visão encontrou baixa qualidade. Refaça a captura antes de enviar.'}
               </Text>
             </View>
           )}
 
           <View style={shared.card}>
-            <Text style={shared.sectionTitle}>{isInstallation ? 'Valor inicial informado' : 'Leitura digitada'}</Text>
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              <Metric label={isInstallation ? 'Base anterior' : 'Anterior'} value={`${formatMeterReading(lastReading)} m³`} />
-              <Metric label={isInstallation ? 'Valor inicial' : 'Consumo'} value={`${formatMeterReading(isInstallation ? (normalizedCurrentValue || 0) : consumption)} m³`} accent />
-            </View>
-          </View>
-
-          <View style={shared.card}>
-            <Text style={shared.sectionTitle}>{isInstallation ? 'Confirmar valor do hidrometro' : 'Confirmar a leitura final'}</Text>
-            <Text style={shared.label}>Dígitos vermelhos do hidrômetro</Text>
-            <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
-              <RedDigitOption value={2} selected={selectedRedDigits === 2} onPress={() => setSelectedRedDigits(2)} />
-              <RedDigitOption value={3} selected={selectedRedDigits === 3} onPress={() => setSelectedRedDigits(3)} />
-            </View>
-            <Text style={shared.label}>Leitura atual do visor</Text>
-            <TextInput
-              style={[shared.input, { fontSize: 24, fontWeight: '800', textAlign: 'center', marginBottom: 16 }]}
-              value={currentValue}
-              onChangeText={setCurrentValue}
-              keyboardType="decimal-pad"
-              placeholder="Ex: 0013440"
-              placeholderTextColor={colors.textMuted}
-            />
-            <Text style={{ color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: -8 }}>
-              Interpretado como {formatMeterReading(normalizedCurrentValue)} m³ com {selectedRedDigits} dígitos vermelhos.
+            <Text style={shared.sectionTitle}>Conferencia no dashboard</Text>
+            <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 20 }}>
+              O aplicativo envia somente a foto, o GPS e a analise visual. A medicao oficial e o consumo serao definidos por quem aprovar no dashboard.
             </Text>
           </View>
 
           <TouchableOpacity
-            style={[shared.btnPrimary, submitting && { opacity: 0.5 }, normalizedCurrentValue === null && { opacity: 0.45 }]}
-            onPress={confirmReading}
-            disabled={submitting || normalizedCurrentValue === null}
+            style={[shared.btnPrimary, (submitting || verdict?.quality?.usable === false || verdict?.decision === 'recapture') && { opacity: 0.45 }]}
+            onPress={sendCapture}
+            disabled={submitting || verdict?.quality?.usable === false || verdict?.decision === 'recapture'}
           >
-            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>{isInstallation ? 'Enviar instalacao' : 'Confirmar e enviar'}</Text>}
+            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>Enviar captura para conferencia</Text>}
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -257,49 +200,11 @@ export default function OCRResultScreen() {
   );
 }
 
-function RedDigitOption({ value, selected, onPress }: { value: number; selected: boolean; onPress: () => void }) {
-  return (
-    <TouchableOpacity
-      onPress={onPress}
-      style={{
-        flex: 1,
-        borderRadius: 14,
-        paddingVertical: 12,
-        alignItems: 'center',
-        backgroundColor: selected ? colors.dangerSoft : colors.navy700,
-        borderWidth: 1,
-        borderColor: selected ? colors.danger : colors.border,
-      }}
-    >
-      <Text style={{ color: selected ? colors.danger : colors.textSecondary, fontWeight: '900' }}>{value} vermelhos</Text>
-    </TouchableOpacity>
-  );
-}
-
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <View style={{ marginBottom: 12 }}>
       <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', marginBottom: 4 }}>{label}</Text>
       <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '600' }}>{value}</Text>
-    </View>
-  );
-}
-
-function Metric({ label, value, tone, accent }: { label: string; value: string; tone?: 'success' | 'warning' | 'danger'; accent?: boolean }) {
-  const color = accent
-    ? colors.cyan
-    : tone === 'success'
-      ? colors.success
-      : tone === 'warning'
-        ? colors.warning
-        : tone === 'danger'
-          ? colors.danger
-          : colors.textPrimary;
-
-  return (
-    <View style={{ flex: 1, backgroundColor: colors.navy700, borderRadius: 14, padding: 14 }}>
-      <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', marginBottom: 6 }}>{label}</Text>
-      <Text style={{ color, fontSize: 16, fontWeight: '800' }}>{value}</Text>
     </View>
   );
 }

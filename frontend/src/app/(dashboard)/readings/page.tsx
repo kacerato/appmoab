@@ -6,21 +6,21 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { AlertTriangle, ClipboardCheck, Check, X, Camera, MapPin } from 'lucide-react';
+import { AlertTriangle, ClipboardCheck, Check, X, Camera, MapPin, Sparkles } from 'lucide-react';
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
 interface Reading {
   id: string;
-  current_value: number;
+  current_value: number | null;
   previous_value: number;
-  consumption: number;
+  consumption: number | null;
   photo_url: string;
-  photo_extracted_code: string;
-  photo_extracted_value: number;
-  ocr_confidence: number;
-  latitude: number;
-  longitude: number;
+  photo_extracted_code: string | null;
+  photo_extracted_value: number | null;
+  ocr_confidence: number | null;
+  latitude: number | null;
+  longitude: number | null;
   location_accuracy_meters: number | null;
   distance_from_hydrometer_meters: number | null;
   location_status: string;
@@ -34,6 +34,24 @@ interface Reading {
   customer_id: string;
   is_installation: boolean;
   charge_type: string | null;
+  review_adjustment_reason: string | null;
+  vision_predicted_code: string | null;
+  vision_predicted_value: number | null;
+  vision_confidence: number | null;
+  vision_decision: string | null;
+  vision_digits: Array<{
+    position?: number;
+    value?: number | null;
+    confidence?: number;
+    current_digit?: number | null;
+    next_digit?: number | null;
+    transition_phase?: number | null;
+    transitional?: boolean;
+  }>;
+  vision_alternatives: Array<string | number | { code?: string; value?: number }>;
+  vision_quality: Record<string, unknown>;
+  vision_flags: string[];
+  vision_rectified_url: string | null;
 }
 
 function alertTone(flags: Reading['validation_flags']) {
@@ -65,12 +83,24 @@ export default function ReadingsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('pending');
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [draftValues, setDraftValues] = useState<Record<string, string>>({});
+  const [draftReasons, setDraftReasons] = useState<Record<string, string>>({});
 
   const load = useCallback(async (force = false) => {
     setLoading(true);
     try {
       const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`, { skipCache: force });
       setData(res);
+      setDraftValues(current => {
+        const next = { ...current };
+        res.items.forEach(reading => {
+          if (!(reading.id in next)) {
+            const suggestion = reading.vision_predicted_value ?? reading.photo_extracted_value ?? reading.current_value;
+            next[reading.id] = suggestion === null ? '' : String(suggestion).replace('.', ',');
+          }
+        });
+        return next;
+      });
     } catch (e) {
       console.error(e);
     } finally {
@@ -96,11 +126,33 @@ export default function ReadingsPage() {
     };
   }, [load]);
 
-  const approve = async (id: string) => {
-    setActionLoading(id);
+  const approve = async (reading: Reading, confirmSuggestion = false) => {
+    const suggestion = reading.vision_predicted_value ?? reading.photo_extracted_value;
+    const rawValue = confirmSuggestion && suggestion !== null
+      ? String(suggestion)
+      : draftValues[reading.id] || '';
+    const value = Number(rawValue.replace(',', '.'));
+    if (!Number.isFinite(value) || value < 0) {
+      notify('Leitura inválida', 'Informe a medição que aparece no visor antes de aprovar.', 'warning');
+      return;
+    }
+    const adjusted = suggestion !== null && Math.abs(value - suggestion) > 0.0005;
+
+    setActionLoading(reading.id);
     try {
-      await api.post(`/readings/${id}/approve`);
-      notify('Leitura aprovada', 'A leitura foi enviada para o próximo fluxo de faturamento.', 'success');
+      const result = await api.post<{ whatsapp_status?: string }>(`/readings/${reading.id}/approve`, {
+        current_value: value,
+        adjustment_reason: adjusted
+          ? (draftReasons[reading.id]?.trim() || 'Valor ajustado manualmente no dashboard')
+          : null,
+      });
+      notify(
+        'Leitura confirmada',
+        result.whatsapp_status === 'queued'
+          ? 'Consumo e fatura gerados; o WhatsApp entrou na fila de envio.'
+          : 'Consumo e fatura gerados com o valor confirmado.',
+        'success',
+      );
       await load();
     } catch (e) {
       notify('Falha ao aprovar leitura', e instanceof Error ? e.message : 'Erro ao aprovar leitura.', 'error');
@@ -150,7 +202,7 @@ export default function ReadingsPage() {
       ) : !data?.items.length ? (
         <div className="empty-state"><ClipboardCheck /><p>Nenhuma leitura {filter === 'pending' ? 'pendente' : filter === 'approved' ? 'aprovada' : 'rejeitada'}</p></div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(430px, 1fr))', gap: 16 }}>
           {data.items.map(r => (
             <div key={r.id} className="card" style={{ padding: 0, overflow: 'hidden', borderColor: alertTone(r.validation_flags || []) === 'danger' ? 'rgba(220, 38, 38, 0.28)' : undefined }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
@@ -175,13 +227,32 @@ export default function ReadingsPage() {
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
                   <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Anterior</div><div style={{ fontWeight: 600 }}>{r.previous_value.toFixed(2)}</div></div>
-                  <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Atual</div><div style={{ fontWeight: 600 }}>{r.current_value.toFixed(2)}</div></div>
-                  <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Consumo</div><div style={{ fontWeight: 700, color: 'var(--cyan)' }}>{r.consumption.toFixed(2)} m³</div></div>
+                  <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.status === 'pending' ? 'Sugestão OCR' : 'Confirmada'}</div><div style={{ fontWeight: 600 }}>{(r.status === 'pending' ? (r.vision_predicted_value ?? r.photo_extracted_value) : r.current_value)?.toFixed(3) ?? '—'}</div></div>
+                  <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Consumo</div><div style={{ fontWeight: 700, color: 'var(--cyan)' }}>{r.consumption !== null ? `${r.consumption.toFixed(3)} m³` : 'Após confirmar'}</div></div>
                 </div>
 
-                {r.ocr_confidence !== null && (
+                {(r.vision_confidence ?? r.ocr_confidence) !== null && (
                   <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-muted)' }}>
-                    OCR: {(r.ocr_confidence * 100).toFixed(0)}% confiança
+                    OCR: {(((r.vision_confidence ?? r.ocr_confidence) || 0) * 100).toFixed(0)}% confiança
+                    {r.vision_decision && ` • ${r.vision_decision === 'accepted' ? 'alta concordância' : r.vision_decision === 'recapture' ? 'captura fraca' : 'revisão necessária'}`}
+                  </div>
+                )}
+
+                {!!r.vision_digits?.length && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
+                    {r.vision_digits.map((digit, index) => (
+                      <div key={`${digit.position ?? index}-${index}`} style={{ minWidth: 38, padding: '7px 8px', textAlign: 'center', borderRadius: 8, background: digit.transitional ? 'var(--warning-soft)' : 'var(--blue-50)', border: `1px solid ${digit.transitional ? 'var(--warning)' : 'var(--border)'}` }}>
+                        <div style={{ fontSize: 16, fontWeight: 900 }}>{digit.value ?? '—'}</div>
+                        <div style={{ fontSize: 9, color: digit.transitional ? 'var(--warning)' : 'var(--text-muted)' }}>
+                          {digit.transitional ? `${digit.current_digit}→${digit.next_digit}` : `${Math.round((digit.confidence || 0) * 100)}%`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!!r.vision_alternatives?.length && (
+                  <div style={{ marginTop: 9, fontSize: 11, color: 'var(--text-muted)' }}>
+                    Alternativas: {r.vision_alternatives.slice(0, 3).map(item => typeof item === 'object' ? (item.code ?? item.value ?? '—') : item).join(' • ')}
                   </div>
                 )}
 
@@ -221,8 +292,9 @@ export default function ReadingsPage() {
                 <div>{r.collaborator_name}</div>
               </div>
 
-              <div style={{ padding: '0 20px 14px', display: 'grid', gridTemplateColumns: '120px 1fr', gap: 12, alignItems: 'center' }}>
-                <ReadingPhoto url={r.photo_url} />
+              <div style={{ padding: '0 20px 14px', display: 'grid', gridTemplateColumns: r.vision_rectified_url ? '120px 120px 1fr' : '120px 1fr', gap: 12, alignItems: 'center' }}>
+                <ReadingPhoto url={r.photo_url} label="Original" />
+                {r.vision_rectified_url && <ReadingPhoto url={r.vision_rectified_url} label="Visor" />}
                 <div style={{ display: 'grid', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
                   <div><strong>Hora da foto:</strong> {new Date(r.captured_at).toLocaleString('pt-BR')}</div>
                   <div><strong>Localizacao:</strong> {r.latitude && r.longitude ? `${r.latitude.toFixed(6)}, ${r.longitude.toFixed(6)}` : 'Nao registrada'}</div>
@@ -247,14 +319,32 @@ export default function ReadingsPage() {
               </div>
 
               {r.status === 'pending' && (
-                <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                  <button className="btn btn-danger btn-sm" onClick={() => reject(r.id)} disabled={actionLoading === r.id}>
-                    <X size={14} /> Rejeitar
-                  </button>
-                  <button className="btn btn-primary btn-sm" onClick={() => approve(r.id)} disabled={actionLoading === r.id}>
-                    {actionLoading === r.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : <Check size={14} />}
-                    {alertTone(r.validation_flags || []) === 'danger' ? 'Aprovar mesmo assim' : 'Aprovar'}
-                  </button>
+                <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border)', display: 'grid', gap: 10 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.4fr)', gap: 10 }}>
+                    <div>
+                      <label className="form-label">Medição confirmada (m³)</label>
+                      <input className="form-input" inputMode="decimal" value={draftValues[r.id] || ''} onChange={event => setDraftValues(current => ({ ...current, [r.id]: event.target.value }))} placeholder="Ex: 13,440" />
+                    </div>
+                    <div>
+                      <label className="form-label">Motivo do ajuste <span style={{ fontWeight: 400 }}>(se houver)</span></label>
+                      <input className="form-input" value={draftReasons[r.id] || ''} onChange={event => setDraftReasons(current => ({ ...current, [r.id]: event.target.value }))} placeholder="Ex: dígito em transição" />
+                    </div>
+                  </div>
+                  <ReadingConfirmationPreview reading={r} rawValue={draftValues[r.id] || ''} />
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                    <button className="btn btn-danger btn-sm" onClick={() => reject(r.id)} disabled={actionLoading === r.id}>
+                      <X size={14} /> Solicitar nova captura
+                    </button>
+                    {(r.vision_predicted_value ?? r.photo_extracted_value) !== null && (
+                      <button className="btn btn-secondary btn-sm" onClick={() => approve(r, true)} disabled={actionLoading === r.id}>
+                        <Sparkles size={14} /> Confirmar sugestão
+                      </button>
+                    )}
+                    <button className="btn btn-primary btn-sm" onClick={() => approve(r)} disabled={actionLoading === r.id}>
+                      {actionLoading === r.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : <Check size={14} />}
+                      Confirmar valor e faturar
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -271,7 +361,7 @@ export default function ReadingsPage() {
   );
 }
 
-function ReadingPhoto({ url }: { url: string | null }) {
+function ReadingPhoto({ url, label }: { url: string | null; label?: string }) {
   const [failed, setFailed] = useState(false);
   if (!url || failed) {
     return (
@@ -285,9 +375,25 @@ function ReadingPhoto({ url }: { url: string | null }) {
     // eslint-disable-next-line @next/next/no-img-element
     <img
       src={url.startsWith('http') ? url : `${API_BASE}${url}`}
-      alt="Foto da leitura"
+      alt={label || 'Foto da leitura'}
       onError={() => setFailed(true)}
       style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }}
     />
+  );
+}
+
+function ReadingConfirmationPreview({ reading, rawValue }: { reading: Reading; rawValue: string }) {
+  const value = Number(rawValue.replace(',', '.'));
+  if (!Number.isFinite(value)) return null;
+  const suggestion = reading.vision_predicted_value ?? reading.photo_extracted_value;
+  const adjusted = suggestion !== null && Math.abs(value - suggestion) > 0.0005;
+  const consumption = value >= reading.previous_value ? value - reading.previous_value : null;
+
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', borderRadius: 8, background: adjusted ? 'var(--warning-soft)' : 'var(--success-soft)', color: adjusted ? 'var(--warning)' : 'var(--success)', fontSize: 12, fontWeight: 700 }}>
+      <span>{adjusted ? 'Valor ajustado' : 'Sugestão preservada'}</span>
+      <span>•</span>
+      <span>{consumption === null ? 'Virada/regressão será validada pelo servidor' : `Consumo previsto: ${consumption.toFixed(3)} m³`}</span>
+    </div>
   );
 }

@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
+import { useMobileTheme } from '../lib/mobile-theme';
 import { colors, shared } from '../styles/theme';
 
 interface VisionVerdict {
@@ -17,6 +18,8 @@ export default function ManualCodeScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { showToast } = useFeedback();
+  const { mode } = useMobileTheme();
+  const styles = useMemo(createStyles, [mode]);
   const {
     photoBase64,
     photoUri,
@@ -124,7 +127,8 @@ export default function ManualCodeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+function createStyles() {
+  return StyleSheet.create({
   content: { flex: 1, padding: 20, paddingTop: 48 },
   backLink: { color: colors.cyan, fontSize: 12, fontWeight: '900', textTransform: 'uppercase', marginBottom: 14 },
   previewImage: { width: '100%', height: 180, borderRadius: 18, marginBottom: 16, backgroundColor: colors.navy700 },
@@ -142,4 +146,5 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     marginBottom: 16,
   },
-});
+  });
+}

@@ -93,6 +93,9 @@ docker-compose up -d
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Credenciais do bucket R2 |
 | `VISION_ENABLED` | Ativa o motor local de visao computacional |
 | `VISION_MODEL_PATH` / `VISION_MODEL_VERSION` | Artefato ONNX/KNN promovido e sua versao |
+| `VISION_DETECTOR_MODEL_PATH` | Detector ONNX promovido dos cantos e limites do visor |
+| `VISION_TRANSITION_MODEL_PATH` | Modelo ONNX multi-head para dígito, transição, fase e visibilidade |
+| `VISION_CALIBRATION_PATH` | Curva de confiança promovida; sem ela não há auto-preenchimento V2 |
 | `VISION_MIN_AUTOFILL_CONFIDENCE` | Limiar conservador para preenchimento automatico |
 | `VISION_GLM_SHADOW_ENABLED` | Executa GLM somente em paralelo para comparacao, sem decidir a leitura |
 | `EVOLUTION_API_URL` | URL base da Evolution API |

@@ -15,6 +15,7 @@ celery_app = Celery(
     include=[
         "app.tasks.check_payments",
         "app.tasks.send_reminders",
+        "app.tasks.send_invoice_notifications",
     ],
 )
 
@@ -53,5 +54,9 @@ celery_app.conf.beat_schedule = {
     "send-reminder-overdue": {
         "task": "app.tasks.send_reminders.send_overdue_reminders",
         "schedule": crontab(hour=10, minute=0),
+    },
+    "retry-invoice-whatsapp": {
+        "task": "app.tasks.send_invoice_notifications.retry_invoice_notifications",
+        "schedule": crontab(minute="*/2"),
     },
 }

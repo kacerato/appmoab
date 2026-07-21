@@ -3,6 +3,7 @@ import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TouchableOpacit
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { api } from '../lib/api';
 import { useFeedback } from '../lib/feedback';
+import { useMobileTheme } from '../lib/mobile-theme';
 import { colors, shared } from '../styles/theme';
 
 interface IdentifyResult {
@@ -21,6 +22,8 @@ export default function HydrometerMatchScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { showToast } = useFeedback();
+  const { mode } = useMobileTheme();
+  styles = useMemo(createStyles, [mode]);
   const {
     photoBase64,
     photoUri,
@@ -137,7 +140,10 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-const styles = StyleSheet.create({
+let styles = createStyles();
+
+function createStyles() {
+  return StyleSheet.create({
   backLink: {
     color: colors.accent,
     fontWeight: '800',
@@ -180,4 +186,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-});
+  });
+}

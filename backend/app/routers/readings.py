@@ -2,7 +2,6 @@
 Router de Leituras — Upload de foto, OCR, validação e aprovação.
 """
 
-import asyncio
 import logging
 import math
 import uuid
@@ -14,17 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import async_session_factory, get_db
-from app.models.notification import Notification
 from app.models.reading import Reading
 from app.models.hydrometer import Hydrometer
 from app.models.invoice import Invoice
 from app.models.invoice_event import InvoiceEvent
 from app.models.system_setting import SystemSetting
-from app.models.whatsapp_message import WhatsAppMessage
 from app.models.user import User
 from app.models.vision_inference import VisionInference
 from app.schemas.reading import (
-    ReadingCreate, ReadingOCRResult, ReadingConfirm,
+    ReadingApprove, ReadingCreate, ReadingOCRResult, ReadingConfirm,
     ReadingReject, ReadingResponse, ReadingListResponse,
 )
 from app.services.glm_ocr import glm_ocr_service
@@ -36,12 +33,7 @@ from app.services.billing_policy import (
 )
 from app.services.efi_api import efi_service
 from app.services.invoice_documents import get_or_create_boleto_pdf
-from app.services.notification_templates import (
-    FLOW_NOTIFICATION_TYPES,
-    notification_flow_enabled,
-    render_invoice_customer_message,
-)
-from app.services.whatsapp_api import whatsapp_service
+from app.services.invoice_whatsapp import dispatch_invoice_notification_task, enqueue_invoice_whatsapp
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
@@ -89,6 +81,52 @@ def _evaluate_reading(
     location_accuracy_meters: float | None,
     anomaly_override_reason: str | None = None,
 ) -> tuple[float, str, float | None, list[dict]]:
+    location_status, distance, flags = _evaluate_location(
+        hydrometer=hydrometer,
+        latitude=latitude,
+        longitude=longitude,
+        location_accuracy_meters=location_accuracy_meters,
+    )
+
+    consumption = current_value - previous_value
+    if consumption < 0:
+        limit = _rollover_limit(hydrometer)
+        rollover_allowed = previous_value >= limit * ROLLOVER_PREVIOUS_THRESHOLD
+        if rollover_allowed:
+            consumption = (limit - previous_value) + current_value
+            flags.append(_flag(
+                "meter_rollover",
+                "Virada do hidrômetro",
+                f"Leitura anterior próxima do limite {limit:.0f}; consumo calculado por virada.",
+                "info",
+            ))
+        elif anomaly_override_reason:
+            flags.append(_flag(
+                "reading_regression_override",
+                "Leitura menor que anterior",
+                "Leitura enviada como exceção e precisa de conferência manual.",
+                "danger",
+            ))
+            consumption = 0.0
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Leitura atual menor que a anterior. Confira se o QR/hidrômetro está correto "
+                    "ou registre uma exceção justificada."
+                ),
+            )
+
+    return max(consumption, 0.0), location_status, distance, flags
+
+
+def _evaluate_location(
+    *,
+    hydrometer: Hydrometer,
+    latitude: float | None,
+    longitude: float | None,
+    location_accuracy_meters: float | None,
+) -> tuple[str, float | None, list[dict]]:
     flags: list[dict] = []
     distance: float | None = None
     location_status = "ok"
@@ -105,9 +143,9 @@ def _evaluate_reading(
     elif hydrometer.latitude is None or hydrometer.longitude is None:
         location_status = "missing_reference"
         flags.append(_flag(
-            "location_reference_created",
-            "Base de local criada",
-            "Esta leitura definiu a localização-base do hidrômetro.",
+            "location_reference_pending",
+            "Base de local pendente",
+            "Ao aprovar, esta captura definira a localização-base do hidrômetro.",
             "info",
         ))
     else:
@@ -140,36 +178,7 @@ def _evaluate_reading(
             "warning",
         ))
 
-    consumption = current_value - previous_value
-    if consumption < 0:
-        limit = _rollover_limit(hydrometer)
-        rollover_allowed = previous_value >= limit * ROLLOVER_PREVIOUS_THRESHOLD
-        if rollover_allowed:
-            consumption = (limit - previous_value) + current_value
-            flags.append(_flag(
-                "meter_rollover",
-                "Virada do hidrômetro",
-                f"Leitura anterior próxima do limite {limit:.0f}; consumo calculado por virada.",
-                "info",
-            ))
-        elif anomaly_override_reason:
-            flags.append(_flag(
-                "reading_regression_override",
-                "Leitura menor que anterior",
-                "Leitura enviada como exceção e precisa de conferência manual.",
-                "danger",
-            ))
-            consumption = 0.0
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Leitura atual menor que a anterior. Confira se o QR/hidrômetro está correto "
-                    "ou registre uma exceção justificada."
-                ),
-            )
-
-    return max(consumption, 0.0), location_status, distance, flags
+    return location_status, distance, flags
 
 
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
@@ -258,6 +267,7 @@ async def list_readings(
         selectinload(Reading.hydrometer).selectinload(Hydrometer.customer),
         selectinload(Reading.collaborator),
         selectinload(Reading.invoice),
+        selectinload(Reading.vision_inference),
     )
 
     if status:
@@ -279,6 +289,17 @@ async def list_readings(
         resp.collaborator_name = r.collaborator.name if r.collaborator else None
         resp.hydrometer_code = r.hydrometer.code if r.hydrometer else None
         resp.photo_url = build_public_upload_url(r.photo_url)
+        if r.vision_inference:
+            inference = r.vision_inference
+            resp.vision_predicted_code = inference.predicted_code
+            resp.vision_predicted_value = inference.predicted_value
+            resp.vision_confidence = inference.calibrated_confidence if inference.calibrated_confidence is not None else inference.confidence
+            resp.vision_decision = inference.decision
+            resp.vision_digits = inference.digits or []
+            resp.vision_alternatives = inference.alternatives or []
+            resp.vision_quality = inference.quality or {}
+            resp.vision_flags = inference.flags or []
+            resp.vision_rectified_url = build_public_upload_url(inference.rectified_object_key) if inference.rectified_object_key else None
         if r.hydrometer and r.hydrometer.customer:
             resp.customer_name = r.hydrometer.customer.name
             resp.customer_id = r.hydrometer.customer.id
@@ -329,57 +350,50 @@ async def create_reading(
     # Salva foto
     photo_url = save_photo_from_base64(data.photo_base64, prefix="reading")
 
-    # OCR via GLM-OCR fica como veredito interno. Quando o colaborador digitou
-    # a leitura, a resposta nao depende mais do OCR para seguir o fluxo.
+    # A inferencia visual e apenas uma sugestao. O valor oficial so sera
+    # definido por um gestor no endpoint de aprovacao.
     ocr_result = {"codigo": None, "leitura_m3": None, "confianca": 0.0}
-    if data.current_value is None:
+    if vision_inference:
+        ocr_result = {
+            "codigo": vision_inference.predicted_code,
+            "leitura_m3": vision_inference.predicted_value,
+            "confianca": (
+                vision_inference.calibrated_confidence
+                if vision_inference.calibrated_confidence is not None
+                else vision_inference.confidence
+            ),
+        }
+    elif data.current_value is not None:
+        # APK antigo: preserva o que foi digitado como sugestao legada, sem
+        # consolidar current_value/consumption.
+        ocr_result = {
+            "codigo": None,
+            "leitura_m3": data.current_value,
+            "confianca": 0.0,
+        }
+    else:
         try:
             ocr_result = await glm_ocr_service.extract_hydrometer_data(data.photo_base64)
         except Exception as e:
-            # OCR falhou, mas a leitura ainda pode ser registrada manualmente
+            # OCR falhou, mas a captura ainda segue para conferencia no painel.
             logger.warning("OCR falhou: %s", e)
 
-    current_value = data.current_value
-    if current_value is None:
-        current_value = ocr_result.get("leitura_m3") or 0.0
-
-    created_location_reference = (
-        hydrometer.latitude is None
-        and hydrometer.longitude is None
-        and data.latitude is not None
-        and data.longitude is not None
-    )
-    if created_location_reference:
-        hydrometer.latitude = data.latitude
-        hydrometer.longitude = data.longitude
-        hydrometer.location_source = "first_reading"
-
-    consumption, location_status, distance, flags = _evaluate_reading(
+    location_status, distance, flags = _evaluate_location(
         hydrometer=hydrometer,
-        current_value=current_value,
-        previous_value=hydrometer.last_reading_value,
         latitude=data.latitude,
         longitude=data.longitude,
         location_accuracy_meters=data.location_accuracy_meters,
-        anomaly_override_reason=data.anomaly_override_reason,
     )
-    if created_location_reference:
-        flags.append(_flag(
-            "location_reference_created",
-            "Base de local criada",
-            "Esta leitura definiu a localização-base do hidrômetro.",
-            "info",
-        ))
 
-    # Cria leitura (status=pending, aguarda confirmação do colaborador)
+    # Cria captura pendente; leitura e consumo ainda nao existem oficialmente.
     reading = Reading(
         hydrometer_id=data.hydrometer_id,
         collaborator_id=user.id,
-        current_value=current_value,
+        current_value=None,
         previous_value=hydrometer.last_reading_value,
-        consumption=consumption,
+        consumption=None,
         photo_url=photo_url,
-        photo_extracted_code=data.confirmed_code or ocr_result.get("codigo"),
+        photo_extracted_code=ocr_result.get("codigo") or data.confirmed_code,
         photo_extracted_value=ocr_result.get("leitura_m3"),
         ocr_confidence=ocr_result.get("confianca"),
         vision_inference_id=data.vision_inference_id,
@@ -412,17 +426,20 @@ async def confirm_reading(
     reading_id: str,
     data: ReadingConfirm,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
-    """Colaborador confirma/ajusta os valores após OCR."""
+    """Compatibilidade: somente gestor pode alterar o valor pendente."""
     result = await db.execute(
         select(Reading)
         .options(selectinload(Reading.hydrometer))
         .where(Reading.id == uuid.UUID(reading_id))
+        .with_for_update()
     )
     reading = result.scalar_one_or_none()
     if not reading:
         raise HTTPException(status_code=404, detail="Leitura não encontrada")
+    if reading.status != "pending":
+        raise HTTPException(status_code=409, detail="Somente capturas pendentes podem ser ajustadas")
 
     consumption, location_status, distance, flags = _evaluate_reading(
         hydrometer=reading.hydrometer,
@@ -450,6 +467,7 @@ async def confirm_reading(
 async def approve_reading(
     reading_id: str,
     background_tasks: BackgroundTasks,
+    data: ReadingApprove | None = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -461,8 +479,10 @@ async def approve_reading(
         select(Reading)
         .options(
             selectinload(Reading.hydrometer).selectinload(Hydrometer.customer),
+            selectinload(Reading.vision_inference),
         )
         .where(Reading.id == uuid.UUID(reading_id))
+        .with_for_update()
     )
     reading = result.scalar_one_or_none()
     if not reading:
@@ -470,24 +490,73 @@ async def approve_reading(
     if reading.status != "pending":
         raise HTTPException(status_code=400, detail=f"Leitura já está '{reading.status}'")
 
+    inference = reading.vision_inference
+    suggested_value = (
+        inference.predicted_value
+        if inference and inference.predicted_value is not None
+        else reading.photo_extracted_value
+    )
+    chosen_value = data.current_value if data and data.current_value is not None else suggested_value
+    if chosen_value is None:
+        raise HTTPException(status_code=422, detail="Informe a leitura confirmada no dashboard")
+
+    adjustment_reason = data.adjustment_reason.strip() if data and data.adjustment_reason else None
+    if suggested_value is not None and abs(float(chosen_value) - float(suggested_value)) > 0.0005 and not adjustment_reason:
+        adjustment_reason = "Valor ajustado manualmente no dashboard"
+
+    consumption, location_status, distance, flags = _evaluate_reading(
+        hydrometer=reading.hydrometer,
+        current_value=float(chosen_value),
+        previous_value=reading.previous_value,
+        latitude=reading.latitude,
+        longitude=reading.longitude,
+        location_accuracy_meters=reading.location_accuracy_meters,
+        anomaly_override_reason=adjustment_reason or reading.anomaly_override_reason,
+    )
+
+    reading.current_value = float(chosen_value)
+    reading.consumption = consumption
+    reading.location_status = location_status
+    reading.distance_from_hydrometer_meters = distance
+    reading.validation_flags = flags
+    reading.review_adjustment_reason = adjustment_reason
+
     # Aprova leitura
     reading.status = "approved"
     reading.approved_by = admin.id
     reading.approved_at = datetime.now(timezone.utc)
-    if reading.vision_inference_id:
-        inference = await db.get(VisionInference, reading.vision_inference_id)
-        if inference:
-            inference.confirmed_value = reading.current_value
-            inference.confirmed_at = inference.confirmed_at or reading.approved_at
-            inference.was_correct = (
-                inference.predicted_value is not None
-                and abs(float(inference.predicted_value) - float(reading.current_value)) <= 0.01
-            )
-            inference.approved_for_training = True
+    if inference:
+        inference.confirmed_value = reading.current_value
+        inference.confirmed_at = inference.confirmed_at or reading.approved_at
+        if data and data.confirmed_code:
+            inference.confirmed_code = data.confirmed_code
+        elif not inference.confirmed_code:
+            red_digits = inference.red_digits if inference.red_digits is not None else reading.hydrometer.red_digits
+            black_digits = inference.black_digits if inference.black_digits is not None else (reading.hydrometer.black_digits or 4)
+            total_digits = max(3, min(red_digits + black_digits, 10))
+            inference.confirmed_code = str(int(round(reading.current_value * (10 ** red_digits)))).zfill(total_digits)
+        inference.was_correct = (
+            inference.predicted_value is not None
+            and abs(float(inference.predicted_value) - float(reading.current_value)) <= 0.01
+        )
+        inference.approved_for_training = True
 
     # Atualiza última leitura do hidrômetro
     hydrometer = reading.hydrometer
     is_installation_capture = hydrometer.last_reading_date is None
+    if hydrometer.latitude is None and hydrometer.longitude is None and reading.latitude is not None and reading.longitude is not None:
+        hydrometer.latitude = reading.latitude
+        hydrometer.longitude = reading.longitude
+        hydrometer.location_source = "approved_first_reading"
+        reading.location_status = "reference_created"
+        reading.validation_flags = [
+            flag for flag in reading.validation_flags if flag.get("code") != "location_reference_pending"
+        ] + [_flag(
+            "location_reference_created",
+            "Base de local criada",
+            "A captura aprovada definiu a localização-base do hidrômetro.",
+            "info",
+        )]
     hydrometer.last_reading_value = reading.current_value
     hydrometer.last_reading_date = datetime.now(timezone.utc)
 
@@ -513,6 +582,12 @@ async def approve_reading(
         tariff_rate = billing.tariff_rate
         charge_type = "water"
         boleto_message = f"Consumo: {billing.consumption_m3:.2f}m³ - Ref: {ref_month}"
+
+    existing_invoice = (
+        await db.execute(select(Invoice.id).where(Invoice.reading_id == reading.id).limit(1))
+    ).scalar_one_or_none()
+    if existing_invoice:
+        raise HTTPException(status_code=409, detail="Esta leitura ja possui fatura")
 
     # Cria fatura
     invoice = Invoice(
@@ -616,10 +691,11 @@ async def approve_reading(
         # Fatura criada mas sem cobranca — pode ser gerada depois
 
     await db.flush()
-    if system_settings.auto_send_invoice_on_approval and (
-        invoice.efi_pdf_url or invoice.efi_payment_url
-    ):
-        background_tasks.add_task(_send_invoice_generated_whatsapp, str(invoice.id))
+    notification = None
+    if system_settings.auto_send_invoice_on_approval:
+        notification = await enqueue_invoice_whatsapp(db, invoice, source="reading_approval")
+    if notification:
+        background_tasks.add_task(dispatch_invoice_notification_task, str(notification.id))
     elif invoice.efi_pdf_url:
         background_tasks.add_task(_persist_invoice_boleto_document, str(invoice.id))
 
@@ -635,6 +711,7 @@ async def approve_reading(
         "due_date": invoice.due_date.isoformat(),
         "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
         "overdue_charges_allowed": invoice.overdue_charges_allowed,
+        "whatsapp_status": notification.status if notification else "disabled",
     }
 
 
@@ -657,116 +734,6 @@ async def _persist_invoice_boleto_document(invoice_id: str) -> None:
             logger.warning("Persistencia do boleto %s no R2 ficou pendente: %s", invoice_id, exc)
 
 
-async def _send_invoice_generated_whatsapp(invoice_id: str) -> None:
-    await asyncio.sleep(0.5)
-    async with async_session_factory() as db:
-        result = await db.execute(
-            select(Invoice)
-            .options(selectinload(Invoice.customer))
-            .where(Invoice.id == uuid.UUID(invoice_id))
-        )
-        invoice = result.scalar_one_or_none()
-        if not invoice or not invoice.customer or not invoice.customer.phone:
-            return
-
-        settings = await _get_system_settings(db)
-        if not notification_flow_enabled(settings, "invoice_generated"):
-            return
-
-        base_message = render_invoice_customer_message(
-            settings,
-            charge_type=invoice.charge_type,
-            customer_name=invoice.customer.name,
-            amount=invoice.amount,
-            due_date=invoice.due_date,
-            reference_month=invoice.reference_month,
-        )
-        text = base_message
-        if invoice.efi_payment_url and invoice.efi_payment_url not in text:
-            text = f"{text}\n\nLink de pagamento: {invoice.efi_payment_url}"
-
-        notification = Notification(
-            customer_id=invoice.customer_id,
-            invoice_id=invoice.id,
-            channel="whatsapp",
-            type=FLOW_NOTIFICATION_TYPES["invoice_generated"],
-            status="queued",
-            payload={"flow_key": "invoice_generated", "message": text, "mode": "document"},
-        )
-        db.add(notification)
-
-        try:
-            pdf_data = None
-            try:
-                pdf_data = await get_or_create_boleto_pdf(
-                    db,
-                    invoice,
-                    efi_service.baixar_pdf,
-                    source="reading_approval_whatsapp",
-                )
-            except Exception as exc:
-                logger.warning("Nao foi possivel persistir PDF da fatura %s no R2: %s", invoice.id, exc)
-
-            if pdf_data:
-                wa_result = await whatsapp_service.send_invoice_document(
-                    phone=invoice.customer.phone,
-                    pdf_data=pdf_data,
-                    filename=f"boleto_{str(invoice.id)[:8]}.pdf",
-                    caption=text,
-                )
-                mode = "document"
-            elif invoice.efi_payment_url:
-                wa_result = await whatsapp_service.send_text(invoice.customer.phone, text)
-                mode = "payment_link"
-                notification.payload = {**(notification.payload or {}), "mode": mode}
-            else:
-                wa_result = {"status": "failed", "error": "Fatura sem PDF e sem link de pagamento."}
-                mode = "missing_payment_file"
-                notification.payload = {**(notification.payload or {}), "mode": mode}
-
-            notification.status = (wa_result or {}).get("status") or "failed"
-            notification.external_message_id = (wa_result or {}).get("message_id")
-            notification.sent_at = datetime.now(timezone.utc)
-            if (wa_result or {}).get("error"):
-                notification.error_message = str(wa_result["error"])[:500]
-            if notification.status == "sent":
-                db.add(WhatsAppMessage(
-                    customer_id=invoice.customer_id,
-                    phone=invoice.customer.phone,
-                    direction="outbound",
-                    body=text,
-                    external_message_id=notification.external_message_id,
-                    status="sent",
-                    payload={"flow_key": "invoice_generated", "invoice_id": str(invoice.id), "mode": mode},
-                ))
-            db.add(InvoiceEvent(
-                invoice_id=invoice.id,
-                event_type="whatsapp_invoice_sent" if notification.status == "sent" else "whatsapp_invoice_failed",
-                previous_status=invoice.status,
-                new_status=invoice.status,
-                reason=notification.error_message,
-                payload={
-                    "mode": mode,
-                    "message_id": notification.external_message_id,
-                    "source": "reading_approval_auto_send",
-                },
-            ))
-        except Exception as exc:
-            notification.status = "failed"
-            notification.error_message = str(exc)[:500]
-            db.add(InvoiceEvent(
-                invoice_id=invoice.id,
-                event_type="whatsapp_invoice_failed",
-                previous_status=invoice.status,
-                new_status=invoice.status,
-                reason=notification.error_message,
-                payload={"source": "reading_approval_auto_send"},
-            ))
-            logger.warning("Falha no envio automatico da fatura %s: %s", invoice.id, exc)
-
-        await db.commit()
-
-
 @router.post("/{reading_id}/reject")
 async def reject_reading(
     reading_id: str,
@@ -776,11 +743,13 @@ async def reject_reading(
 ):
     """Gestor rejeita leitura com motivo."""
     result = await db.execute(
-        select(Reading).where(Reading.id == uuid.UUID(reading_id))
+        select(Reading).where(Reading.id == uuid.UUID(reading_id)).with_for_update()
     )
     reading = result.scalar_one_or_none()
     if not reading:
         raise HTTPException(status_code=404, detail="Leitura não encontrada")
+    if reading.status != "pending":
+        raise HTTPException(status_code=409, detail="Somente capturas pendentes podem ser rejeitadas")
 
     reading.status = "rejected"
     reading.rejection_reason = data.reason

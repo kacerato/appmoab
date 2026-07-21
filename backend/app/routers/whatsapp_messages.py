@@ -2,11 +2,12 @@ from copy import deepcopy
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.customer import Customer
+from app.models.notification import Notification
 from app.models.user import User
 from app.models.whatsapp_message import WhatsAppMessage
 from app.schemas.whatsapp_message import (
@@ -16,7 +17,7 @@ from app.schemas.whatsapp_message import (
     WhatsAppSendMessageResponse,
 )
 from app.services.whatsapp_api import whatsapp_service
-from app.utils.security import get_current_user
+from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_binary_from_base64
 
 router = APIRouter(prefix="/whatsapp", tags=["WhatsApp"])
@@ -28,6 +29,28 @@ MEDIA_MESSAGE_TYPES = {
     "audioMessage": ("audio", "audio/ogg"),
     "documentMessage": ("document", "application/octet-stream"),
 }
+
+
+@router.get("/health")
+async def whatsapp_health(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Estado real da sessao Evolution e volume da fila de faturas."""
+    health = await whatsapp_service.health()
+    queued = (
+        await db.execute(
+            select(func.count())
+            .select_from(Notification)
+            .where(
+                Notification.channel == "whatsapp",
+                Notification.type == "invoice_generated",
+                Notification.status.in_(["queued", "failed"]),
+                Notification.attempt_count < 5,
+            )
+        )
+    ).scalar() or 0
+    return {**health, "pending_invoice_notifications": queued}
 
 
 def _phone_suffix(phone: str, size: int = 8) -> str:
