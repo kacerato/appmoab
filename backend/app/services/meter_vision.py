@@ -64,6 +64,12 @@ class DisplayDetection:
 
 
 @dataclass
+class MeterFaceDetection:
+    bounds: tuple[int, int, int, int]
+    confidence: float
+
+
+@dataclass
 class DigitObservation:
     position: int
     value: int | None
@@ -170,6 +176,81 @@ def _order_corners(points):
     ordered[1] = points[np.argmin(diffs)]
     ordered[3] = points[np.argmax(diffs)]
     return ordered
+
+
+def _hydrometer_face_candidate(image) -> MeterFaceDetection | None:
+    """Detecta a face aproximadamente circular antes de procurar os roletes.
+
+    A detecção é geométrica e serve como contexto/validação. A leitura continua
+    dependendo da janela numérica, evitando confundir o ponteiro com os roletes.
+    """
+
+    source_height, source_width = image.shape[:2]
+    scale = min(1.0, 900.0 / max(source_height, source_width))
+    work = image if scale == 1.0 else cv2.resize(
+        image,
+        (max(1, int(source_width * scale)), max(1, int(source_height * scale))),
+        interpolation=cv2.INTER_AREA,
+    )
+    height, width = work.shape[:2]
+    gray = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (7, 7), 1.2)
+    edges = cv2.Canny(gray, 38, 125)
+    edges = cv2.morphologyEx(
+        edges,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+        iterations=2,
+    )
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    image_area = float(width * height)
+    best: tuple[float, tuple[int, int, int, int]] | None = None
+
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        perimeter = float(cv2.arcLength(contour, True))
+        if area <= 0 or perimeter <= 0:
+            continue
+        x, y, box_width, box_height = cv2.boundingRect(contour)
+        area_ratio = area / image_area
+        box_ratio = (box_width * box_height) / image_area
+        aspect = box_width / max(box_height, 1)
+        if not (0.018 <= area_ratio <= 0.88 and 0.035 <= box_ratio <= 0.96):
+            continue
+        if not (0.58 <= aspect <= 1.48):
+            continue
+        circularity = 4.0 * math.pi * area / max(perimeter * perimeter, 1.0)
+        fill_ratio = area / max(float(box_width * box_height), 1.0)
+        if circularity < 0.16 or fill_ratio < 0.22:
+            continue
+        center_x = (x + box_width / 2) / width
+        center_y = (y + box_height / 2) / height
+        center_score = _clamp(1.0 - (abs(center_x - 0.5) + abs(center_y - 0.48)) / 0.9)
+        aspect_score = _clamp(1.0 - abs(math.log(max(aspect, 0.01))) / 0.48)
+        circularity_score = _clamp((circularity - 0.16) / 0.58)
+        size_score = _clamp(box_ratio / 0.28)
+        score = (
+            aspect_score * 0.34
+            + circularity_score * 0.24
+            + center_score * 0.22
+            + size_score * 0.20
+        )
+        if best is None or score > best[0]:
+            best = (score, (x, y, box_width, box_height))
+
+    if best is None or best[0] < 0.46:
+        return None
+    _, (x, y, box_width, box_height) = best
+    inverse_scale = 1.0 / scale
+    return MeterFaceDetection(
+        bounds=(
+            int(round(x * inverse_scale)),
+            int(round(y * inverse_scale)),
+            int(round(box_width * inverse_scale)),
+            int(round(box_height * inverse_scale)),
+        ),
+        confidence=round(_clamp(best[0]), 4),
+    )
 
 
 def _display_candidate(image):
@@ -344,6 +425,31 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
     corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
     corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
     return corners
+
+
+def _red_roller_candidate_inside_face(
+    image,
+    face: MeterFaceDetection | None,
+    red_digits: int,
+    black_digits: int,
+):
+    if face is None:
+        return None
+    x, y, width, height = face.bounds
+    image_height, image_width = image.shape[:2]
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(image_width, x + width)
+    y2 = min(image_height, y + height)
+    if x2 - x1 < 80 or y2 - y1 < 80:
+        return None
+    local = _red_roller_strip_candidate(image[y1:y2, x1:x2], red_digits, black_digits)
+    if local is None:
+        return None
+    local = np.asarray(local, dtype="float32")
+    local[:, 0] += x1
+    local[:, 1] += y1
+    return local
 
 
 def _rectify(image, corners):
@@ -1497,11 +1603,19 @@ class MeterVisionService:
 
         resolved_red = red_digits if red_digits is not None and red_digits >= 0 else 3
         resolved_black = black_digits or 4
+        face_detection = _hydrometer_face_candidate(inspection_image)
         detector = _trained_display_detector()
         learned_detection = detector.detect(inspection_image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
         if corners is None:
             corners = _red_roller_strip_candidate(inspection_image, resolved_red, resolved_black)
+        if corners is None:
+            corners = _red_roller_candidate_inside_face(
+                inspection_image,
+                face_detection,
+                resolved_red,
+                resolved_black,
+            )
         used_fallback = corners is None
         if corners is None:
             corners, _ = _display_candidate(inspection_image)
@@ -1555,6 +1669,8 @@ class MeterVisionService:
         return {
             **asdict(quality),
             "guidance_code": guidance_code,
+            "meter_found": face_detection is not None,
+            "meter_confidence": face_detection.confidence if face_detection is not None else 0.0,
             "display_found": not used_fallback,
             "display_area_ratio": round(display_area_ratio, 6),
             "image_width": original_width,
@@ -1643,12 +1759,20 @@ class MeterVisionService:
         resolved_black_digits = black_digits or 4
         total_digits = resolved_black_digits + red_digits
         total_digits = max(3, min(total_digits, 10))
+        face_detection = _hydrometer_face_candidate(image)
         detector = _trained_display_detector()
         learned_detection = detector.detect(image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
         display_source = "detector_onnx" if learned_detection is not None else "red_roller_anchor"
         if corners is None:
             corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
+        if corners is None:
+            corners = _red_roller_candidate_inside_face(
+                image,
+                face_detection,
+                red_digits,
+                resolved_black_digits,
+            )
         used_fallback_roi = corners is None
         used_ocr_window = False
         ocr_items = None
@@ -1681,6 +1805,8 @@ class MeterVisionService:
             ok, encoded = cv2.imencode(".jpg", rectified, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
             quality_payload = asdict(quality)
             quality_payload["model_ready"] = False
+            quality_payload["meter_found"] = face_detection is not None
+            quality_payload["meter_confidence"] = face_detection.confidence if face_detection is not None else 0.0
             quality_payload["recapture_reason"] = "Leitura automática temporariamente indisponível. Confirme os números pela foto no dashboard."
             return VisionResult(
                 predicted_code=None,
@@ -2022,6 +2148,11 @@ class MeterVisionService:
         auto_fill = decision == "accepted"
         ok, encoded = cv2.imencode(".jpg", rectified, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
         quality_payload = asdict(quality)
+        quality_payload["meter_detection"] = {
+            "found": face_detection is not None,
+            "confidence": face_detection.confidence if face_detection is not None else 0.0,
+            "bounds": list(face_detection.bounds) if face_detection is not None else None,
+        }
         quality_payload["display_detection"] = {
             "source": display_source,
             "confidence": learned_detection.confidence if learned_detection is not None else None,

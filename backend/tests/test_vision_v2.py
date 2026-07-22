@@ -69,6 +69,8 @@ def test_quality_preflight_returns_actionable_contract():
     assert 0 <= result["display_area_ratio"] <= 1
     assert result["image_width"] == 900
     assert result["image_height"] == 420
+    assert isinstance(result["meter_found"], bool)
+    assert 0 <= result["meter_confidence"] <= 1
     if not result["usable"]:
         assert result["guidance_code"]
         assert result["recapture_reason"]

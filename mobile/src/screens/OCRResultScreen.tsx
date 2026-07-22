@@ -141,7 +141,11 @@ export default function OCRResultScreen() {
       </TouchableOpacity>
 
       {photoUri ? (
-        <Image source={{ uri: photoUri }} style={{ width: '100%', height: 200, borderRadius: 16, marginBottom: 16, backgroundColor: colors.navy700 }} />
+        <Image
+          source={{ uri: photoUri }}
+          resizeMode="contain"
+          style={{ width: '100%', height: 280, borderRadius: 16, marginBottom: 16, backgroundColor: colors.navy700 }}
+        />
       ) : null}
 
       {loading ? (

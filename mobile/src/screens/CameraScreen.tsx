@@ -1,18 +1,24 @@
-import React, { useRef, useState } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, LayoutChangeEvent, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as FileSystem from 'expo-file-system/legacy';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import * as Location from 'expo-location';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation, useRoute } from '@react-navigation/native';
+import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import { useFeedback } from '../lib/feedback';
 import { api } from '../lib/api';
 import { findCachedHydrometerByQr, matchesHydrometerQr, normalizeScannedQrValue } from '../lib/route-cache';
+import { CameraRect, CameraSize, mapPreviewRectToPhotoCrop } from '../lib/camera-geometry';
 import { colors } from '../styles/theme';
 
 const GPS_TARGET_ACCURACY_METERS = 25;
 const GPS_MAX_WAIT_MS = 4200;
 const BURST_EXTRA_FRAMES = 4;
 const BURST_INTERVAL_MS = 120;
+const LIVE_VISION_INTERVAL_MS = 2800;
+const LIVE_VISION_READY_INTERVAL_MS = 6500;
+const LIVE_VISION_START_DELAY_MS = 900;
 
 interface VisionQualityResult {
   usable: boolean;
@@ -24,6 +30,25 @@ interface VisionQualityResult {
   contrast?: number;
   perspective?: number;
   display_area_ratio?: number;
+  display_found?: boolean;
+  meter_found?: boolean;
+}
+
+interface CapturedFrame {
+  uri: string;
+  width: number;
+  height: number;
+  base64?: string;
+}
+
+interface PreparedFrame extends CapturedFrame {
+  base64: string;
+  crop?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
 
 function createCaptureId() {
@@ -34,14 +59,24 @@ function createCaptureId() {
   });
 }
 
-function selectPictureSize(sizes: string[]) {
+function selectPictureSize(sizes: string[], preview?: CameraSize | null) {
+  const targetAspect = preview
+    ? Math.min(preview.width, preview.height) / Math.max(preview.width, preview.height)
+    : 9 / 16;
   const parsed = sizes
     .map(size => {
       const [width, height] = size.split('x').map(Number);
-      return { size, width, height, pixels: width * height };
+      const aspect = Math.min(width, height) / Math.max(width, height);
+      return {
+        size,
+        width,
+        height,
+        pixels: width * height,
+        aspectDelta: Math.abs(aspect - targetAspect),
+      };
     })
     .filter(item => Number.isFinite(item.pixels) && item.pixels > 0 && item.pixels <= 8_500_000)
-    .sort((left, right) => right.pixels - left.pixels);
+    .sort((left, right) => left.aspectDelta - right.aspectDelta || right.pixels - left.pixels);
   return parsed[0]?.size || sizes[0] || null;
 }
 
@@ -108,6 +143,7 @@ interface ReadingNavigationPayload {
 export default function CameraScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
+  const isFocused = useIsFocused();
   const { showToast } = useFeedback();
   const {
     stage = 'code',
@@ -133,23 +169,158 @@ export default function CameraScreen() {
   const [capturing, setCapturing] = useState(false);
   const [resolvingQr, setResolvingQr] = useState(false);
   const [qualityChecking, setQualityChecking] = useState(false);
+  const [liveChecking, setLiveChecking] = useState(false);
   const [torchEnabled, setTorchEnabled] = useState(false);
   const [pictureSize, setPictureSize] = useState<string | null>(null);
   const [captureGuidance, setCaptureGuidance] = useState<string | null>(null);
+  const [liveQuality, setLiveQuality] = useState<VisionQualityResult | null>(null);
+  const [cameraLayout, setCameraLayout] = useState<CameraSize | null>(null);
+  const [guideLayout, setGuideLayout] = useState<CameraRect | null>(null);
+  const [guideBoxLayout, setGuideBoxLayout] = useState<CameraRect | null>(null);
   const cameraRef = useRef<any>(null);
   const qrScanLockRef = useRef(false);
   const lastQrScanRef = useRef<{ value: string; at: number } | null>(null);
+  const captureBusyRef = useRef(false);
+  const liveProbeBusyRef = useRef(false);
 
   const handleCameraReady = async () => {
     setCameraReady(true);
     if (pictureSize || !cameraRef.current?.getAvailablePictureSizesAsync) return;
     try {
       const sizes = await cameraRef.current.getAvailablePictureSizesAsync();
-      setPictureSize(selectPictureSize(Array.isArray(sizes) ? sizes : []));
+      setPictureSize(selectPictureSize(Array.isArray(sizes) ? sizes : [], cameraLayout));
     } catch {
       setPictureSize(null);
     }
   };
+
+  const handleCameraLayout = (event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setCameraLayout({ width, height });
+  };
+
+  const handleGuideLayout = (event: LayoutChangeEvent) => {
+    setGuideLayout(event.nativeEvent.layout);
+  };
+
+  const handleGuideBoxLayout = (event: LayoutChangeEvent) => {
+    setGuideBoxLayout(event.nativeEvent.layout);
+  };
+
+  const prepareReadingFrame = useCallback(async (
+    photo: CapturedFrame,
+    compression: number,
+  ): Promise<PreparedFrame> => {
+    const guideRect = guideLayout && guideBoxLayout
+      ? {
+          x: guideLayout.x + guideBoxLayout.x,
+          y: guideLayout.y + guideBoxLayout.y,
+          width: guideBoxLayout.width,
+          height: guideBoxLayout.height,
+        }
+      : null;
+    const crop = cameraLayout && guideRect
+      ? mapPreviewRectToPhotoCrop(
+          cameraLayout,
+          guideRect,
+          { width: photo.width, height: photo.height },
+        )
+      : null;
+    const result = await manipulateAsync(
+      photo.uri,
+      crop ? [{ crop: {
+        originX: crop.originX,
+        originY: crop.originY,
+        width: crop.width,
+        height: crop.height,
+      } }] : [],
+      {
+        base64: true,
+        compress: compression,
+        format: SaveFormat.JPEG,
+      },
+    );
+    if (!result.base64) {
+      throw new Error('Não foi possível preparar o enquadramento da foto.');
+    }
+    return {
+      uri: result.uri,
+      width: result.width,
+      height: result.height,
+      base64: result.base64,
+      crop: crop?.normalized,
+    };
+  }, [cameraLayout, guideBoxLayout, guideLayout]);
+
+  useEffect(() => {
+    if (!isFocused || stage === 'code' || !cameraReady || !cameraLayout || !guideLayout || !guideBoxLayout) {
+      setLiveQuality(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const schedule = (delay: number) => {
+      timer = setTimeout(() => void probe(), delay);
+    };
+    const probe = async () => {
+      let nextDelay = LIVE_VISION_INTERVAL_MS;
+      const temporaryUris: string[] = [];
+      if (cancelled) return;
+      if (captureBusyRef.current || liveProbeBusyRef.current || !cameraRef.current) {
+        schedule(500);
+        return;
+      }
+      liveProbeBusyRef.current = true;
+      setLiveChecking(true);
+      try {
+        const photo = await cameraRef.current.takePictureAsync({
+          quality: 0.46,
+          base64: false,
+          shutterSound: false,
+        });
+        if (photo?.uri) temporaryUris.push(photo.uri);
+        if (!photo?.uri || !photo?.width || !photo?.height) return;
+        const prepared = await prepareReadingFrame(photo, 0.58);
+        temporaryUris.push(prepared.uri);
+        const quality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
+          photo_base64: prepared.base64,
+          stage,
+          red_digits: redDigits,
+          black_digits: blackDigits || 4,
+          capture_metadata: {
+            capture_pipeline: 'mobile-live-guide-v3',
+            guide_crop: prepared.crop || null,
+          },
+        }, 12000);
+        if (!cancelled) {
+          setLiveQuality(quality);
+          if (quality.usable && quality.display_found !== false) {
+            nextDelay = LIVE_VISION_READY_INTERVAL_MS;
+          }
+        }
+      } catch {
+        if (!cancelled) setLiveQuality(null);
+      } finally {
+        await Promise.all(
+          [...new Set(temporaryUris)].map(uri => FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined)),
+        );
+        liveProbeBusyRef.current = false;
+        if (!cancelled) {
+          setLiveChecking(false);
+          schedule(nextDelay);
+        }
+      }
+    };
+
+    schedule(LIVE_VISION_START_DELAY_MS);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+      liveProbeBusyRef.current = false;
+    };
+  }, [blackDigits, cameraLayout, cameraReady, guideBoxLayout, guideLayout, isFocused, prepareReadingFrame, redDigits, stage]);
 
   const activeHydrometerId = hydrometerId || expectedHydrometerId;
   const activeHydrometerCode = hydrometerCode || expectedHydrometerCode;
@@ -294,30 +465,51 @@ export default function CameraScreen() {
   }
 
   const capturePhoto = async () => {
-    if (capturing) return;
+    if (capturing || captureBusyRef.current) return;
+    if (liveProbeBusyRef.current) {
+      showToast('Visão analisando', 'Aguarde um instante para a câmera concluir a validação ao vivo.', 'warning');
+      return;
+    }
     if (!cameraRef.current || !cameraReady) {
       showToast('Câmera iniciando', 'Aguarde um instante e tente novamente.', 'warning');
       return;
     }
+    captureBusyRef.current = true;
     setCapturing(true);
     setCaptureGuidance(null);
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        base64: true,
-        quality: 0.90,
+        base64: stage === 'code',
+        quality: stage === 'code' ? 0.90 : 1.0,
+        shutterSound: true,
       });
-      if (!photo?.uri || !photo?.base64) {
+      if (!photo?.uri || !photo?.width || !photo?.height || (stage === 'code' && !photo?.base64)) {
         throw new Error('A câmera não retornou a imagem. Tente novamente mantendo o aparelho firme.');
+      }
+      const preparedPhoto = stage === 'reading' || stage === 'dev_test'
+        ? await prepareReadingFrame(photo, 0.94)
+        : {
+            uri: photo.uri,
+            width: photo.width,
+            height: photo.height,
+            base64: photo.base64 as string,
+            crop: undefined,
+          };
+      if ((stage === 'reading' || stage === 'dev_test') && photo.uri !== preparedPhoto.uri) {
+        await FileSystem.deleteAsync(photo.uri, { idempotent: true }).catch(() => undefined);
       }
       const captureId = createCaptureId();
       const capturedAt = new Date().toISOString();
       const frameMetadata: Array<Record<string, unknown>> = [{
         index: 0,
         captured_at: capturedAt,
-        width: photo.width || null,
-        height: photo.height || null,
-        quality: 0.90,
+        width: preparedPhoto.width,
+        height: preparedPhoto.height,
+        source_width: photo.width,
+        source_height: photo.height,
+        guide_crop: preparedPhoto.crop || null,
+        quality: 0.94,
         primary: true,
       }];
 
@@ -326,10 +518,14 @@ export default function CameraScreen() {
         let quality: VisionQualityResult;
         try {
           quality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
-            photo_base64: photo.base64,
+            photo_base64: preparedPhoto.base64,
             stage,
             red_digits: redDigits,
             black_digits: blackDigits || 4,
+            capture_metadata: {
+              capture_pipeline: 'mobile-guided-crop-v3',
+              guide_crop: preparedPhoto.crop || null,
+            },
           }, 20000);
         } finally {
           setQualityChecking(false);
@@ -347,17 +543,33 @@ export default function CameraScreen() {
         for (let index = 0; index < BURST_EXTRA_FRAMES; index += 1) {
           try {
             await new Promise(resolve => setTimeout(resolve, BURST_INTERVAL_MS));
-            const frame = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.82 });
-            if (frame?.base64) {
-              framesBase64.push(frame.base64);
-              frameMetadata.push({
-                index: index + 1,
-                captured_at: new Date().toISOString(),
-                width: frame.width || null,
-                height: frame.height || null,
-                quality: 0.82,
-                primary: false,
-              });
+            const frame = await cameraRef.current.takePictureAsync({
+              base64: false,
+              quality: 0.96,
+              shutterSound: false,
+            });
+            if (frame?.uri && frame?.width && frame?.height) {
+              let preparedFrame: PreparedFrame | null = null;
+              try {
+                preparedFrame = await prepareReadingFrame(frame, 0.90);
+                framesBase64.push(preparedFrame.base64);
+                frameMetadata.push({
+                  index: index + 1,
+                  captured_at: new Date().toISOString(),
+                  width: preparedFrame.width,
+                  height: preparedFrame.height,
+                  source_width: frame.width,
+                  source_height: frame.height,
+                  guide_crop: preparedFrame.crop || null,
+                  quality: 0.90,
+                  primary: false,
+                });
+              } finally {
+                await Promise.all(
+                  [...new Set([frame.uri, preparedFrame?.uri].filter(Boolean) as string[])]
+                    .map(uri => FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined)),
+                );
+              }
             }
           } catch {
             break;
@@ -372,12 +584,14 @@ export default function CameraScreen() {
         requested_frames: 1 + BURST_EXTRA_FRAMES,
         captured_frames: 1 + framesBase64.length,
         burst_interval_ms: BURST_INTERVAL_MS,
+        framing_contract: 'preview-cover-to-sensor-crop-v1',
+        guide_crop: preparedPhoto.crop || null,
       };
 
       if (stage === 'code') {
         navigation.navigate('ManualCode', {
-          photoBase64: photo.base64,
-          photoUri: photo.uri,
+          photoBase64: preparedPhoto.base64,
+          photoUri: preparedPhoto.uri,
           expectedCustomerId,
           expectedCustomerName,
           expectedHydrometerId,
@@ -395,7 +609,8 @@ export default function CameraScreen() {
 
       if (stage === 'dev_test') {
         navigation.navigate('DevVisionTest', {
-          photoUri: photo.uri,
+          photoBase64: preparedPhoto.base64,
+          photoUri: preparedPhoto.uri,
           framesBase64,
           captureId,
           captureMetadata,
@@ -415,8 +630,8 @@ export default function CameraScreen() {
       }
 
       navigation.navigate('OCRResult', {
-        photoBase64: photo.base64,
-        photoUri: photo.uri,
+        photoBase64: preparedPhoto.base64,
+        photoUri: preparedPhoto.uri,
         framesBase64,
         captureId,
         captureMetadata,
@@ -443,6 +658,7 @@ export default function CameraScreen() {
         'error',
       );
     } finally {
+      captureBusyRef.current = false;
       setCapturing(false);
     }
   };
@@ -457,19 +673,31 @@ export default function CameraScreen() {
   const guideText = stage === 'code'
     ? 'Aponte para o QR Code impresso no ponto do cliente. Se precisar, toque para fotografar e digitar.'
     : stage === 'dev_test'
-      ? 'Fotografe o visor do hidrometro para rodar o teste de visao e alimentar o dataset.'
+      ? 'Centralize a face do hidrometro e alinhe os roletes na faixa interna.'
       : isInstallation
-        ? 'Fotografe o hidrometro instalado e informe o valor inicial do mostrador.'
-        : 'Enquadre somente os numeros do mostrador para reduzir confusao no OCR.';
+        ? 'Centralize a face do hidrometro e alinhe os numeros na faixa interna.'
+        : 'Centralize todo o mostrador; a faixa interna deve atravessar somente os numeros.';
+  const liveReady = Boolean(
+    liveQuality?.usable &&
+    liveQuality.display_found !== false,
+  );
+  const liveStatusText = liveChecking
+    ? 'Analisando hidrômetro e visor...'
+    : liveReady
+      ? liveQuality?.meter_found === false
+        ? 'Visor pronto; mantenha a face centralizada'
+        : 'Hidrômetro e visor prontos'
+      : liveQuality?.recapture_reason || 'Aguardando hidrômetro no enquadramento';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
-      <View style={styles.cameraShell}>
+      <View style={styles.cameraShell} onLayout={handleCameraLayout}>
         <CameraView
           style={styles.camera}
           ref={cameraRef}
           facing="back"
           enableTorch={torchEnabled}
+          animateShutter={false}
           pictureSize={pictureSize || undefined}
           onCameraReady={handleCameraReady}
           onMountError={event => {
@@ -491,14 +719,39 @@ export default function CameraScreen() {
             </View>
           </View>
 
-          <View style={styles.guide}>
-            <View style={[styles.guideBox, stage === 'code' ? styles.guideCode : styles.guideReading]}>
+          <View style={styles.guide} onLayout={handleGuideLayout}>
+            <View
+              onLayout={handleGuideBoxLayout}
+              style={[
+                styles.guideBox,
+                stage === 'code' ? styles.guideCode : styles.guideReading,
+                stage !== 'code' && (liveReady ? styles.guideReady : styles.guideWaiting),
+              ]}
+            >
+              {stage !== 'code' && (
+                <>
+                  <View style={styles.meterFaceGuide} />
+                  <View style={styles.rollerGuide}>
+                    {Array.from({ length: Math.max(3, Number(blackDigits || 4) + Number(redDigits || 3)) }).map((_, index) => (
+                      <View key={index} style={styles.rollerSlot} />
+                    ))}
+                  </View>
+                </>
+              )}
               <View style={[styles.corner, styles.cornerTL]} />
               <View style={[styles.corner, styles.cornerTR]} />
               <View style={[styles.corner, styles.cornerBL]} />
               <View style={[styles.corner, styles.cornerBR]} />
             </View>
             <Text style={styles.guideText}>{guideText}</Text>
+            {stage !== 'code' && (
+              <View style={[styles.liveStatus, liveReady ? styles.liveStatusReady : styles.liveStatusWaiting]}>
+                {liveChecking && <ActivityIndicator size="small" color={liveReady ? '#052e16' : '#111827'} />}
+                <Text style={[styles.liveStatusText, liveReady && styles.liveStatusTextReady]} numberOfLines={2}>
+                  {liveStatusText}
+                </Text>
+              </View>
+            )}
             {!!captureGuidance && (
               <View style={styles.guidanceCard}>
                 <Text style={styles.guidanceText}>{captureGuidance}</Text>
@@ -538,6 +791,8 @@ export default function CameraScreen() {
             <Text style={styles.captureLabel}>
               {qualityChecking
                 ? 'Validando foco, reflexo e enquadramento'
+                : liveChecking && !capturing
+                  ? 'Visão ao vivo verificando o visor'
                 : capturing && stage !== 'code'
                   ? 'Capturando sequência de evidências'
                   : stage === 'code'
@@ -605,14 +860,56 @@ const styles = StyleSheet.create({
   },
   guideBox: {
     position: 'relative',
+    borderWidth: 1,
+    borderRadius: 24,
   },
   guideCode: {
     width: 240,
     height: 240,
   },
   guideReading: {
-    width: 280,
-    height: 180,
+    width: '84%',
+    maxWidth: 330,
+    aspectRatio: 1,
+  },
+  guideWaiting: {
+    borderColor: 'rgba(245, 158, 11, 0.48)',
+    backgroundColor: 'rgba(3, 7, 18, 0.06)',
+  },
+  guideReady: {
+    borderColor: 'rgba(34, 197, 94, 0.92)',
+    backgroundColor: 'rgba(34, 197, 94, 0.05)',
+  },
+  meterFaceGuide: {
+    position: 'absolute',
+    width: '82%',
+    aspectRatio: 1,
+    left: '9%',
+    top: '9%',
+    borderRadius: 999,
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: 'rgba(255,255,255,0.52)',
+  },
+  rollerGuide: {
+    position: 'absolute',
+    left: '10%',
+    right: '10%',
+    top: '36%',
+    height: '23%',
+    borderWidth: 2,
+    borderColor: colors.cyan,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.14)',
+    flexDirection: 'row',
+    padding: 3,
+    gap: 2,
+  },
+  rollerSlot: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
+    borderRadius: 3,
   },
   corner: {
     position: 'absolute',
@@ -632,6 +929,34 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     maxWidth: 280,
     lineHeight: 18,
+  },
+  liveStatus: {
+    marginTop: 12,
+    maxWidth: 330,
+    minHeight: 38,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  liveStatusWaiting: {
+    backgroundColor: 'rgba(245, 158, 11, 0.92)',
+  },
+  liveStatusReady: {
+    backgroundColor: 'rgba(34, 197, 94, 0.94)',
+  },
+  liveStatusText: {
+    color: '#111827',
+    fontSize: 12,
+    fontWeight: '900',
+    textAlign: 'center',
+    flexShrink: 1,
+  },
+  liveStatusTextReady: {
+    color: '#052e16',
   },
   guidanceCard: {
     marginTop: 14,
