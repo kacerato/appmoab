@@ -45,6 +45,30 @@
       "tags": ["office", "low-angle", "transition"]
     },
     {
+      "id": "office-wide-01",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538750_w.jpg",
+      "expected": "0090645",
+      "tags": ["office", "wide", "transition"]
+    },
+    {
+      "id": "office-side-03",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538749_w.jpg",
+      "expected": "0090645",
+      "tags": ["office", "side", "transition"]
+    },
+    {
+      "id": "office-side-04",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538748_w.jpg",
+      "expected": "0090645",
+      "tags": ["office", "side", "transition"]
+    },
+    {
+      "id": "office-close-03",
+      "path": "C:/Users/jamaa/Downloads/photo_5030535533150538747_w.jpg",
+      "expected": "0090645",
+      "tags": ["office", "close", "transition"]
+    },
+    {
       "id": "field-akvo-0138087",
       "path": "C:/Users/jamaa/Downloads/photo_5179523542012333135_w.jpg",
       "expected": "0138087",
@@ -91,7 +115,11 @@
         "office-side-01",
         "office-side-02",
         "office-glare-01",
-        "office-low-angle-01"
+        "office-low-angle-01",
+        "office-wide-01",
+        "office-side-03",
+        "office-side-04",
+        "office-close-03"
       ],
       "expected": "0090645"
     }

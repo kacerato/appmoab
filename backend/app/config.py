@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     )
     evolution_api_key: str = "appmoab-secret-123"
     evolution_instance_name: str = "AquaMoab"
+    whatsapp_invoice_rate_limit_per_minute: int = 4
+    whatsapp_invoice_batch_size: int = 10
+    whatsapp_restriction_cooldown_minutes: int = 300
 
     whatsapp_token: str = ""
     whatsapp_phone_id: str = ""

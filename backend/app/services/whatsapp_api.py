@@ -41,6 +41,50 @@ class WhatsAppService:
             )
         return self._client
 
+    @staticmethod
+    def _provider_failure(exc: Exception, *, action: str = "enviar a mensagem") -> dict:
+        """Converte detalhes internos da Evolution em um contrato seguro para a UI."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code
+            raw = exc.response.text or ""
+            normalized = raw.lower()
+            logger.warning(
+                "Evolution recusou a operacao %s (HTTP %s): %s",
+                action,
+                status_code,
+                raw[:1000],
+            )
+            if status_code == 429 or any(term in normalized for term in ("rate limit", "too many", "temporarily restricted")):
+                return {
+                    "status": "failed",
+                    "error_code": "rate_limited",
+                    "error": "O WhatsApp limitou temporariamente os envios. Aguarde antes de tentar novamente.",
+                }
+            if status_code == 403 or any(term in normalized for term in ("restricted", "restriction", "suspended", "blocked", "temporarily banned")):
+                return {
+                    "status": "failed",
+                    "error_code": "account_restricted",
+                    "error": "A conta do WhatsApp está temporariamente restrita. Os envios foram pausados.",
+                }
+            if any(term in normalized for term in ("connection closed", "not connected", "disconnected", "instance is not open", "connection close")):
+                return {
+                    "status": "failed",
+                    "error_code": "whatsapp_disconnected",
+                    "error": "WhatsApp desconectado. Conecte o número pelo QR Code no dashboard antes de enviar.",
+                }
+            return {
+                "status": "failed",
+                "error_code": "provider_rejected",
+                "error": f"O WhatsApp não conseguiu {action} agora. Tente novamente em alguns instantes.",
+            }
+
+        logger.warning("Falha de comunicacao com a Evolution ao %s: %s", action, exc)
+        return {
+            "status": "failed",
+            "error_code": "provider_unavailable",
+            "error": "O serviço do WhatsApp está temporariamente indisponível. Tente novamente em alguns instantes.",
+        }
+
     async def health(self) -> dict:
         """Consulta a sessao real da Evolution sem expor URL, chave ou instancia."""
         configured = bool(
@@ -74,11 +118,72 @@ class WhatsAppService:
                 "instance_state": state,
             })
         except httpx.HTTPStatusError as exc:
-            result["error"] = f"Evolution respondeu HTTP {exc.response.status_code}."
+            logger.warning(
+                "Evolution recusou a consulta de estado (HTTP %s): %s",
+                exc.response.status_code,
+                exc.response.text[:1000],
+            )
+            result["error"] = "Não foi possível verificar a conexão do WhatsApp agora."
         except Exception as exc:
             logger.warning("Falha ao consultar estado da Evolution: %s", exc)
             result["error"] = "Nao foi possivel consultar a Evolution."
         return result
+
+    async def connection_qr(self) -> dict:
+        """Obtém o QR da instância sem expor credenciais ou respostas brutas."""
+        health = await self.health()
+        if health["connected"]:
+            return {
+                "status": "connected",
+                "connected": True,
+                "detail": "WhatsApp já está conectado.",
+                "base64": None,
+                "pairing_code": None,
+            }
+        if not health["configured"]:
+            return {
+                "status": "unavailable",
+                "connected": False,
+                "detail": "A integração do WhatsApp ainda não foi configurada.",
+                "base64": None,
+                "pairing_code": None,
+            }
+
+        try:
+            client = await self._get_client()
+            response = await client.get(f"/instance/connect/{settings.evolution_instance_name}")
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            qrcode = payload.get("qrcode") if isinstance(payload.get("qrcode"), dict) else {}
+            qr = payload.get("qr") if isinstance(payload.get("qr"), dict) else {}
+            base64_image = payload.get("base64") or qrcode.get("base64") or qr.get("base64")
+            pairing_code = payload.get("pairingCode") or payload.get("pairing_code") or qrcode.get("code") or qr.get("code")
+            if base64_image and not str(base64_image).startswith("data:image"):
+                base64_image = f"data:image/png;base64,{base64_image}"
+            if not base64_image and not pairing_code:
+                return {
+                    "status": "waiting",
+                    "connected": False,
+                    "detail": "O QR Code ainda está sendo preparado. Tente atualizar em alguns segundos.",
+                    "base64": None,
+                    "pairing_code": None,
+                }
+            return {
+                "status": "qr_ready",
+                "connected": False,
+                "detail": "Escaneie este QR Code no WhatsApp para conectar o número.",
+                "base64": base64_image,
+                "pairing_code": pairing_code,
+            }
+        except Exception as exc:
+            failure = self._provider_failure(exc, action="gerar o QR Code")
+            return {
+                "status": "unavailable",
+                "connected": False,
+                "detail": failure["error"],
+                "base64": None,
+                "pairing_code": None,
+            }
 
     async def send_template(
         self,
@@ -117,12 +222,8 @@ class WhatsAppService:
             logger.info(f"WhatsApp (Evolution API) enviado para {digits}")
             payload = response.json() if response.content else {}
             return {"status": "sent", "message_id": payload.get("key", {}).get("id")}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro Evolution API: {e.response.text}")
-            return {"status": "failed", "error": e.response.text}
-        except Exception as e:
-            logger.error(f"Erro ao conectar com Evolution API: {e}")
-            return {"status": "failed", "error": str(e)}
+        except Exception as exc:
+            return self._provider_failure(exc)
 
     async def send_text(self, phone: str, text: str, quoted: dict | None = None) -> dict | None:
         if not self.is_enabled:
@@ -147,12 +248,8 @@ class WhatsAppService:
                 "message_id": response_payload.get("key", {}).get("id"),
                 "payload": response_payload,
             }
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro Evolution API: {e.response.text}")
-            return {"status": "failed", "error": e.response.text}
-        except Exception as e:
-            logger.error(f"Erro ao conectar com Evolution API: {e}")
-            return {"status": "failed", "error": str(e)}
+        except Exception as exc:
+            return self._provider_failure(exc)
 
     async def send_invoice_document(
         self,
@@ -189,12 +286,8 @@ class WhatsAppService:
             logger.info(f"Fatura PDF (Evolution API) enviada para {digits}")
             payload = response.json() if response.content else {}
             return {"status": "sent", "message_id": payload.get("key", {}).get("id")}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro ao enviar doc Evolution API: {e.response.text}")
-            return {"status": "failed", "error": e.response.text}
-        except Exception as e:
-            logger.error(f"Erro geral ao enviar doc: {e}")
-            return {"status": "failed", "error": str(e)}
+        except Exception as exc:
+            return self._provider_failure(exc, action="enviar a fatura")
 
     async def send_media(
         self,
@@ -236,12 +329,8 @@ class WhatsAppService:
                 "message_id": response_payload.get("key", {}).get("id"),
                 "payload": response_payload,
             }
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro ao enviar midia Evolution API: {e.response.text}")
-            return {"status": "failed", "error": e.response.text}
-        except Exception as e:
-            logger.error(f"Erro geral ao enviar midia: {e}")
-            return {"status": "failed", "error": str(e)}
+        except Exception as exc:
+            return self._provider_failure(exc, action="enviar a mídia")
 
     async def get_media_base64(self, message: dict, convert_to_mp4: bool = False) -> dict | None:
         if not self.is_enabled:
@@ -256,12 +345,8 @@ class WhatsAppService:
             response.raise_for_status()
             payload = response.json() if response.content else {}
             return {"status": "ok", "payload": payload}
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Erro Evolution API ao buscar midia: {e.response.text}")
-            return {"status": "failed", "error": e.response.text}
-        except Exception as e:
-            logger.error(f"Erro ao buscar midia na Evolution API: {e}")
-            return {"status": "failed", "error": str(e)}
+        except Exception as exc:
+            return self._provider_failure(exc, action="carregar a mídia")
 
     async def close(self):
         if self._client and not self._client.is_closed:

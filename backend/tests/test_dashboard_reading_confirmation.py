@@ -2,6 +2,8 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 from app.models.hydrometer import Hydrometer
 from app.models.notification import Notification
 from app.routers.readings import _evaluate_location
@@ -97,6 +99,35 @@ class WhatsAppHealthTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(health["reachable"])
         self.assertFalse(health["connected"])
         self.assertEqual(health["instance_state"], "close")
+
+    async def test_provider_http_400_is_never_exposed_to_dashboard(self):
+        request = httpx.Request("POST", "https://evolution.example/message/sendText/AquaMoab")
+        response = httpx.Response(400, request=request, text='{"status":400,"message":"Connection Closed"}')
+        failure = WhatsAppService._provider_failure(httpx.HTTPStatusError("bad", request=request, response=response))
+
+        self.assertEqual(failure["error_code"], "whatsapp_disconnected")
+        self.assertIn("QR Code no dashboard", failure["error"])
+        self.assertNotIn("400", failure["error"])
+
+    async def test_dashboard_connection_returns_qr_without_credentials(self):
+        response = MagicMock()
+        response.content = b'{"base64":"abc123"}'
+        response.json.return_value = {"base64": "abc123"}
+        response.raise_for_status.return_value = None
+        client = AsyncMock()
+        client.get.return_value = response
+        service = WhatsAppService()
+
+        with (
+            patch.object(service, "health", AsyncMock(return_value={"connected": False, "configured": True})),
+            patch.object(service, "_get_client", AsyncMock(return_value=client)),
+            patch("app.services.whatsapp_api.settings.evolution_instance_name", "AquaMoab"),
+        ):
+            result = await service.connection_qr()
+
+        self.assertEqual(result["status"], "qr_ready")
+        self.assertEqual(result["base64"], "data:image/png;base64,abc123")
+        self.assertNotIn("apikey", result)
 
 
 if __name__ == "__main__":

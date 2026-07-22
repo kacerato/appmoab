@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import Header from '@/components/Header';
 import { api } from '@/lib/api';
-import { BrainCircuit, CheckCircle2, Loader2, MessageCircle, Send, ToggleLeft, Zap } from 'lucide-react';
+import { BrainCircuit, CheckCircle2, Loader2, MessageCircle, QrCode, RefreshCw, Send, ToggleLeft, Zap } from 'lucide-react';
 
 interface HealthData {
   enabled: boolean;
@@ -13,6 +14,14 @@ interface HealthData {
   instance_state: string;
   error: string | null;
   pending_invoice_notifications: number;
+}
+
+interface WhatsAppConnectData {
+  status: 'connected' | 'qr_ready' | 'waiting' | 'unavailable';
+  connected: boolean;
+  detail: string;
+  base64: string | null;
+  pairing_code: string | null;
 }
 
 interface OcrMemorySummary {
@@ -103,6 +112,8 @@ export default function NotificationsPage() {
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<SystemSetting | null>(null);
   const [saving, setSaving] = useState(false);
+  const [connectData, setConnectData] = useState<WhatsAppConnectData | null>(null);
+  const [connectLoading, setConnectLoading] = useState(false);
 
   useEffect(() => {
     api.get<HealthData>('/whatsapp/health')
@@ -124,10 +135,37 @@ export default function NotificationsPage() {
       .catch(console.error);
   }, []);
 
+  useEffect(() => {
+    if (!connectData || health?.connected) return;
+    const timer = window.setInterval(() => {
+      api.get<HealthData>('/whatsapp/health', { skipCache: true })
+        .then(data => {
+          setHealth(data);
+          if (data.connected) setConnectData(null);
+        })
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [connectData, health?.connected]);
+
+  const openConnection = async () => {
+    setConnectLoading(true);
+    try {
+      const data = await api.post<WhatsAppConnectData>('/whatsapp/connect');
+      setConnectData(data);
+      if (data.connected) {
+        const currentHealth = await api.get<HealthData>('/whatsapp/health', { skipCache: true });
+        setHealth(currentHealth);
+      }
+    } finally {
+      setConnectLoading(false);
+    }
+  };
+
   const statusTone = useMemo(() => {
     if (!health?.connected) {
       return {
-        label: health?.reachable ? `Instância ${health.instance_state}` : 'Canal indisponível',
+        label: health?.reachable ? 'Aguardando conexão' : 'Canal indisponível',
         color: 'var(--warning)',
         description: health?.error || `As faturas ficam na fila e serão tentadas novamente após a reconexão. Pendentes: ${health?.pending_invoice_notifications ?? 0}.`,
       };
@@ -185,17 +223,46 @@ export default function NotificationsPage() {
             <Loader2 size={18} className="spinner" />
           </div>
         ) : (
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '8px 0' }}>
-            <div className={`kpi-icon ${health?.connected ? 'blue' : 'orange'}`} style={{ width: 40, height: 40 }}>
-              <MessageCircle size={18} />
-            </div>
-            <div>
-              <div style={{ fontWeight: 600, color: statusTone.color }}>{statusTone.label}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 620 }}>
-                {statusTone.description}
+            <div style={{ display: 'grid', gap: 16, padding: '8px 0' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+              <div className={`kpi-icon ${health?.connected ? 'blue' : 'orange'}`} style={{ width: 40, height: 40 }}>
+                <MessageCircle size={18} />
               </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, color: statusTone.color }}>{statusTone.label}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 620 }}>
+                  {statusTone.description}
+                </div>
+              </div>
+              {!health?.connected && (
+                <button className="btn btn-primary btn-sm" type="button" onClick={openConnection} disabled={connectLoading}>
+                  {connectLoading ? <Loader2 size={14} className="spinner" /> : <QrCode size={14} />}
+                  {connectData ? 'Atualizar QR Code' : 'Conectar número'}
+                </button>
+              )}
+              </div>
+
+              {!health?.connected && connectData && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'center', padding: 16, borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                  {connectData.base64 ? (
+                    <Image src={connectData.base64} alt="QR Code para conectar o WhatsApp" width={220} height={220} unoptimized style={{ borderRadius: 12, background: '#fff', padding: 8 }} />
+                  ) : (
+                    <div style={{ width: 220, minHeight: 160, display: 'grid', placeItems: 'center', borderRadius: 12, background: 'var(--bg-secondary)', color: 'var(--text-muted)', textAlign: 'center', padding: 16 }}>
+                      {connectLoading ? <Loader2 size={22} className="spinner" /> : <QrCode size={36} />}
+                    </div>
+                  )}
+                  <div style={{ display: 'grid', gap: 10, maxWidth: 430 }}>
+                    <strong>Conectar sem abrir a Evolution</strong>
+                    <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{connectData.detail}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>No celular: WhatsApp → Aparelhos conectados → Conectar aparelho.</span>
+                    {connectData.pairing_code && <code style={{ fontSize: 18, fontWeight: 800, letterSpacing: 2 }}>{connectData.pairing_code}</code>}
+                    <button className="btn btn-secondary btn-sm" type="button" onClick={openConnection} disabled={connectLoading} style={{ justifySelf: 'start' }}>
+                      <RefreshCw size={14} className={connectLoading ? 'spinner' : undefined} /> Atualizar
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-          </div>
         )}
       </div>
 

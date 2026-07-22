@@ -160,7 +160,7 @@ export default function InvoicesPage() {
                   <td className="cell-primary">
                     {inv.customer_name}
                     {feedback && (
-                      <div style={{ fontSize: 11, fontWeight: 500, color: feedback.status === 'sent' ? 'var(--success)' : 'var(--danger)', marginTop: 4 }}>
+                      <div style={{ fontSize: 11, fontWeight: 500, color: feedback.status === 'sent' ? 'var(--success)' : feedback.status === 'queued' ? 'var(--warning)' : 'var(--danger)', marginTop: 4 }}>
                         {feedback.detail}
                       </div>
                     )}

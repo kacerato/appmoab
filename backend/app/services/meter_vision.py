@@ -95,7 +95,7 @@ class VisionResult:
     rectified_jpeg: bytes | None = None
     decision: str = "confirm"
     calibrated_confidence: float | None = None
-    decoder_version: str = "single-frame-v1"
+    decoder_version: str | None = "single-frame-v1"
 
     def public_dict(self) -> dict:
         data = asdict(self)
@@ -533,7 +533,16 @@ def hog_features(slot):
 
 class _OpenCvKnnClassifier:
     def __init__(self, path: str):
-        self.model = cv2.ml.KNearest_load(path)
+        loader = getattr(cv2.ml, "KNearest_load", None)
+        if callable(loader):
+            self.model = loader(path)
+        else:
+            # Algumas builds headless expõem somente o carregador herdado na
+            # instância. `load` devolve um novo modelo; não treina o objeto-base.
+            base_model = cv2.ml.KNearest_create()
+            self.model = base_model.load(path)
+        if self.model is None or not self.model.isTrained():
+            raise RuntimeError("O arquivo KNN foi aberto, mas não contém um modelo treinado.")
 
     def classify(self, slot) -> tuple[int | None, float, list[float]]:
         features = hog_features(slot)
@@ -562,7 +571,8 @@ def _trained_classifier():
             return None
         return _OnnxClassifier(path)
     except Exception:
-        logger.exception("Nao foi possivel carregar o modelo ONNX de hidrometros")
+        model_kind = "KNN do OpenCV" if path.lower().endswith((".yml", ".yaml", ".xml")) else "ONNX"
+        logger.exception("Nao foi possivel carregar o modelo %s de hidrometros", model_kind)
         return None
 
 
@@ -909,16 +919,18 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
     items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
     best: tuple[float, np.ndarray] | None = None
     height, width = image.shape[:2]
+    meter_hints = [
+        box for box, text, _ in items
+        if re.fullmatch(r"\s*[mM][\d³²]?\s*", text)
+    ]
     for box, text, score in items:
         lowered = text.lower()
         if any(token in lowered for token in ("pma", "dn", "q", "classe", "inmetro", "ml", "t50", "r80", "uj")):
             continue
         digits = re.findall(r"\d", text)
-        if not (total_digits - 1 <= len(digits) <= total_digits + 2):
+        if not (total_digits - 1 <= len(digits) <= total_digits + 8):
             continue
         has_meter_hint = any(token in lowered for token in ("m", "b", "h", "）", ")"))
-        if not has_meter_hint and len(digits) != total_digits:
-            continue
         ordered = _order_corners(box)
         tl, tr, br, bl = ordered
         horizontal = ((tr - tl) + (br - bl)) / 2
@@ -927,14 +939,40 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
         box_height = float(np.linalg.norm(vertical))
         if box_width < width * 0.08 or box_height < height * 0.010:
             continue
+        if has_meter_hint:
+            # O detector às vezes inclui `m3` dentro da mesma caixa. Retira a
+            # unidade antes de dividir a faixa em sete slots.
+            unit_match = re.search(r"[mMhHbB）)]", text)
+            if unit_match and unit_match.start() > 0:
+                content_ratio = max(0.55, min(1.0, (unit_match.start() + 0.28) / max(len(text), 1)))
+                tr = tl + (tr - tl) * content_ratio
+                br = bl + (br - bl) * content_ratio
+                horizontal = ((tr - tl) + (br - bl)) / 2
+                box_width = float(np.linalg.norm(horizontal))
+        else:
+            center_y = float(box[:, 1].mean())
+            right_x = float(box[:, 0].max())
+            for hint_box in meter_hints:
+                hint_center_y = float(hint_box[:, 1].mean())
+                hint_left_x = float(hint_box[:, 0].min())
+                if abs(hint_center_y - center_y) <= box_height * 1.8 and 0 <= hint_left_x - right_x <= box_width * 0.28:
+                    has_meter_hint = True
+                    break
+        if not has_meter_hint and len(digits) != total_digits:
+            continue
         unit_x = horizontal / max(box_width, 1.0)
         unit_y = vertical / max(box_height, 1.0)
-        slot_width = box_width / max(len(digits), total_digits - 1, 1)
+        # Separadores do visor aparecem como vários algarismos `1`; eles não
+        # podem encolher a largura nominal de cada rolete.
+        slot_width = box_width / max(total_digits if len(digits) >= total_digits else total_digits - 1, 1)
         missing = max(total_digits - len(digits), 0)
         left_extension = slot_width * 0.20
         # Quando o OCR reconhece a unidade `m3`, a caixa ja inclui o texto
         # depois dos roletes. Se ainda expandirmos, a unidade vira um slot.
-        right_extension = slot_width * (0.10 if has_meter_hint else 0.78 + missing)
+        right_extension = slot_width * (
+            0.12 if len(digits) == total_digits
+            else 0.72 + missing
+        )
         vertical_padding = max(box_height * 0.38, slot_width * 0.14)
         corners = np.array([
             tl - unit_x * left_extension - unit_y * vertical_padding,
@@ -949,6 +987,237 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
         if best is None or score > best[0]:
             best = (score, corners)
     return best[1] if best else None
+
+
+def _meter_unit_window_candidate(image, total_digits: int, ocr_items=None):
+    """Reconstrói a janela a partir do `m³` quando os dígitos somem no reflexo."""
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
+    height, width = image.shape[:2]
+    best: tuple[float, np.ndarray] | None = None
+    for box, text, score in items:
+        if not re.fullmatch(r"\s*[mM][\d³²]?\s*", text):
+            continue
+        center_x = float(box[:, 0].mean()) / max(width, 1)
+        center_y = float(box[:, 1].mean()) / max(height, 1)
+        if not (0.45 <= center_x <= 0.94 and 0.24 <= center_y <= 0.60):
+            continue
+        tl, tr, br, bl = _order_corners(box)
+        horizontal = ((tr - tl) + (br - bl)) / 2
+        vertical = ((bl - tl) + (br - tr)) / 2
+        unit_width = float(np.linalg.norm(horizontal))
+        unit_height = float(np.linalg.norm(vertical))
+        if unit_width < 2 or unit_height < height * 0.008:
+            continue
+        unit_x = horizontal / unit_width
+        unit_y = vertical / unit_height
+        slot_width = max(unit_height * 1.90, width * 0.026)
+        strip_height = max(unit_height * 2.15, slot_width * 0.88)
+        unit_left = (tl + bl) / 2
+        strip_right = unit_left - unit_x * slot_width * 0.10 - unit_y * unit_height * 0.38
+        strip_left = strip_right - unit_x * slot_width * total_digits
+        corners = np.array([
+            strip_left - unit_y * strip_height / 2,
+            strip_right - unit_y * strip_height / 2,
+            strip_right + unit_y * strip_height / 2,
+            strip_left + unit_y * strip_height / 2,
+        ], dtype="float32")
+        corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+        corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+        candidate_score = score + center_x * 0.08 - abs(center_y - 0.41) * 0.20
+        if best is None or candidate_score > best[0]:
+            best = (candidate_score, corners)
+    return best[1] if best else None
+
+
+def _observations_from_counter_strip(rectified, total_digits: int) -> list[DigitObservation]:
+    """Classifica uma faixa candidata mantendo o mesmo recorte do decoder principal."""
+    if rectified is None or rectified.size == 0:
+        return []
+    height, width = rectified.shape[:2]
+    margin_x = max(int(width * 0.025), 1)
+    margin_y = max(int(height * 0.08), 1)
+    usable = rectified[margin_y:height - margin_y, margin_x:width - margin_x]
+    if usable.size == 0:
+        return []
+    slot_width = usable.shape[1] / total_digits
+    observations = []
+    for index in range(total_digits):
+        start = max(0, int(index / total_digits * usable.shape[1] - slot_width * 0.08))
+        end = min(usable.shape[1], int((index + 1) / total_digits * usable.shape[1] + slot_width * 0.08))
+        if end <= start:
+            return []
+        observations.append(_slot_observation(usable[:, start:end], index))
+    return observations
+
+
+def _ocr_transition_sequence_candidate(
+    image,
+    total_digits: int,
+    ocr_items=None,
+) -> tuple[list[int], float, DigitObservation | None]:
+    """Confirma a cauda por geometria quando o OCR achata um rolete em transicao.
+
+    Em vez de confiar em um unico recorte, testa dois alinhamentos pequenos e
+    previamente definidos. A sequencia completa so e aceita quando os slots do
+    prefixo sao fortes e o ultimo slot reconhece um par mecanico consecutivo.
+    Um recorte direto antes da unidade preserva a evidencia da cauda mesmo
+    quando a perspectiva impede classificar os seis slots anteriores.
+    """
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
+    height, width = image.shape[:2]
+    sequence_candidates: list[tuple[float, list[int], DigitObservation]] = []
+    tail_candidates: list[DigitObservation] = []
+
+    for box, text, score in items:
+        lowered = text.lower()
+        if any(token in lowered for token in ("pma", "dn", "q", "classe", "inmetro", "ml", "t50", "r80", "uj")):
+            continue
+        raw_digits = re.findall(r"\d", text)
+        if not (total_digits - 1 <= len(raw_digits) <= total_digits + 8):
+            continue
+        ordered = _order_corners(box)
+        original_tl, original_tr, original_br, original_bl = ordered
+        original_horizontal = ((original_tr - original_tl) + (original_br - original_bl)) / 2
+        original_width = float(np.linalg.norm(original_horizontal))
+        original_vertical = ((original_bl - original_tl) + (original_br - original_tr)) / 2
+        original_height = float(np.linalg.norm(original_vertical))
+        if original_width < width * 0.08 or original_height < height * 0.010:
+            continue
+
+        # Perfis conservadores: um para linha completa/separada da unidade e
+        # outro para a caixa em que `m3` ficou grudado ao ultimo rolete.
+        profiles = (
+            (1.00, 0.20, 0.15, 0.35, "slot"),
+            (0.90, 0.10, 0.35, 0.35, "box"),
+        )
+        for ratio, left_slots, right_slots, vertical_factor, vertical_base in profiles:
+            tl = original_tl
+            bl = original_bl
+            tr = tl + (original_tr - tl) * ratio
+            br = bl + (original_br - bl) * ratio
+            horizontal = ((tr - tl) + (br - bl)) / 2
+            vertical = ((bl - tl) + (br - tr)) / 2
+            box_width = float(np.linalg.norm(horizontal))
+            box_height = float(np.linalg.norm(vertical))
+            if box_width < 1 or box_height < 1:
+                continue
+            unit_x = horizontal / box_width
+            unit_y = vertical / box_height
+            slot_width = box_width / total_digits
+            vertical_size = slot_width if vertical_base == "slot" else box_height
+            corners = np.array([
+                tl - unit_x * slot_width * left_slots - unit_y * vertical_size * vertical_factor,
+                tr + unit_x * slot_width * right_slots - unit_y * vertical_size * vertical_factor,
+                br + unit_x * slot_width * right_slots + unit_y * vertical_size * vertical_factor,
+                bl - unit_x * slot_width * left_slots + unit_y * vertical_size * vertical_factor,
+            ], dtype="float32")
+            corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+            corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+            try:
+                rectified, _ = _rectify(image, corners)
+                observations = _observations_from_counter_strip(rectified, total_digits)
+            except Exception:
+                continue
+            if len(observations) != total_digits or any(item.value is None for item in observations):
+                continue
+            tail = observations[-1]
+            if not tail.transitional or tail.current_digit is None or tail.next_digit is None:
+                continue
+            prefix_confidence = float(np.mean([item.confidence for item in observations[:-1]]))
+            if prefix_confidence < 0.86 or tail.confidence < 0.56:
+                continue
+            sequence = [int(item.value) for item in observations]
+            candidate_score = _clamp(prefix_confidence * 0.62 + tail.confidence * 0.30 + score * 0.08)
+            sequence_candidates.append((candidate_score, sequence, tail))
+
+        # Caixa com unidade embutida: o ultimo rolete ocupa aproximadamente uma
+        # altura da propria linha e termina uma altura antes da borda do `m`.
+        if re.search(r"[mMhHbB）)]", text):
+            unit_x = original_horizontal / max(original_width, 1.0)
+            unit_y = original_vertical / max(original_height, 1.0)
+            right_center = (original_tr + original_br) / 2 - unit_x * original_height
+            left_center = right_center - unit_x * original_height
+            corners = np.array([
+                left_center - unit_y * original_height * 1.5,
+                right_center - unit_y * original_height * 1.5,
+                right_center + unit_y * original_height * 1.5,
+                left_center + unit_y * original_height * 1.5,
+            ], dtype="float32")
+            corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+            corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+            try:
+                tail_crop, _ = _rectify(image, corners)
+                tail = _slot_observation(tail_crop, total_digits - 1)
+            except Exception:
+                tail = None
+            if (
+                tail is not None
+                and tail.value is not None
+                and tail.transitional
+                and tail.current_digit is not None
+                and tail.next_digit is not None
+                and tail.confidence >= 0.56
+            ):
+                tail_candidates.append(tail)
+
+    if sequence_candidates:
+        best = max(sequence_candidates, key=lambda item: item[0])
+        return best[1], best[0], best[2]
+    if tail_candidates:
+        best_tail = max(tail_candidates, key=lambda item: item.confidence)
+        return [], best_tail.confidence, best_tail
+    return [], 0.0, None
+
+
+def _meter_unit_tail_observation(image, total_digits: int, ocr_items=None) -> DigitObservation | None:
+    """Le o ultimo slot numa faixa alinhada pela base da unidade `m3`."""
+    items = ocr_items if ocr_items is not None else _ocr_detect_items(image)
+    height, width = image.shape[:2]
+    candidates: list[tuple[float, DigitObservation]] = []
+    for box, text, score in items:
+        if not re.fullmatch(r"\s*[mM][\d³²]?\s*", text):
+            continue
+        tl, tr, br, bl = _order_corners(box)
+        horizontal = ((tr - tl) + (br - bl)) / 2
+        vertical = ((bl - tl) + (br - tr)) / 2
+        unit_width = float(np.linalg.norm(horizontal))
+        unit_height = float(np.linalg.norm(vertical))
+        if unit_width < 2 or unit_height < height * 0.008:
+            continue
+        unit_x = horizontal / unit_width
+        unit_y = vertical / unit_height
+        slot_width = max(unit_height * 1.90, width * 0.026)
+        unit_left = (tl + bl) / 2
+        strip_right = unit_left - unit_x * slot_width * 0.08
+        strip_left = strip_right - unit_x * slot_width * total_digits
+        bottom_left = strip_left + unit_y * unit_height * 0.12
+        bottom_right = strip_right + unit_y * unit_height * 0.12
+        corners = np.array([
+            bottom_left - unit_y * unit_height * 2.80,
+            bottom_right - unit_y * unit_height * 2.80,
+            bottom_right,
+            bottom_left,
+        ], dtype="float32")
+        corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
+        corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
+        try:
+            rectified, _ = _rectify(image, corners)
+            rectified_height, rectified_width = rectified.shape[:2]
+            margin_x = max(int(rectified_width * 0.015), 1)
+            margin_y = max(int(rectified_height * 0.05), 1)
+            usable = rectified[
+                margin_y:rectified_height - margin_y,
+                margin_x:rectified_width - margin_x,
+            ]
+            slot_width = usable.shape[1] / total_digits
+            start = max(0, int((total_digits - 1) / total_digits * usable.shape[1] - slot_width * 0.05))
+            end = min(usable.shape[1], int(usable.shape[1] + slot_width * 0.05))
+            tail = _slot_observation(usable[:, start:end], total_digits - 1)
+        except Exception:
+            continue
+        if tail.value is not None:
+            candidates.append((_clamp(score * 0.18 + tail.confidence * 0.82), tail))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def _fuse_digit_sequences(
@@ -1250,6 +1519,18 @@ def _temporal_candidates(
     return selected, values[:8], flags
 
 
+def _prediction_anomaly(predicted_value: float | None, previous_value: float | None) -> str | None:
+    """Rejeita uma sugestão mecanicamente possível, mas operacionalmente absurda."""
+    if predicted_value is None or previous_value is None:
+        return None
+    delta = predicted_value - previous_value
+    if delta < -0.001:
+        return "below_previous_reading"
+    if delta > max(100.0, previous_value * 0.5):
+        return "implausible_consumption_jump"
+    return None
+
+
 class MeterVisionService:
     def inspect_capture(
         self,
@@ -1372,9 +1653,13 @@ class MeterVisionService:
         if corners is None and expensive_ocr:
             ocr_items = _ocr_detect_items(image)
             corners = _ocr_counter_window_candidate(image, total_digits, ocr_items)
+            unit_anchored = False
+            if corners is None:
+                corners = _meter_unit_window_candidate(image, total_digits, ocr_items)
+                unit_anchored = corners is not None
             used_ocr_window = corners is not None
             if used_ocr_window:
-                display_source = "ocr_window"
+                display_source = "meter_unit_anchor" if unit_anchored else "ocr_window"
             used_fallback_roi = corners is None
         if corners is None:
             corners, used_fallback_roi = _display_candidate(image)
@@ -1387,6 +1672,31 @@ class MeterVisionService:
         if perspective > 0.72 and quality.recapture_reason is None:
             quality.usable = False
             quality.recapture_reason = "Angulo muito lateral. Posicione a camera mais de frente para o visor."
+
+        # O modelo de campo é obrigatório. Quando ele falha, continuar apenas
+        # com fontes sintéticas/OCR genérico gera números convincentes e errados.
+        if _trained_classifier() is None:
+            ok, encoded = cv2.imencode(".jpg", rectified, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+            quality_payload = asdict(quality)
+            quality_payload["model_ready"] = False
+            quality_payload["recapture_reason"] = "Leitura automática temporariamente indisponível. Confirme os números pela foto no dashboard."
+            return VisionResult(
+                predicted_code=None,
+                predicted_value=None,
+                confidence=0.0,
+                auto_fill_allowed=False,
+                red_digits=red_digits,
+                black_digits=black_digits,
+                model_version=settings.vision_model_version,
+                quality=quality_payload,
+                digits=[],
+                alternatives=[],
+                flags=["trained_model_unavailable"],
+                rectified_jpeg=encoded.tobytes() if ok else None,
+                decision="confirm",
+                calibrated_confidence=0.0,
+                decoder_version=None,
+            )
 
         margin_x = max(int(rectified.shape[1] * 0.025), 1)
         margin_y = max(int(rectified.shape[0] * 0.08), 1)
@@ -1445,6 +1755,10 @@ class MeterVisionService:
         meter_tail_digits: list[int] = []
         meter_tail_confidence = 0.0
         meter_tail_mode = None
+        transition_digits: list[int] = []
+        transition_confidence = 0.0
+        transition_tail: DigitObservation | None = None
+        unit_tail: DigitObservation | None = None
         if expensive_ocr and (fusion_mode is None or used_fallback_roi or used_ocr_window):
             if ocr_items is None:
                 ocr_items = _ocr_detect_items(image)
@@ -1464,6 +1778,13 @@ class MeterVisionService:
                 total_digits,
                 ocr_items,
             )
+            transition_digits, transition_confidence, transition_tail = _ocr_transition_sequence_candidate(
+                image,
+                total_digits,
+                ocr_items,
+            )
+            if display_source == "meter_unit_anchor":
+                unit_tail = _meter_unit_tail_observation(image, total_digits, ocr_items)
         full_frame_applied = False
         if (
             full_frame_mode
@@ -1496,6 +1817,7 @@ class MeterVisionService:
             and len(meter_tail_digits) == total_digits
             and meter_tail_confidence >= 0.58
             and (predicted_value is None or used_fallback_roi or used_ocr_window or "full_frame_sequence_exact" in flags)
+            and (not missing_tail_applied or meter_tail_confidence >= missing_tail_confidence + 0.06)
         ):
             for observation, digit in zip(observations, meter_tail_digits):
                 observation.value = digit
@@ -1503,11 +1825,94 @@ class MeterVisionService:
             alternatives = sorted({*(alternatives or []), predicted_value})[:8]
             flags = [meter_tail_mode] + flags
             meter_tail_applied = True
+        transition_applied = False
+        current_code = None
+        if predicted_value is not None:
+            current_code = str(
+                int(round(float(predicted_value) * (10 ** max(red_digits, 0))))
+            ).zfill(total_digits)[-total_digits:]
+        if (
+            len(transition_digits) == total_digits
+            and transition_tail is not None
+            and transition_tail.current_digit is not None
+            and transition_tail.next_digit is not None
+            and transition_confidence >= 0.88
+        ):
+            candidate_code = "".join(map(str, transition_digits))
+            current_last = int(current_code[-1]) if current_code else None
+            transition_pair = {int(transition_tail.current_digit), int(transition_tail.next_digit)}
+            prefix_is_consistent = bool(current_code and current_code[:-1] == candidate_code[:-1])
+            weak_current_window = predicted_value is None or not quality.usable
+            if current_last not in transition_pair and (prefix_is_consistent or weak_current_window):
+                for observation, digit in zip(observations, transition_digits):
+                    observation.value = int(digit)
+                observations[-1] = transition_tail
+                predicted_value = int(candidate_code) / (10 ** max(red_digits, 0))
+                alternatives = sorted({*(alternatives or []), predicted_value})[:8]
+                flags = ["ocr_transition_geometry"] + flags
+                transition_applied = True
+                current_code = candidate_code
+        if (
+            not transition_applied
+            and (
+                predicted_value is None
+                or (
+                    fusion_mode is None
+                    and not full_frame_applied
+                    and not missing_tail_applied
+                    and not meter_tail_applied
+                    and (used_fallback_roi or used_ocr_window)
+                )
+            )
+            and transition_tail is not None
+            and transition_tail.current_digit is not None
+            and transition_tail.next_digit is not None
+            and transition_tail.confidence >= 0.56
+            and len(meter_tail_digits) == total_digits
+            and meter_tail_confidence >= 0.50
+        ):
+            recovered_digits = [*meter_tail_digits[:-1], int(transition_tail.current_digit)]
+            for observation, digit in zip(observations, recovered_digits):
+                observation.value = int(digit)
+            observations[-1] = transition_tail
+            predicted_value = int("".join(map(str, recovered_digits))) / (10 ** max(red_digits, 0))
+            alternatives = [predicted_value]
+            flags = ["ocr_transition_tail_recovery"] + flags
+            transition_applied = True
+        unit_tail_applied = False
+        if (
+            (
+                predicted_value is None
+                or (
+                    fusion_mode is None
+                    and not full_frame_applied
+                    and not missing_tail_applied
+                    and not meter_tail_applied
+                    and used_ocr_window
+                )
+            )
+            and display_source == "meter_unit_anchor"
+            and unit_tail is not None
+            and unit_tail.value is not None
+            and unit_tail.confidence >= 0.85
+            and len(ocr_digits) == total_digits - 1
+            and ocr_confidence >= 0.58
+        ):
+            recovered_digits = [*ocr_digits, int(unit_tail.value)]
+            for observation, digit in zip(observations, recovered_digits):
+                observation.value = int(digit)
+            observations[-1] = unit_tail
+            predicted_value = int("".join(map(str, recovered_digits))) / (10 ** max(red_digits, 0))
+            alternatives = [predicted_value]
+            flags = ["meter_unit_tail_recovery"] + flags
+            unit_tail_applied = True
         if (
             fusion_mode is None
             and not full_frame_applied
             and not missing_tail_applied
             and not meter_tail_applied
+            and not transition_applied
+            and not unit_tail_applied
             and (used_fallback_roi or used_ocr_window)
             and (
                 used_fallback_roi
@@ -1518,7 +1923,13 @@ class MeterVisionService:
             predicted_value = None
             alternatives = []
             flags.append("insufficient_text_evidence")
-        if predicted_value is not None and slots and total_digits >= 2:
+        if (
+            predicted_value is not None
+            and slots
+            and total_digits >= 2
+            and not transition_applied
+            and not unit_tail_applied
+        ):
             total_scale = 10 ** max(red_digits, 0)
             predicted_code = str(int(round(float(predicted_value) * total_scale))).zfill(total_digits)[-total_digits:]
             last_index = total_digits - 1
@@ -1554,6 +1965,14 @@ class MeterVisionService:
                 observations[last_index].value = corrected_last_digit
                 observations[last_index].confidence = round(max(observations[last_index].confidence, top_confidence), 4)
                 flags.append("roller_top_digit_correction")
+        rejected_prediction = None
+        anomaly = _prediction_anomaly(predicted_value, previous_value)
+        if anomaly is not None:
+            rejected_prediction = predicted_value
+            predicted_value = None
+            alternatives = []
+            flags.append(anomaly)
+            flags.append("unsafe_prediction_rejected")
         confidences = [item.confidence for item in observations if item.value is not None]
         confidence = float(math.prod(confidences) ** (1 / len(confidences))) if len(confidences) == total_digits else 0.0
         confidence *= max(0.0, 1 - quality.blur * 0.35 - quality.glare * 0.25 - perspective * 0.2)
@@ -1585,7 +2004,9 @@ class MeterVisionService:
         has_transition = any(item.transitional for item in observations)
         calibrated_confidence = calibrate_confidence(confidence, profile, transitional=has_transition)
         decision = "confirm"
-        if predicted_value is None or not quality.usable:
+        if "unsafe_prediction_rejected" in flags and quality.usable:
+            decision = "confirm"
+        elif predicted_value is None or not quality.usable:
             decision = "recapture"
         elif (
             raw_auto_fill
@@ -1631,7 +2052,9 @@ class MeterVisionService:
             "calibrated_confidence": calibrated_confidence,
             "calibration_version": profile.version,
             "calibrated": profile.calibrated,
+            "rejected_prediction": rejected_prediction,
         }
+        quality_payload["model_ready"] = True
         predicted_code_result = None
         if predicted_value is not None:
             predicted_code_result = str(

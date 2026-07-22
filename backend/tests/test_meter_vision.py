@@ -1,4 +1,6 @@
 import base64
+from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -9,10 +11,12 @@ from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
     VisionResult,
+    _OpenCvKnnClassifier,
     _candidate_prefixes_from_digits,
     _candidate_sequences_from_digits,
     _decode_image,
     _fuse_digit_sequences,
+    _prediction_anomaly,
     _red_roller_strip_candidate,
     _temporal_candidates,
     _trained_classifier,
@@ -79,6 +83,36 @@ def test_bundled_field_model_and_red_roller_anchor_are_available():
     corners = _red_roller_strip_candidate(image, red_digits=3, black_digits=4)
     assert corners is not None
     assert corners.shape == (4, 2)
+
+
+def test_knn_model_loads_when_opencv_static_loader_is_missing():
+    model_path = Path(__file__).parents[1] / "app" / "assets" / "meter-field-v3-20260622.yml"
+
+    with patch.object(cv2.ml, "KNearest_load", None):
+        classifier = _OpenCvKnnClassifier(str(model_path))
+
+    assert classifier.model.isTrained()
+
+
+def test_broken_primary_model_never_falls_back_to_unsafe_suggestion():
+    with patch("app.services.meter_vision._trained_classifier", return_value=None):
+        result = meter_vision_service.analyze(
+            _synthetic_meter_data_uri(),
+            red_digits=3,
+            black_digits=4,
+            previous_value=10.0,
+        )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert result.decision == "confirm"
+    assert "trained_model_unavailable" in result.flags
+
+
+def test_implausible_ocr_jump_is_rejected_before_dashboard_suggestion():
+    assert _prediction_anomaly(1151.808, 90.0) == "implausible_consumption_jump"
+    assert _prediction_anomaly(90.645, 90.0) is None
+    assert _prediction_anomaly(89.999, 90.0) == "below_previous_reading"
 
 
 def test_sequence_fusion_handles_transition_and_false_separator():

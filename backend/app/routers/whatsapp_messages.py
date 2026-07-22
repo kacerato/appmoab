@@ -53,6 +53,14 @@ async def whatsapp_health(
     return {**health, "pending_invoice_notifications": queued}
 
 
+@router.post("/connect")
+async def whatsapp_connect(
+    _: User = Depends(require_admin),
+):
+    """Entrega o QR da sessão ao dashboard administrativo."""
+    return await whatsapp_service.connection_qr()
+
+
 def _phone_suffix(phone: str, size: int = 8) -> str:
     digits = "".join(char for char in phone if char.isdigit())
     return digits[-size:] if len(digits) >= size else digits

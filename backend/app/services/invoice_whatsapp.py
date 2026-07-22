@@ -5,11 +5,12 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import async_session_factory
+from app.config import get_settings
 from app.models.invoice import Invoice
 from app.models.invoice_event import InvoiceEvent
 from app.models.notification import Notification
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5
 RETRY_DELAYS_MINUTES = (2, 5, 15, 60, 180)
+DISPATCH_ADVISORY_LOCK_ID = 742_260_721
+runtime_settings = get_settings()
 
 
 async def _settings(db: AsyncSession) -> SystemSetting:
@@ -97,6 +100,38 @@ def _schedule_retry(notification: Notification, error: str) -> None:
         notification.next_attempt_at = None
 
 
+def _schedule_operational_wait(notification: Notification, detail: str, *, delay_seconds: int) -> None:
+    """Mantém a entrega na fila quando o canal está indisponível, sem exibir falha técnica."""
+    notification.status = "queued"
+    notification.error_message = detail[:500]
+    notification.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=max(delay_seconds, 30))
+
+
+async def _reserve_dispatch_slot(db: AsyncSession) -> tuple[bool, str | None]:
+    """Serializa os envios e limita rajadas mesmo com vários workers."""
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        acquired = (await db.execute(select(func.pg_try_advisory_xact_lock(DISPATCH_ADVISORY_LOCK_ID)))).scalar()
+        if acquired is False:
+            return False, "Outro envio já está em andamento. Esta fatura continua na fila."
+
+    limit = max(int(runtime_settings.whatsapp_invoice_rate_limit_per_minute), 1)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
+    recent = (
+        await db.execute(
+            select(func.count())
+            .select_from(WhatsAppMessage)
+            .where(
+                WhatsAppMessage.direction == "outbound",
+                WhatsAppMessage.created_at >= cutoff,
+            )
+        )
+    ).scalar() or 0
+    if recent >= limit:
+        return False, f"Limite seguro de {limit} envios por minuto atingido. Esta fatura continua na fila."
+    return True, None
+
+
 def _event(db: AsyncSession, invoice: Invoice, sent: bool, notification: Notification, *, mode: str, source: str) -> None:
     db.add(InvoiceEvent(
         invoice_id=invoice.id,
@@ -152,8 +187,6 @@ async def dispatch_invoice_notification(
         notification.next_attempt_at = None
         return {"status": "failed", "reason": "invoice_cancelled", "detail": notification.error_message}
 
-    notification.attempt_count += 1
-    notification.last_attempt_at = datetime.now(timezone.utc)
     source = str((notification.payload or {}).get("source") or "invoice_dispatch")
     if not invoice.customer.phone:
         _schedule_retry(notification, "Cliente sem telefone cadastrado.")
@@ -179,10 +212,18 @@ async def dispatch_invoice_notification(
 
     health = await whatsapp_service.health()
     if not health["connected"]:
-        detail = f"Instancia Evolution desconectada ({health['instance_state']})."
-        _schedule_retry(notification, detail)
-        _event(db, invoice, False, notification, mode="connection_check", source=source)
-        return {"status": "failed", "reason": "whatsapp_disconnected", "detail": detail}
+        detail = "WhatsApp desconectado. Conecte o número pelo QR Code no dashboard; a fatura continuará na fila."
+        _schedule_operational_wait(notification, detail, delay_seconds=300)
+        return {"status": "queued", "reason": "whatsapp_disconnected", "detail": detail}
+
+    slot_available, rate_detail = await _reserve_dispatch_slot(db)
+    if not slot_available:
+        detail = rate_detail or "Envio adiado para evitar uma rajada de mensagens."
+        _schedule_operational_wait(notification, detail, delay_seconds=75)
+        return {"status": "queued", "reason": "local_rate_limit", "detail": detail}
+
+    notification.attempt_count += 1
+    notification.last_attempt_at = datetime.now(timezone.utc)
 
     message = render_invoice_customer_message(
         settings,
@@ -220,7 +261,21 @@ async def dispatch_invoice_notification(
         result = {"status": "failed", "error": str(exc)}
 
     if not result or result.get("status") != "sent":
-        _schedule_retry(notification, str((result or {}).get("error") or "Evolution nao confirmou o envio."))
+        error_code = str((result or {}).get("error_code") or "dispatch_failed")
+        detail = str((result or {}).get("error") or "O WhatsApp não confirmou o envio agora.")
+        if error_code in {"account_restricted", "rate_limited", "whatsapp_disconnected"}:
+            detail = f"{detail.rstrip()} A fatura continuará na fila."
+            notification.attempt_count = max(notification.attempt_count - 1, 0)
+            if error_code == "account_restricted":
+                delay_seconds = max(runtime_settings.whatsapp_restriction_cooldown_minutes, 60) * 60
+            elif error_code == "rate_limited":
+                delay_seconds = 15 * 60
+            else:
+                delay_seconds = 5 * 60
+            _schedule_operational_wait(notification, detail, delay_seconds=delay_seconds)
+            notification.payload = {**(notification.payload or {}), "mode": mode, "message": message}
+            return {"status": "queued", "reason": error_code, "detail": detail}
+        _schedule_retry(notification, detail)
         notification.payload = {**(notification.payload or {}), "mode": mode, "message": message}
         _event(db, invoice, False, notification, mode=mode, source=source)
         return {"status": "failed", "reason": "dispatch_failed", "detail": notification.error_message}
@@ -272,7 +327,7 @@ async def dispatch_due_invoice_notifications() -> int:
                     Notification.next_attempt_at <= now,
                 )
                 .order_by(Notification.created_at)
-                .limit(50)
+                .limit(max(int(runtime_settings.whatsapp_invoice_batch_size), 1))
             )
         ).scalars().all()
 

@@ -418,7 +418,11 @@ export default function SettingsPage() {
           <SettingCard
             icon={<Globe size={18} />}
             title="WhatsApp"
-            desc={whatsAppHealth?.connected ? 'Sessão Evolution conectada e pronta para envios' : (whatsAppHealth?.error || `Instância ${whatsAppHealth?.instance_state || 'não verificada'}`)}
+            desc={whatsAppHealth?.connected
+              ? 'Número conectado e pronto para envios'
+              : whatsAppHealth?.reachable
+                ? 'Número desconectado. Abra Notificações para escanear o QR Code; as faturas permanecem na fila.'
+                : (whatsAppHealth?.error || 'Não foi possível verificar o canal agora.')}
             status={whatsAppHealth?.connected ? 'Conectado' : whatsAppHealth?.reachable ? 'Desconectado' : 'Indisponível'}
             statusColor={whatsAppHealth?.connected ? 'var(--success)' : 'var(--warning)'}
           />
@@ -508,7 +512,7 @@ export default function SettingsPage() {
         <div className="card-header"><span className="card-title">Status do Sistema</span></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 13, color: 'var(--text-secondary)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Sistema</span><span style={{ fontWeight: 600 }}>{health?.status === 'healthy' ? 'Funcionando' : 'Verificando'}</span></div>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>WhatsApp</span><span style={{ fontWeight: 600, color: whatsAppHealth?.connected ? 'var(--success)' : 'var(--warning)' }}>{whatsAppHealth?.connected ? 'Sessão conectada' : `Sessão ${whatsAppHealth?.instance_state || 'não verificada'}`}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>WhatsApp</span><span style={{ fontWeight: 600, color: whatsAppHealth?.connected ? 'var(--success)' : 'var(--warning)' }}>{whatsAppHealth?.connected ? 'Número conectado' : 'Aguardando conexão'}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Faturas aguardando WhatsApp</span><span style={{ fontWeight: 600 }}>{whatsAppHealth?.pending_invoice_notifications ?? '—'}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Cobrança</span><span style={{ fontWeight: 600 }}>{health?.efi_sandbox ? 'Efí homologação' : 'Efí produção'}</span></div>
         </div>
