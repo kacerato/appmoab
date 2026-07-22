@@ -19,6 +19,7 @@ const BURST_INTERVAL_MS = 120;
 const LIVE_VISION_INTERVAL_MS = 2800;
 const LIVE_VISION_READY_INTERVAL_MS = 6500;
 const LIVE_VISION_START_DELAY_MS = 900;
+const READING_CROP_PADDING_RATIO = 0.18;
 
 interface VisionQualityResult {
   usable: boolean;
@@ -182,6 +183,7 @@ export default function CameraScreen() {
   const lastQrScanRef = useRef<{ value: string; at: number } | null>(null);
   const captureBusyRef = useRef(false);
   const liveProbeBusyRef = useRef(false);
+  const liveCameraCaptureRef = useRef<Promise<void> | null>(null);
 
   const handleCameraReady = async () => {
     setCameraReady(true);
@@ -224,6 +226,7 @@ export default function CameraScreen() {
           cameraLayout,
           guideRect,
           { width: photo.width, height: photo.height },
+          READING_CROP_PADDING_RATIO,
         )
       : null;
     const result = await manipulateAsync(
@@ -275,11 +278,23 @@ export default function CameraScreen() {
       liveProbeBusyRef.current = true;
       setLiveChecking(true);
       try {
-        const photo = await cameraRef.current.takePictureAsync({
+        let photo: CapturedFrame;
+        const capturePromise = cameraRef.current.takePictureAsync({
           quality: 0.46,
           base64: false,
           shutterSound: false,
         });
+        const cameraHandoff = capturePromise.then(() => undefined, () => undefined);
+        liveCameraCaptureRef.current = cameraHandoff;
+        try {
+          photo = await capturePromise;
+        } finally {
+          // A análise da API pode continuar, mas a câmera física já está livre
+          // para o toque do operador. Não bloqueamos a captura durante a rede.
+          if (liveCameraCaptureRef.current === cameraHandoff) {
+            liveCameraCaptureRef.current = null;
+          }
+        }
         if (photo?.uri) temporaryUris.push(photo.uri);
         if (!photo?.uri || !photo?.width || !photo?.height) return;
         const prepared = await prepareReadingFrame(photo, 0.58);
@@ -466,10 +481,6 @@ export default function CameraScreen() {
 
   const capturePhoto = async () => {
     if (capturing || captureBusyRef.current) return;
-    if (liveProbeBusyRef.current) {
-      showToast('Visão analisando', 'Aguarde um instante para a câmera concluir a validação ao vivo.', 'warning');
-      return;
-    }
     if (!cameraRef.current || !cameraReady) {
       showToast('Câmera iniciando', 'Aguarde um instante e tente novamente.', 'warning');
       return;
@@ -479,6 +490,12 @@ export default function CameraScreen() {
     setCaptureGuidance(null);
 
     try {
+      // Se o toque coincidiu com o exato instante da foto silenciosa usada no
+      // preview, aguardamos apenas a câmera física ser liberada. A chamada de
+      // qualidade em rede nunca impede o operador de fotografar.
+      const liveCameraCapture = liveCameraCaptureRef.current;
+      if (liveCameraCapture) await liveCameraCapture;
+
       const photo = await cameraRef.current.takePictureAsync({
         base64: stage === 'code',
         quality: stage === 'code' ? 0.90 : 1.0,
@@ -513,28 +530,32 @@ export default function CameraScreen() {
         primary: true,
       }];
 
+      let preflightQuality: VisionQualityResult | null = null;
       if (stage === 'reading' || stage === 'dev_test') {
         setQualityChecking(true);
-        let quality: VisionQualityResult;
         try {
-          quality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
+          preflightQuality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
             photo_base64: preparedPhoto.base64,
             stage,
             red_digits: redDigits,
             black_digits: blackDigits || 4,
             capture_metadata: {
-              capture_pipeline: 'mobile-guided-crop-v3',
+              capture_pipeline: 'mobile-guided-crop-v4-advisory',
               guide_crop: preparedPhoto.crop || null,
             },
           }, 20000);
+        } catch {
+          const message = 'Não foi possível avaliar a foto agora. Ela será enviada normalmente para análise.';
+          setCaptureGuidance(message);
+          showToast('Avaliação indisponível', message, 'warning');
         } finally {
           setQualityChecking(false);
         }
-        if (!quality.usable) {
-          const message = quality.recapture_reason || 'A imagem não ficou segura para leitura. Refaça a captura.';
+
+        if (preflightQuality && !preflightQuality.usable) {
+          const message = preflightQuality.recapture_reason || 'A foto pode exigir confirmação no dashboard.';
           setCaptureGuidance(message);
-          showToast('Vamos melhorar esta foto', message, 'warning');
-          return;
+          showToast('Foto registrada com ressalva', `${message} Você pode continuar mesmo assim.`, 'warning');
         }
       }
 
@@ -577,15 +598,22 @@ export default function CameraScreen() {
         }
       }
       const captureMetadata = {
-        capture_pipeline: 'mobile-burst-v2',
+        capture_pipeline: 'mobile-burst-v3-advisory',
         platform: Platform.OS,
         picture_size: pictureSize,
         torch_enabled: torchEnabled,
         requested_frames: 1 + BURST_EXTRA_FRAMES,
         captured_frames: 1 + framesBase64.length,
         burst_interval_ms: BURST_INTERVAL_MS,
-        framing_contract: 'preview-cover-to-sensor-crop-v1',
+        framing_contract: 'preview-cover-to-sensor-expanded-crop-v2',
         guide_crop: preparedPhoto.crop || null,
+        quality_advisory: preflightQuality ? {
+          usable: preflightQuality.usable,
+          guidance_code: preflightQuality.guidance_code || null,
+          display_found: preflightQuality.display_found ?? null,
+          meter_found: preflightQuality.meter_found ?? null,
+          display_area_ratio: preflightQuality.display_area_ratio ?? null,
+        } : null,
       };
 
       if (stage === 'code') {
@@ -673,10 +701,10 @@ export default function CameraScreen() {
   const guideText = stage === 'code'
     ? 'Aponte para o QR Code impresso no ponto do cliente. Se precisar, toque para fotografar e digitar.'
     : stage === 'dev_test'
-      ? 'Centralize a face do hidrometro e alinhe os roletes na faixa interna.'
+      ? 'Mantenha o hidrômetro visível. A faixa indica apenas a região provável dos números.'
       : isInstallation
-        ? 'Centralize a face do hidrometro e alinhe os numeros na faixa interna.'
-        : 'Centralize todo o mostrador; a faixa interna deve atravessar somente os numeros.';
+        ? 'Mantenha o hidrômetro visível; o sistema localizará o visor automaticamente.'
+        : 'Mantenha o hidrômetro visível. Os avisos ajudam, mas não impedem a foto.';
   const liveReady = Boolean(
     liveQuality?.usable &&
     liveQuality.display_found !== false,
@@ -687,7 +715,9 @@ export default function CameraScreen() {
       ? liveQuality?.meter_found === false
         ? 'Visor pronto; mantenha a face centralizada'
         : 'Hidrômetro e visor prontos'
-      : liveQuality?.recapture_reason || 'Aguardando hidrômetro no enquadramento';
+      : liveQuality?.recapture_reason
+        ? `Sugestão: ${liveQuality.recapture_reason}`
+        : 'Aguardando hidrômetro no enquadramento';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
@@ -731,11 +761,7 @@ export default function CameraScreen() {
               {stage !== 'code' && (
                 <>
                   <View style={styles.meterFaceGuide} />
-                  <View style={styles.rollerGuide}>
-                    {Array.from({ length: Math.max(3, Number(blackDigits || 4) + Number(redDigits || 3)) }).map((_, index) => (
-                      <View key={index} style={styles.rollerSlot} />
-                    ))}
-                  </View>
+                  <View style={styles.rollerGuide} />
                 </>
               )}
               <View style={[styles.corner, styles.cornerTL]} />
@@ -868,8 +894,8 @@ const styles = StyleSheet.create({
     height: 240,
   },
   guideReading: {
-    width: '84%',
-    maxWidth: 330,
+    width: '92%',
+    maxWidth: 390,
     aspectRatio: 1,
   },
   guideWaiting: {
@@ -893,23 +919,15 @@ const styles = StyleSheet.create({
   },
   rollerGuide: {
     position: 'absolute',
-    left: '10%',
-    right: '10%',
-    top: '36%',
-    height: '23%',
-    borderWidth: 2,
-    borderColor: colors.cyan,
-    borderRadius: 8,
-    backgroundColor: 'rgba(0,0,0,0.14)',
-    flexDirection: 'row',
-    padding: 3,
-    gap: 2,
-  },
-  rollerSlot: {
-    flex: 1,
+    left: '7%',
+    right: '7%',
+    top: '31%',
+    height: '36%',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.38)',
-    borderRadius: 3,
+    borderStyle: 'dashed',
+    borderColor: colors.cyan,
+    borderRadius: 10,
+    backgroundColor: 'rgba(0,0,0,0.08)',
   },
   corner: {
     position: 'absolute',

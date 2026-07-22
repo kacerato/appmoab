@@ -76,6 +76,9 @@ export default function OCRResultScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
   const selectedRedDigits = Number(redDigits || 3);
+  const captureNeedsAttention = Boolean(
+    verdict?.quality?.usable === false || verdict?.decision === 'recapture',
+  );
 
   useEffect(() => {
     setLoading(true);
@@ -168,11 +171,12 @@ export default function OCRResultScreen() {
             <Field label="Capturado em" value={new Date(capturedAt).toLocaleString('pt-BR')} />
           </View>
 
-          {verdict?.quality?.usable === false && (
+          {captureNeedsAttention && (
             <View style={[shared.card, { borderColor: colors.warning, borderWidth: 1 }] }>
-              <Text style={[shared.sectionTitle, { color: colors.warning }]}>Foto precisa de atenção</Text>
+              <Text style={[shared.sectionTitle, { color: colors.warning }]}>Sugestão para melhorar a leitura automática</Text>
               <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-                {verdict.quality.recapture_reason || 'A visão encontrou baixa qualidade. Refaça a captura antes de enviar.'}
+                {verdict?.quality?.recapture_reason || 'A visão encontrou baixa qualidade nesta captura.'}
+                {' '}Você pode refazer a foto ou enviá-la assim mesmo para conferência no dashboard.
               </Text>
             </View>
           )}
@@ -185,11 +189,17 @@ export default function OCRResultScreen() {
           </View>
 
           <TouchableOpacity
-            style={[shared.btnPrimary, (submitting || verdict?.quality?.usable === false || verdict?.decision === 'recapture') && { opacity: 0.45 }]}
+            style={[shared.btnPrimary, submitting && { opacity: 0.45 }]}
             onPress={sendCapture}
-            disabled={submitting || verdict?.quality?.usable === false || verdict?.decision === 'recapture'}
+            disabled={submitting}
           >
-            {submitting ? <ActivityIndicator color="#fff" /> : <Text style={shared.btnPrimaryText}>Enviar captura para conferencia</Text>}
+            {submitting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={shared.btnPrimaryText}>
+                {captureNeedsAttention ? 'Enviar assim mesmo para conferência' : 'Enviar captura para conferência'}
+              </Text>
+            )}
           </TouchableOpacity>
 
           <TouchableOpacity
