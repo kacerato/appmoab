@@ -97,10 +97,11 @@ def _recall_preview_result(key: str) -> VisionResult | None:
 
 
 def _expensive_probe_indexes(frame_count: int, frame_metadata: list[dict]) -> set[int]:
-    """Escolhe até três quadros independentes para OCR completo.
+    """Escolhe até dois quadros do clique para OCR completo.
 
     O burst disparado pelo toque tem prioridade. Quadros silenciosos continuam
-    contribuindo com detector/classificador leve, sem multiplicar a latência.
+    contribuindo com detector/classificador leve. Dois OCRs textuais bastam
+    para consenso e evitam serializar três execuções caras do RapidOCR.
     """
     if frame_count <= 0:
         return set()
@@ -109,7 +110,7 @@ def _expensive_probe_indexes(frame_count: int, frame_metadata: list[dict]) -> se
         for index, metadata in enumerate(frame_metadata[:frame_count])
         if metadata.get("primary") is True or metadata.get("source") == "tap_burst"
     ]
-    indexes = list(dict.fromkeys([0, *preferred]))[:3]
+    indexes = list(dict.fromkeys([0, *preferred]))[:2]
     if len(indexes) < 2 and frame_count > 1:
         indexes.append(frame_count - 1)
     return set(indexes)

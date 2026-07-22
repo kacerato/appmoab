@@ -15,20 +15,16 @@ import { colors } from '../styles/theme';
 const GPS_TARGET_ACCURACY_METERS = 25;
 const GPS_MAX_WAIT_MS = 4200;
 const LIVE_CACHE_LIMIT = 6;
-const FINAL_SILENT_FRAMES = 3;
+const FINAL_SILENT_FRAMES = 2;
 const TAP_BURST_EXTRA_FRAMES = 2;
-const LIVE_CAPTURE_INTERVAL_MS = 450;
+const LIVE_CAPTURE_INTERVAL_MS = 320;
 const LIVE_CAPTURE_BUSY_RETRY_MS = 220;
 const LIVE_VISION_START_DELAY_MS = 250;
 const LIVE_FRAME_MAX_AGE_MS = 15000;
 const READING_FRAME_MAX_SIDE = 1800;
 const LIVE_FRAME_MAX_SIDE = 1200;
 const READING_CROP_PADDING_RATIO = 0.12;
-const LIVE_DETECTION_HOLD_MS = 2600;
-const LIVE_FALLBACK_DETECTION_MIN_VOTES = 2;
-const LIVE_AUTO_CAPTURE_MIN_DETECTIONS = 3;
-const LIVE_AUTO_CAPTURE_FALLBACK_DETECTIONS = 2;
-const LIVE_AUTO_CAPTURE_WINDOW_MS = 1400;
+const LIVE_DETECTION_HOLD_MS = 900;
 
 interface VisionQualityResult {
   usable: boolean;
@@ -42,6 +38,7 @@ interface VisionQualityResult {
   display_area_ratio?: number;
   display_found?: boolean;
   meter_found?: boolean;
+  display_source?: string | null;
   display_bounds?: CameraRect | null;
 }
 
@@ -225,8 +222,6 @@ export default function CameraScreen() {
   const [liveQuality, setLiveQuality] = useState<VisionQualityResult | null>(null);
   const [liveMeterDetected, setLiveMeterDetected] = useState(false);
   const [liveDisplayBounds, setLiveDisplayBounds] = useState<CameraRect | null>(null);
-  const [autoCaptureQueued, setAutoCaptureQueued] = useState(false);
-  const [liveDetectionFrames, setLiveDetectionFrames] = useState(0);
   const [cameraLayout, setCameraLayout] = useState<CameraSize | null>(null);
   const [guideLayout, setGuideLayout] = useState<CameraRect | null>(null);
   const [guideBoxLayout, setGuideBoxLayout] = useState<CameraRect | null>(null);
@@ -237,11 +232,6 @@ export default function CameraScreen() {
   const liveProbeBusyRef = useRef(false);
   const livePresenceBusyRef = useRef(false);
   const liveDetectionUntilRef = useRef(0);
-  const liveFallbackDetectionVotesRef = useRef(0);
-  const liveDetectionFramesRef = useRef(0);
-  const liveAutoCaptureTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autoCaptureTriggeredRef = useRef(false);
-  const autoCaptureHandlerRef = useRef<() => void>(() => undefined);
   const pendingPresenceFrameRef = useRef<{ prepared: PreparedFrame; cachedFrame: CachedLiveFrame } | null>(null);
   const liveCameraCaptureRef = useRef<Promise<void> | null>(null);
   const liveFrameCacheRef = useRef<CachedLiveFrame[]>([]);
@@ -358,15 +348,8 @@ export default function CameraScreen() {
       setLiveQuality(null);
       setLiveMeterDetected(false);
       setLiveDisplayBounds(null);
-      setAutoCaptureQueued(false);
-      setLiveDetectionFrames(0);
       liveDetectionUntilRef.current = 0;
-      liveFallbackDetectionVotesRef.current = 0;
-      liveDetectionFramesRef.current = 0;
-      if (liveAutoCaptureTimerRef.current) clearTimeout(liveAutoCaptureTimerRef.current);
-      liveAutoCaptureTimerRef.current = null;
       pendingPresenceFrameRef.current = null;
-      autoCaptureTriggeredRef.current = false;
       liveFrameCacheRef.current = [];
       return undefined;
     }
@@ -376,16 +359,6 @@ export default function CameraScreen() {
 
     const schedule = (delay: number) => {
       timer = setTimeout(() => void probe(), delay);
-    };
-
-    const triggerAutoCapture = () => {
-      if (cancelled || autoCaptureTriggeredRef.current || captureBusyRef.current) return;
-      autoCaptureTriggeredRef.current = true;
-      if (liveAutoCaptureTimerRef.current) {
-        clearTimeout(liveAutoCaptureTimerRef.current);
-        liveAutoCaptureTimerRef.current = null;
-      }
-      autoCaptureHandlerRef.current();
     };
 
     const inspectPreparedFrame = (prepared: PreparedFrame, cachedFrame: CachedLiveFrame) => {
@@ -403,26 +376,30 @@ export default function CameraScreen() {
         red_digits: redDigits,
         black_digits: blackDigits || 4,
         capture_metadata: {
-          capture_pipeline: 'mobile-live-guide-v6-presence-plus-ocr',
+          capture_pipeline: 'mobile-live-guide-v7-presence-only',
           guide_crop: prepared.crop || null,
         },
       }, 5000)
         .then(quality => {
           if (cancelled) return;
           const now = Date.now();
-          const directlyDetected = Boolean(quality.display_found || quality.meter_found);
-          const stableGuideCandidate = Boolean(
-            quality.usable
-            && quality.display_bounds
-            && Number(quality.display_area_ratio || 0) >= 0.05,
+          const bounds = quality.display_bounds;
+          const boundsAspect = bounds ? bounds.width / Math.max(bounds.height, 0.001) : 0;
+          const reliableSource = quality.display_source === 'detector_onnx'
+            || quality.display_source === 'red_roller_anchor';
+          // O live só desenha a caixa quando localizou a faixa numérica por
+          // uma âncora específica. Encontrar apenas a face do hidrômetro ou um
+          // retângulo genérico nunca deixa o quadro verde nem decide a foto.
+          const detected = Boolean(
+            quality.display_found
+            && reliableSource
+            && bounds
+            && bounds.width >= 0.18
+            && bounds.height >= 0.025
+            && boundsAspect >= 1.8
+            && boundsAspect <= 12
+            && Number(quality.display_area_ratio || 0) >= 0.006,
           );
-          liveFallbackDetectionVotesRef.current = directlyDetected
-            ? LIVE_FALLBACK_DETECTION_MIN_VOTES
-            : stableGuideCandidate
-              ? liveFallbackDetectionVotesRef.current + 1
-              : 0;
-          const detected = directlyDetected
-            || liveFallbackDetectionVotesRef.current >= LIVE_FALLBACK_DETECTION_MIN_VOTES;
           const detectionScore = (
             (quality.display_found ? 4 : 0)
             + (quality.meter_found ? 2 : 0)
@@ -439,28 +416,7 @@ export default function CameraScreen() {
           if (detected) {
             liveDetectionUntilRef.current = now + LIVE_DETECTION_HOLD_MS;
             setLiveMeterDetected(true);
-            if (quality.display_bounds) setLiveDisplayBounds(quality.display_bounds);
-            const detectedFrames = liveDetectionFramesRef.current + 1;
-            liveDetectionFramesRef.current = detectedFrames;
-            setLiveDetectionFrames(detectedFrames);
-            if (!liveAutoCaptureTimerRef.current && !autoCaptureTriggeredRef.current) {
-              setAutoCaptureQueued(true);
-              liveAutoCaptureTimerRef.current = setTimeout(() => {
-                liveAutoCaptureTimerRef.current = null;
-                if (liveDetectionFramesRef.current >= LIVE_AUTO_CAPTURE_FALLBACK_DETECTIONS) {
-                  triggerAutoCapture();
-                  return;
-                }
-                // Um único verde não fecha a sessão. A coleta continua e abre
-                // uma nova janela quando o hidrômetro reaparecer de forma útil.
-                liveDetectionFramesRef.current = 0;
-                setLiveDetectionFrames(0);
-                setAutoCaptureQueued(false);
-              }, LIVE_AUTO_CAPTURE_WINDOW_MS);
-            }
-            if (detectedFrames >= LIVE_AUTO_CAPTURE_MIN_DETECTIONS) {
-              triggerAutoCapture();
-            }
+            setLiveDisplayBounds(bounds || null);
           } else if (now >= liveDetectionUntilRef.current) {
             setLiveMeterDetected(false);
             setLiveDisplayBounds(null);
@@ -545,8 +501,6 @@ export default function CameraScreen() {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      if (liveAutoCaptureTimerRef.current) clearTimeout(liveAutoCaptureTimerRef.current);
-      liveAutoCaptureTimerRef.current = null;
       pendingPresenceFrameRef.current = null;
       liveProbeBusyRef.current = false;
       livePresenceBusyRef.current = false;
@@ -702,15 +656,6 @@ export default function CameraScreen() {
       showToast('Câmera iniciando', 'Aguarde um instante e tente novamente.', 'warning');
       return;
     }
-    if (stage === 'reading' || stage === 'dev_test') {
-      // Toque manual e disparo automático convergem para a mesma sessão. Isso
-      // evita o temporizador live iniciar uma segunda captura em paralelo.
-      autoCaptureTriggeredRef.current = true;
-      if (liveAutoCaptureTimerRef.current) {
-        clearTimeout(liveAutoCaptureTimerRef.current);
-        liveAutoCaptureTimerRef.current = null;
-      }
-    }
     captureBusyRef.current = true;
     setCapturing(true);
 
@@ -842,14 +787,14 @@ export default function CameraScreen() {
         });
       });
       const captureMetadata = {
-        capture_pipeline: 'mobile-burst-v6-live-detect-tap-burst',
+        capture_pipeline: 'mobile-burst-v7-manual-tap-with-live-evidence',
         platform: Platform.OS,
         picture_size: pictureSize,
         torch_enabled: torchEnabled,
         requested_frames: 1 + TAP_BURST_EXTRA_FRAMES + FINAL_SILENT_FRAMES,
         captured_frames: 1 + framesBase64.length,
         live_capture_interval_ms: LIVE_CAPTURE_INTERVAL_MS,
-        framing_contract: 'full-primary-with-focused-live-evidence-v3',
+        framing_contract: 'full-click-frames-with-focused-live-evidence-v4',
         guide_crop: preparedPhoto.crop || null,
         reused_live_frames: cachedLiveFrames.length,
         tap_burst_frames: tapBurstFrames.length,
@@ -938,8 +883,6 @@ export default function CameraScreen() {
         isInstallation,
       });
     } catch (error) {
-      autoCaptureTriggeredRef.current = false;
-      setAutoCaptureQueued(false);
       showToast(
         'Falha ao capturar foto',
         error instanceof Error ? error.message : 'Nao foi possivel capturar a imagem.',
@@ -950,8 +893,6 @@ export default function CameraScreen() {
       setCapturing(false);
     }
   };
-  autoCaptureHandlerRef.current = () => void capturePhoto();
-
   const stageTitle = stage === 'code'
     ? 'Etapa 1 - QR Code do cliente'
     : stage === 'dev_test'
@@ -969,9 +910,9 @@ export default function CameraScreen() {
   const liveReady = liveMeterDetected;
   const liveDisplayGuideBounds = mapDetectedBoundsToGuide(liveDisplayBounds);
   const liveStatusText = liveMeterDetected
-        ? autoCaptureQueued
-          ? `Ajustando ao vivo • ${Math.min(liveDetectionFrames, LIVE_AUTO_CAPTURE_MIN_DETECTIONS)}/${LIVE_AUTO_CAPTURE_MIN_DETECTIONS} bons quadros`
-          : 'Hidrômetro localizado • preparando captura automática...'
+        ? 'Visor localizado • guardando os melhores quadros silenciosos'
+        : liveQuality?.meter_found
+          ? 'Hidrômetro localizado • procurando exatamente a faixa dos números'
         : liveQuality?.recapture_reason
           ? 'Ainda procurando o hidrômetro; você pode fotografar mesmo assim.'
           : liveChecking

@@ -354,7 +354,7 @@ export default function DevVisionTestScreen() {
                     <Text style={styles.predValue}>
                       {verdict.predicted_value !== null
                         ? `${formatMeterReading(verdict.predicted_value)} m³`
-                        : 'Falha no OCR'}
+                        : 'Sem sugestão automática'}
                     </Text>
                   </View>
                   <View style={{ flex: 0.8, alignItems: 'flex-end' }}>

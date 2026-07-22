@@ -180,7 +180,31 @@ def test_temporal_fusion_rejects_repeated_slot_only_hallucination():
     assert result.quality["temporal_fusion"]["rejected_candidate"] == "5030441"
 
 
-def test_temporal_fusion_does_not_let_one_weak_text_frame_anchor_the_burst():
+def test_temporal_fusion_keeps_repeated_reliably_anchored_slots_as_suggestion():
+    frames = [
+        _result("0090645", 0.72, text_evidence=False),
+        _result("0090645", 0.69, text_evidence=False),
+        _result("1471009", 0.74, text_evidence=False),
+    ]
+    for frame in frames[:2]:
+        frame.quality["display_detection"] = {"source": "red_roller_anchor"}
+
+    _, result = fuse_burst_results(
+        frames,
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+    )
+
+    assert result.predicted_code == "0090645"
+    assert result.decision == "confirm"
+    assert result.auto_fill_allowed is False
+    assert "burst_anchored_slot_suggestion" in result.flags
+    assert result.quality["temporal_fusion"]["anchored_slot_frames"] == 2
+    assert result.quality["temporal_fusion"]["suggestion_valid"] is True
+
+
+def test_temporal_fusion_keeps_one_text_frame_as_dashboard_only_suggestion():
     _, result = fuse_burst_results(
         [
             _result("0000000", 0.72, text_evidence=False),
@@ -192,10 +216,14 @@ def test_temporal_fusion_does_not_let_one_weak_text_frame_anchor_the_burst():
         black_digits=4,
     )
 
-    assert result.predicted_code is None
-    assert result.predicted_value is None
-    assert "burst_insufficient_text_evidence" in result.flags
+    assert result.predicted_code == "0090045"
+    assert result.predicted_value == pytest.approx(90.045)
+    assert result.decision == "confirm"
+    assert result.auto_fill_allowed is False
+    assert "burst_single_text_suggestion" in result.flags
     assert result.quality["temporal_fusion"]["text_evidence_frames"] == 1
+    assert result.quality["temporal_fusion"]["consensus_valid"] is False
+    assert result.quality["temporal_fusion"]["suggestion_valid"] is True
 
 
 def test_temporal_fusion_accepts_one_text_frame_when_an_independent_slot_frame_matches():
@@ -345,7 +373,7 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             black_digits=4,
         )
 
-    def test_tap_burst_gets_three_full_ocr_probes(self):
+    def test_tap_burst_gets_two_full_ocr_probes(self):
         indexes = hydrometers_router._expensive_probe_indexes(6, [
             {"primary": True},
             {"source": "tap_burst"},
@@ -355,7 +383,7 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             {"source": "live_preview_cache"},
         ])
 
-        self.assertEqual(indexes, {0, 1, 2})
+        self.assertEqual(indexes, {0, 1})
 
     async def test_live_preview_requires_textual_digit_evidence(self):
         user = SimpleNamespace(id=uuid.uuid4())

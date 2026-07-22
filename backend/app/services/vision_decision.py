@@ -396,6 +396,109 @@ def fuse_burst_results(
         # temporal; um texto isolado continua sendo rejeitado.
         hybrid_text_slot_consensus = bool(single_text_code and matching_frame_count >= 2)
     if len(dominant_text_codes) < 2 and not hybrid_text_slot_consensus:
+        # O valor é apenas uma sugestão para o dashboard. Quando um único
+        # quadro realmente leu a sequência pelo OCR textual, preservamos essa
+        # leitura com baixa evidência temporal em vez de apagar o resultado e
+        # exibir "Falha no OCR". Ela jamais recebe auto-fill e continua sujeita
+        # às travas de histórico; resultados produzidos somente pelos slots
+        # permanecem rejeitados.
+        if text_evidence_frames == 1:
+            single_match = next((
+                (index, result, code)
+                for index, result in enumerate(results)
+                if has_textual_meter_evidence(result, total_digits)
+                if (code := _result_code(
+                    result,
+                    total_digits=total_digits,
+                    red_digits=red_digits,
+                )) is not None
+            ), None)
+            if single_match is not None:
+                text_index, text_result, text_code = single_match
+                history_rejection = _history_rejection_reason(
+                    text_code,
+                    red_digits=red_digits,
+                    previous_value=previous_value,
+                )
+                if history_rejection is None:
+                    suggestion = copy.deepcopy(text_result)
+                    suggestion.predicted_code = text_code
+                    suggestion.predicted_value = int(text_code) / (10 ** max(red_digits, 0))
+                    suggestion.decision = "confirm"
+                    suggestion.auto_fill_allowed = False
+                    suggestion.flags = list(dict.fromkeys([
+                        "burst_single_text_suggestion",
+                        "burst_low_temporal_consensus",
+                        *suggestion.flags,
+                    ]))
+                    suggestion.quality = {
+                        **(suggestion.quality or {}),
+                        "temporal_fusion": {
+                            "decoder_version": DECODER_VERSION,
+                            "frames_used": len(eligible),
+                            "text_evidence_frames": 1,
+                            "text_evidence_codes": [text_code],
+                            "text_anchor_code": text_code,
+                            "consensus_valid": False,
+                            "suggestion_valid": True,
+                            "calibrated": False,
+                        },
+                    }
+                    return text_index, suggestion
+        anchored_candidates = []
+        for index, result in enumerate(results):
+            quality = result.quality or {}
+            detection = quality.get("display_detection") or {}
+            source = detection.get("source")
+            code = _result_code(result, total_digits=total_digits, red_digits=red_digits)
+            if (
+                code is not None
+                and source in {"detector_onnx", "red_roller_anchor", "meter_unit_anchor", "ocr_window"}
+                and quality.get("usable", True)
+                and float(result.confidence or 0.0) >= 0.40
+            ):
+                anchored_candidates.append((index, result, code))
+        anchored_groups: dict[str, list[tuple[int, VisionResult, str]]] = {}
+        for candidate in anchored_candidates:
+            anchored_groups.setdefault(candidate[2], []).append(candidate)
+        anchored_group = max(anchored_groups.values(), key=len, default=[])
+        if text_evidence_frames == 0 and len(anchored_group) >= 2:
+            anchor_index, anchor_result, anchor_code = max(
+                anchored_group,
+                key=lambda candidate: candidate[1].confidence,
+            )
+            history_rejection = _history_rejection_reason(
+                anchor_code,
+                red_digits=red_digits,
+                previous_value=previous_value,
+            )
+            if history_rejection is None:
+                suggestion = copy.deepcopy(anchor_result)
+                suggestion.predicted_code = anchor_code
+                suggestion.predicted_value = int(anchor_code) / (10 ** max(red_digits, 0))
+                suggestion.decision = "confirm"
+                suggestion.auto_fill_allowed = False
+                suggestion.flags = list(dict.fromkeys([
+                    "burst_anchored_slot_suggestion",
+                    "burst_low_temporal_consensus",
+                    *suggestion.flags,
+                ]))
+                suggestion.quality = {
+                    **(suggestion.quality or {}),
+                    "temporal_fusion": {
+                        "decoder_version": DECODER_VERSION,
+                        "frames_used": len(eligible),
+                        "text_evidence_frames": text_evidence_frames,
+                        "text_evidence_codes": text_evidence_codes,
+                        "text_anchor_code": None,
+                        "anchored_slot_frames": len(anchored_group),
+                        "anchored_slot_code": anchor_code,
+                        "consensus_valid": False,
+                        "suggestion_valid": True,
+                        "calibrated": False,
+                    },
+                }
+                return anchor_index, suggestion
         return _reject_burst_candidate(
             results,
             selected_index=selected_index,
