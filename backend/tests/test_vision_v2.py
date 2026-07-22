@@ -198,6 +198,25 @@ def test_temporal_fusion_does_not_let_one_weak_text_frame_anchor_the_burst():
     assert result.quality["temporal_fusion"]["text_evidence_frames"] == 1
 
 
+def test_temporal_fusion_accepts_one_text_frame_when_an_independent_slot_frame_matches():
+    _, result = fuse_burst_results(
+        [
+            _result("0090645", 0.84, text_evidence=True),
+            _result("0090645", 0.78, text_evidence=False),
+            _result("1471009", 0.72, text_evidence=False),
+        ],
+        selected_index=0,
+        red_digits=3,
+        black_digits=4,
+        previous_value=90.640,
+    )
+
+    assert result.predicted_code == "0090645"
+    assert result.decision == "confirm"
+    assert "burst_hybrid_text_slot_consensus" in result.flags
+    assert result.quality["temporal_fusion"]["consensus_valid"] is True
+
+
 def test_temporal_fusion_requires_text_frames_to_agree_on_prefix():
     _, result = fuse_burst_results(
         [

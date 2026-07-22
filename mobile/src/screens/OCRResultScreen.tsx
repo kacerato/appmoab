@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -50,6 +50,7 @@ export default function OCRResultScreen() {
   const route = useRoute<any>();
   const { showToast } = useFeedback();
   const {
+    autoSubmit = false,
     photoBase64,
     photoUri,
     framesBase64 = [],
@@ -75,12 +76,42 @@ export default function OCRResultScreen() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
+  const processingStartedRef = useRef(false);
   const selectedRedDigits = Number(redDigits || 3);
   const captureNeedsAttention = verdict?.decision === 'recapture';
 
+  const submitCapture = useCallback(async (resolvedVerdict: VisionVerdict | null) => {
+    setSubmitting(true);
+    try {
+      await api.post<OCRData>('/readings', {
+        hydrometer_id: hydrometerId,
+        photo_base64: photoBase64,
+        latitude,
+        longitude,
+        location_accuracy_meters: locationAccuracyMeters,
+        captured_at: capturedAt,
+        vision_inference_id: resolvedVerdict?.inference_id || null,
+      });
+      showToast(
+        isInstallation ? 'Captura da instalação enviada' : 'Leitura capturada',
+        'A foto e a sugestão foram enviadas para confirmação no dashboard.',
+        'success',
+      );
+      navigation.navigate('Route');
+      return true;
+    } catch (error) {
+      showToast('Falha ao enviar captura', error instanceof Error ? error.message : 'Não foi possível enviar a captura.', 'error');
+      return false;
+    } finally {
+      setSubmitting(false);
+    }
+  }, [capturedAt, hydrometerId, isInstallation, latitude, locationAccuracyMeters, longitude, navigation, photoBase64, showToast]);
+
   useEffect(() => {
+    if (processingStartedRef.current) return;
+    processingStartedRef.current = true;
     setLoading(true);
-    api.post<VisionVerdict>('/hydrometers/vision-verdict', {
+    void api.post<VisionVerdict>('/hydrometers/vision-verdict', {
       photo_base64: photoBase64,
       frames_base64: framesBase64,
       capture_id: captureId || null,
@@ -94,36 +125,24 @@ export default function OCRResultScreen() {
       hydrometer_brand: hydrometerBrand || null,
       hydrometer_model: hydrometerModel || null,
     }, 75000)
-      .then(setVerdict)
-      .catch(() => setVerdict(null))
+      .then(async result => {
+        setVerdict(result);
+        setLoading(false);
+        if (autoSubmit) await submitCapture(result);
+      })
+      .catch(error => {
+        setVerdict(null);
+        showToast(
+          'Não foi possível analisar a captura',
+          error instanceof Error ? error.message : 'Tente enviar novamente.',
+          'error',
+        );
+      })
       .finally(() => setLoading(false));
-  }, [blackDigits, captureId, captureMetadata, frameMetadata, framesBase64, hydrometerBrand, hydrometerId, hydrometerModel, lastReading, photoBase64, selectedRedDigits]);
+  }, [autoSubmit, blackDigits, captureId, captureMetadata, frameMetadata, framesBase64, hydrometerBrand, hydrometerId, hydrometerModel, lastReading, photoBase64, selectedRedDigits, showToast, submitCapture]);
 
   const sendCapture = async () => {
-    setSubmitting(true);
-    try {
-      await api.post<OCRData>('/readings', {
-        hydrometer_id: hydrometerId,
-        photo_base64: photoBase64,
-        latitude,
-        longitude,
-        location_accuracy_meters: locationAccuracyMeters,
-        captured_at: capturedAt,
-        vision_inference_id: verdict?.inference_id || null,
-      });
-      showToast(
-        isInstallation ? 'Captura da instalacao enviada' : 'Captura enviada',
-        isInstallation
-          ? 'O valor inicial sera conferido no dashboard antes de gerar a cobranca.'
-          : 'O OCR sugerira a medicao e o dashboard fara a confirmacao final.',
-        'success',
-      );
-      navigation.navigate('Route');
-    } catch (error) {
-      showToast('Falha ao enviar captura', error instanceof Error ? error.message : 'Não foi possível enviar a captura.', 'error');
-    } finally {
-      setSubmitting(false);
-    }
+    await submitCapture(verdict);
   };
 
   const locationLabel = useMemo(() => {
@@ -149,11 +168,11 @@ export default function OCRResultScreen() {
         />
       ) : null}
 
-      {loading ? (
+      {loading || (autoSubmit && submitting) ? (
         <View style={shared.card}>
           <ActivityIndicator size="large" color={colors.accent} />
           <Text style={{ marginTop: 14, color: colors.textMuted, textAlign: 'center' }}>
-            Preparando conferência...
+            {loading ? 'Escolhendo a melhor leitura...' : 'Enviando para confirmação no dashboard...'}
           </Text>
         </View>
       ) : (

@@ -382,7 +382,20 @@ def fuse_burst_results(
     for code in text_evidence_codes:
         text_code_groups.setdefault(code, []).append(code)
     dominant_text_codes = max(text_code_groups.values(), key=len, default=[])
+    hybrid_text_slot_consensus = False
     if len(dominant_text_codes) < 2:
+        single_text_code = dominant_text_codes[0] if dominant_text_codes else None
+        matching_frame_count = (
+            sum(code == single_text_code for code in per_frame_codes)
+            if single_text_code is not None
+            else 0
+        )
+        # Em movimento é comum somente um quadro passar pela cabeça textual,
+        # enquanto o classificador por rolete repete o mesmo código em outros
+        # quadros. Um texto válido + confirmação visual independente é evidência
+        # temporal; um texto isolado continua sendo rejeitado.
+        hybrid_text_slot_consensus = bool(single_text_code and matching_frame_count >= 2)
+    if len(dominant_text_codes) < 2 and not hybrid_text_slot_consensus:
         return _reject_burst_candidate(
             results,
             selected_index=selected_index,
@@ -540,8 +553,9 @@ def fuse_burst_results(
     fused.auto_fill_allowed = fused.decision == "accepted"
     fused.flags = list(dict.fromkeys([
         "burst_slot_fusion",
-        *( ["burst_consensus_median"] if robust_consensus_code == selected_code else []),
-        *( ["transitional_digit"] if transitional else []),
+        *(["burst_hybrid_text_slot_consensus"] if hybrid_text_slot_consensus else []),
+        *(["burst_consensus_median"] if robust_consensus_code == selected_code else []),
+        *(["transitional_digit"] if transitional else []),
         *fused.flags,
     ]))
 
