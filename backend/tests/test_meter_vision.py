@@ -229,7 +229,7 @@ def test_meter_tail_prefix_normalization_prefers_trailing_unit_noise():
     assert best[0] == [0, 0, 9, 0, 6, 4]
 
 
-def test_burst_consensus_uses_median_for_partial_last_digit():
+def test_burst_consensus_rejects_three_different_last_digits():
     def result(code: str, confidence: float) -> VisionResult:
         return VisionResult(
             predicted_code=None,
@@ -256,11 +256,15 @@ def test_burst_consensus_uses_median_for_partial_last_digit():
         black_digits=4,
     )
 
-    assert selected_index == 0
-    assert selected.predicted_value == 90.645
-    assert selected.predicted_code == "0090645"
-    assert "burst_consensus_median" in selected.flags
-    assert selected.quality["burst_consensus"]["selected"] == "0090645"
+    assert selected_index == 1
+    assert selected.predicted_value is None
+    assert selected.predicted_code is None
+    assert "burst_text_evidence_disagreement" in selected.flags
+    assert selected.quality["temporal_fusion"]["text_evidence_codes"] == [
+        "0090645",
+        "0090642",
+        "0090646",
+    ]
 
 
 def test_transition_decoder_considers_both_visible_digits_and_history():

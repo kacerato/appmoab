@@ -1,7 +1,12 @@
 """Router de hidrometros - CRUD vinculado a clientes."""
 
 import asyncio
+import copy
+import hashlib
+import threading
+import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -38,6 +43,57 @@ from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
+
+_PREVIEW_CACHE_TTL_SECONDS = 15.0
+_PREVIEW_CACHE_MAX_ITEMS = 32
+_preview_result_cache: OrderedDict[str, tuple[float, VisionResult]] = OrderedDict()
+_preview_result_cache_lock = threading.Lock()
+
+
+def _preview_cache_key(
+    image_base64: str,
+    *,
+    red_digits: int | None,
+    black_digits: int | None,
+    previous_value: float | None,
+    hydrometer_brand: str | None,
+    hydrometer_model: str | None,
+) -> str:
+    context = "|".join([
+        str(red_digits if red_digits is not None else ""),
+        str(black_digits if black_digits is not None else ""),
+        str(previous_value if previous_value is not None else ""),
+        (hydrometer_brand or "").strip().lower(),
+        (hydrometer_model or "").strip().lower(),
+    ]).encode()
+    digest = hashlib.sha256()
+    digest.update(context)
+    digest.update(b"|")
+    digest.update(image_base64.encode())
+    return digest.hexdigest()
+
+
+def _remember_preview_result(key: str, result: VisionResult) -> None:
+    now = time.monotonic()
+    with _preview_result_cache_lock:
+        _preview_result_cache[key] = (now, copy.deepcopy(result))
+        _preview_result_cache.move_to_end(key)
+        while len(_preview_result_cache) > _PREVIEW_CACHE_MAX_ITEMS:
+            _preview_result_cache.popitem(last=False)
+
+
+def _recall_preview_result(key: str) -> VisionResult | None:
+    now = time.monotonic()
+    with _preview_result_cache_lock:
+        cached = _preview_result_cache.get(key)
+        if cached is None:
+            return None
+        created_at, result = cached
+        if now - created_at > _PREVIEW_CACHE_TTL_SECONDS:
+            _preview_result_cache.pop(key, None)
+            return None
+        _preview_result_cache.move_to_end(key)
+        return copy.deepcopy(result)
 
 
 def _meter_result_code(result: VisionResult, total_digits: int, red_digits: int) -> int | None:
@@ -338,7 +394,7 @@ async def inspect_vision_capture(
     data: HydrometerIdentifyRequest,
     user: User = Depends(get_current_user),
 ):
-    """Valida a foto e só sinaliza leitura pronta com evidência dos dígitos."""
+    """Analisa um quadro do preview sem bloquear a câmera do aparelho."""
     del user
     result = await asyncio.to_thread(
         meter_vision_service.analyze,
@@ -350,6 +406,15 @@ async def inspect_vision_capture(
         hydrometer_brand=data.hydrometer_brand,
         hydrometer_model=data.hydrometer_model,
     )
+    preview_key = _preview_cache_key(
+        data.photo_base64,
+        red_digits=data.red_digits,
+        black_digits=data.black_digits,
+        previous_value=data.previous_value,
+        hydrometer_brand=data.hydrometer_brand,
+        hydrometer_model=data.hydrometer_model,
+    )
+    _remember_preview_result(preview_key, result)
     quality = dict(result.quality or {})
     total_digits = max(3, min(int(data.black_digits or 4) + int(data.red_digits or 3), 10))
     recognition_ready = bool(
@@ -372,6 +437,7 @@ async def inspect_vision_capture(
         "predicted_code": result.predicted_code if recognition_ready else None,
         "recognition_confidence": result.confidence if recognition_ready else 0.0,
         "recognition_flags": result.flags,
+        "frames_analyzed": 1,
     }
 
 
@@ -385,9 +451,21 @@ async def kimi_vision_verdict(
     frames = [data.photo_base64, *data.frames_base64[:7]]
     expensive_probe_indexes = {0}
     if len(frames) > 1:
-        expensive_probe_indexes.update({len(frames) // 2, len(frames) - 1})
-    results = await asyncio.gather(*[
-        asyncio.to_thread(
+        expensive_probe_indexes.add(len(frames) - 1)
+
+    async def analyze_frame(index: int, frame: str) -> VisionResult:
+        cache_key = _preview_cache_key(
+            frame,
+            red_digits=data.red_digits,
+            black_digits=data.black_digits,
+            previous_value=data.previous_value,
+            hydrometer_brand=data.hydrometer_brand,
+            hydrometer_model=data.hydrometer_model,
+        )
+        cached = _recall_preview_result(cache_key)
+        if cached is not None:
+            return cached
+        return await asyncio.to_thread(
             meter_vision_service.analyze,
             frame,
             red_digits=data.red_digits,
@@ -397,6 +475,9 @@ async def kimi_vision_verdict(
             hydrometer_brand=data.hydrometer_brand,
             hydrometer_model=data.hydrometer_model,
         )
+
+    results = await asyncio.gather(*[
+        analyze_frame(index, frame)
         for index, frame in enumerate(frames)
     ])
     best_index, vision_result = max(
@@ -416,41 +497,9 @@ async def kimi_vision_verdict(
         hydrometer_brand=data.hydrometer_brand,
         hydrometer_model=data.hydrometer_model,
     )
-    if len(frames) > 1 and "burst_consensus_median" not in vision_result.flags:
-        missing_probe_indexes = [index for index in range(len(frames)) if index not in expensive_probe_indexes]
-        if missing_probe_indexes:
-            refreshed = await asyncio.gather(*[
-                asyncio.to_thread(
-                    meter_vision_service.analyze,
-                    frames[index],
-                    red_digits=data.red_digits,
-                    black_digits=data.black_digits,
-                    previous_value=data.previous_value,
-                    expensive_ocr=True,
-                    hydrometer_brand=data.hydrometer_brand,
-                    hydrometer_model=data.hydrometer_model,
-                )
-                for index in missing_probe_indexes
-            ])
-            for index, result in zip(missing_probe_indexes, refreshed):
-                results[index] = result
-            best_index, vision_result = max(
-                enumerate(results),
-                key=lambda item: (
-                    bool(item[1].quality.get("usable")),
-                    item[1].confidence,
-                    -float(item[1].quality.get("blur", 1.0)),
-                ),
-            )
-            best_index, vision_result = _apply_burst_consensus(
-                list(results),
-                selected_index=best_index,
-                red_digits=data.red_digits or 3,
-                black_digits=data.black_digits or 4,
-                previous_value=data.previous_value,
-                hydrometer_brand=data.hydrometer_brand,
-                hydrometer_model=data.hydrometer_model,
-            )
+    # Não dispara uma segunda rodada síncrona depois do toque. Se os dois
+    # probes completos e os quadros já analisados no preview não concordarem,
+    # a captura segue para revisão no dashboard sem uma sugestão inventada.
     inference_id = uuid.uuid4()
     original_key = None
     rectified_key = None

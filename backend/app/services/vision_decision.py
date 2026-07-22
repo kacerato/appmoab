@@ -202,6 +202,7 @@ def _reject_burst_candidate(
     rejected_code: str | None,
     frame_codes: list[str],
     text_evidence_frames: int,
+    text_evidence_codes: list[str] | None = None,
 ) -> tuple[int, VisionResult]:
     selected = copy.deepcopy(results[selected_index])
     selected.predicted_code = None
@@ -226,6 +227,7 @@ def _reject_burst_candidate(
             "frame_codes": frame_codes,
             "frames_used": len(results),
             "text_evidence_frames": text_evidence_frames,
+            "text_evidence_codes": text_evidence_codes or [],
         },
     }
     return selected_index, selected
@@ -369,12 +371,26 @@ def fuse_burst_results(
         for result in eligible
         if (code := _result_code(result, total_digits=total_digits, red_digits=red_digits)) is not None
     ]
-    text_evidence_frames = sum(has_textual_meter_evidence(result, total_digits) for result in eligible)
-    if text_evidence_frames < 2:
+    text_evidence_codes = [
+        code
+        for result in eligible
+        if has_textual_meter_evidence(result, total_digits)
+        if (code := _result_code(result, total_digits=total_digits, red_digits=red_digits)) is not None
+    ]
+    text_evidence_frames = len(text_evidence_codes)
+    text_code_groups: dict[str, list[str]] = {}
+    for code in text_evidence_codes:
+        text_code_groups.setdefault(code, []).append(code)
+    dominant_text_codes = max(text_code_groups.values(), key=len, default=[])
+    if len(dominant_text_codes) < 2:
         return _reject_burst_candidate(
             results,
             selected_index=selected_index,
-            reason="burst_insufficient_text_evidence",
+            reason=(
+                "burst_text_evidence_disagreement"
+                if text_evidence_frames >= 2
+                else "burst_insufficient_text_evidence"
+            ),
             rejected_code=_result_code(
                 results[selected_index],
                 total_digits=total_digits,
@@ -382,7 +398,13 @@ def fuse_burst_results(
             ),
             frame_codes=per_frame_codes,
             text_evidence_frames=text_evidence_frames,
+            text_evidence_codes=text_evidence_codes,
         )
+    # O prefixo igual não basta: o último rolete é justamente a posição mais
+    # sujeita a transição. Escolher a mediana entre `...4` e `...0` fabricava
+    # uma certeza inexistente. A sugestão só nasce quando dois OCRs
+    # independentes repetem o código completo.
+    text_anchor_code = dominant_text_codes[0]
 
     log_scores = [[0.0] * 10 for _ in range(total_digits)]
     weights = [0.0] * total_digits
@@ -460,6 +482,11 @@ def fuse_burst_results(
         # excessivamente confiante do que uma votação ponderada isolada.
         selected_code = robust_consensus_code
 
+    # A distribuição dos slots ajuda a desempatar, mas não pode trocar o
+    # prefixo que foi efetivamente lido em dois ou mais frames independentes.
+    # Isso bloqueia consensos falsos como 0000047 produzidos por ROIs errados.
+    selected_code = text_anchor_code
+
     history_rejection = _history_rejection_reason(
         selected_code,
         red_digits=red_digits,
@@ -473,6 +500,7 @@ def fuse_burst_results(
             rejected_code=selected_code,
             frame_codes=per_frame_codes,
             text_evidence_frames=text_evidence_frames,
+            text_evidence_codes=text_evidence_codes,
         )
 
     best_result_index, best_result = max(
@@ -547,6 +575,8 @@ def fuse_burst_results(
             "decoder_version": DECODER_VERSION,
             "frames_used": len(eligible),
             "text_evidence_frames": text_evidence_frames,
+            "text_evidence_codes": text_evidence_codes,
+            "text_anchor_code": text_anchor_code,
             "selected": selected_code,
             "frame_codes": per_frame_codes,
             "transitions": {

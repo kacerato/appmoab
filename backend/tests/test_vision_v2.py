@@ -172,6 +172,44 @@ def test_temporal_fusion_does_not_let_one_weak_text_frame_anchor_the_burst():
     assert result.quality["temporal_fusion"]["text_evidence_frames"] == 1
 
 
+def test_temporal_fusion_requires_text_frames_to_agree_on_prefix():
+    _, result = fuse_burst_results(
+        [
+            _result("1630847", 0.75, text_evidence=True),
+            _result("0090644", 0.72, text_evidence=True),
+            _result("0016747", 0.78, text_evidence=False),
+        ],
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+    )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert "burst_text_evidence_disagreement" in result.flags
+    assert result.quality["temporal_fusion"]["text_evidence_frames"] == 2
+    assert result.quality["temporal_fusion"]["text_evidence_codes"] == ["1630847", "0090644"]
+
+
+def test_temporal_fusion_does_not_guess_when_only_last_roller_disagrees():
+    _, result = fuse_burst_results(
+        [
+            _result("0090644", 0.74, text_evidence=True),
+            _result("0090640", 0.68, text_evidence=True),
+            _result("0090645", 0.81, text_evidence=False),
+        ],
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+        previous_value=90.640,
+    )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert "burst_text_evidence_disagreement" in result.flags
+    assert result.quality["temporal_fusion"]["text_evidence_codes"] == ["0090644", "0090640"]
+
+
 def test_temporal_fusion_reapplies_history_guard_after_consensus():
     _, result = fuse_burst_results(
         [

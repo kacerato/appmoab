@@ -14,11 +14,12 @@ import { colors } from '../styles/theme';
 
 const GPS_TARGET_ACCURACY_METERS = 25;
 const GPS_MAX_WAIT_MS = 4200;
-const BURST_EXTRA_FRAMES = 4;
-const BURST_INTERVAL_MS = 120;
-const LIVE_VISION_INTERVAL_MS = 2800;
-const LIVE_VISION_READY_INTERVAL_MS = 6500;
-const LIVE_VISION_START_DELAY_MS = 900;
+const BURST_EXTRA_FRAMES = 3;
+const LIVE_CAPTURE_INTERVAL_MS = 450;
+const LIVE_CAPTURE_BUSY_RETRY_MS = 220;
+const LIVE_VISION_START_DELAY_MS = 250;
+const LIVE_FRAME_MAX_AGE_MS = 6000;
+const READING_FRAME_MAX_SIDE = 1800;
 const READING_CROP_PADDING_RATIO = 0.06;
 
 interface VisionQualityResult {
@@ -53,6 +54,22 @@ interface PreparedFrame extends CapturedFrame {
     width: number;
     height: number;
   };
+}
+
+interface CachedLiveFrame {
+  base64: string;
+  width: number;
+  height: number;
+  sourceWidth: number;
+  sourceHeight: number;
+  capturedAt: string;
+  capturedAtMs: number;
+  crop?: CameraRect;
+}
+
+interface CachedLocationSample {
+  value: Location.LocationObject;
+  capturedAtMs: number;
 }
 
 function createCaptureId() {
@@ -186,7 +203,11 @@ export default function CameraScreen() {
   const lastQrScanRef = useRef<{ value: string; at: number } | null>(null);
   const captureBusyRef = useRef(false);
   const liveProbeBusyRef = useRef(false);
+  const liveAnalysisBusyRef = useRef(false);
   const liveCameraCaptureRef = useRef<Promise<void> | null>(null);
+  const liveFrameCacheRef = useRef<CachedLiveFrame[]>([]);
+  const locationSampleRef = useRef<CachedLocationSample | null>(null);
+  const locationPromiseRef = useRef<Promise<Location.LocationObject | null> | null>(null);
   const liveRecognitionRef = useRef<{ code: string | null; consecutive: number }>({
     code: null,
     consecutive: 0,
@@ -236,14 +257,16 @@ export default function CameraScreen() {
           READING_CROP_PADDING_RATIO,
         )
       : null;
+    const resizeActions = Math.max(photo.width, photo.height) > READING_FRAME_MAX_SIDE
+      ? [{
+          resize: photo.width >= photo.height
+            ? { width: READING_FRAME_MAX_SIDE }
+            : { height: READING_FRAME_MAX_SIDE },
+        }]
+      : [];
     const result = await manipulateAsync(
       photo.uri,
-      crop ? [{ crop: {
-        originX: crop.originX,
-        originY: crop.originY,
-        width: crop.width,
-        height: crop.height,
-      } }] : [],
+      resizeActions,
       {
         base64: true,
         compress: compression,
@@ -251,7 +274,7 @@ export default function CameraScreen() {
       },
     );
     if (!result.base64) {
-      throw new Error('Não foi possível preparar o enquadramento da foto.');
+      throw new Error('Não foi possível preparar a foto do hidrômetro.');
     }
     return {
       uri: result.uri,
@@ -263,10 +286,30 @@ export default function CameraScreen() {
   }, [cameraLayout, guideBoxLayout, guideLayout]);
 
   useEffect(() => {
+    if (!isFocused || stage === 'code') return undefined;
+    let cancelled = false;
+    const pending = getBestLocationSample();
+    locationPromiseRef.current = pending;
+    void pending
+      .then(value => {
+        if (!cancelled && value) {
+          locationSampleRef.current = { value, capturedAtMs: Date.now() };
+        }
+      })
+      .finally(() => {
+        if (locationPromiseRef.current === pending) locationPromiseRef.current = null;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isFocused, stage]);
+
+  useEffect(() => {
     if (!isFocused || stage === 'code' || !cameraReady || !cameraLayout || !guideLayout || !guideBoxLayout) {
       setLiveQuality(null);
       setLiveStableCode(null);
       liveRecognitionRef.current = { code: null, consecutive: 0 };
+      liveFrameCacheRef.current = [];
       return undefined;
     }
 
@@ -276,16 +319,58 @@ export default function CameraScreen() {
     const schedule = (delay: number) => {
       timer = setTimeout(() => void probe(), delay);
     };
+
+    const analyzePreparedFrame = (prepared: PreparedFrame) => {
+      if (liveAnalysisBusyRef.current) return;
+      liveAnalysisBusyRef.current = true;
+      setLiveChecking(true);
+      void api.post<VisionQualityResult>('/hydrometers/vision-quality', {
+        photo_base64: prepared.base64,
+        stage,
+        red_digits: redDigits,
+        black_digits: blackDigits || 4,
+        previous_value: lastReading,
+        hydrometer_brand: hydrometerBrand || null,
+        hydrometer_model: hydrometerModel || null,
+        capture_metadata: {
+          capture_pipeline: 'mobile-live-guide-v5-background-burst',
+          guide_crop: prepared.crop || null,
+          captured_frames: 1,
+        },
+      }, 12000)
+        .then(quality => {
+          if (cancelled) return;
+          const recognizedCode = quality.recognition_ready ? quality.predicted_code || null : null;
+          const previousRecognition = liveRecognitionRef.current;
+          const consecutive = recognizedCode
+            ? previousRecognition.code === recognizedCode
+              ? previousRecognition.consecutive + 1
+              : 1
+            : 0;
+          liveRecognitionRef.current = { code: recognizedCode, consecutive };
+          setLiveQuality(quality);
+          setLiveStableCode(recognizedCode && consecutive >= 2 ? recognizedCode : null);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setLiveQuality(null);
+          setLiveStableCode(null);
+          liveRecognitionRef.current = { code: null, consecutive: 0 };
+        })
+        .finally(() => {
+          liveAnalysisBusyRef.current = false;
+          if (!cancelled) setLiveChecking(false);
+        });
+    };
+
     const probe = async () => {
-      let nextDelay = LIVE_VISION_INTERVAL_MS;
       const temporaryUris: string[] = [];
       if (cancelled) return;
       if (captureBusyRef.current || liveProbeBusyRef.current || !cameraRef.current) {
-        schedule(500);
+        schedule(LIVE_CAPTURE_BUSY_RETRY_MS);
         return;
       }
       liveProbeBusyRef.current = true;
-      setLiveChecking(true);
       try {
         let photo: CapturedFrame;
         const capturePromise = cameraRef.current.takePictureAsync({
@@ -308,50 +393,29 @@ export default function CameraScreen() {
         if (!photo?.uri || !photo?.width || !photo?.height) return;
         const prepared = await prepareReadingFrame(photo, 0.58);
         temporaryUris.push(prepared.uri);
-        const quality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
-          photo_base64: prepared.base64,
-          stage,
-          red_digits: redDigits,
-          black_digits: blackDigits || 4,
-          previous_value: lastReading,
-          hydrometer_brand: hydrometerBrand || null,
-          hydrometer_model: hydrometerModel || null,
-          capture_metadata: {
-            capture_pipeline: 'mobile-live-guide-v3',
-            guide_crop: prepared.crop || null,
+        const capturedAtMs = Date.now();
+        liveFrameCacheRef.current = [
+          ...liveFrameCacheRef.current.filter(item => capturedAtMs - item.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS),
+          {
+            base64: prepared.base64,
+            width: prepared.width,
+            height: prepared.height,
+            sourceWidth: photo.width,
+            sourceHeight: photo.height,
+            capturedAt: new Date(capturedAtMs).toISOString(),
+            capturedAtMs,
+            crop: prepared.crop,
           },
-        }, 12000);
-        if (!cancelled) {
-          const recognizedCode = quality.recognition_ready ? quality.predicted_code || null : null;
-          const previousRecognition = liveRecognitionRef.current;
-          const consecutive = recognizedCode
-            ? previousRecognition.code === recognizedCode
-              ? previousRecognition.consecutive + 1
-              : 1
-            : 0;
-          liveRecognitionRef.current = { code: recognizedCode, consecutive };
-          const stableCode = recognizedCode && consecutive >= 2 ? recognizedCode : null;
-          setLiveQuality(quality);
-          setLiveStableCode(stableCode);
-          if (quality.usable && stableCode) {
-            nextDelay = LIVE_VISION_READY_INTERVAL_MS;
-          }
-        }
+        ].slice(-BURST_EXTRA_FRAMES);
+        analyzePreparedFrame(prepared);
       } catch {
-        if (!cancelled) {
-          setLiveQuality(null);
-          setLiveStableCode(null);
-          liveRecognitionRef.current = { code: null, consecutive: 0 };
-        }
+        // O preview continua tentando; falha de um quadro não bloqueia o toque.
       } finally {
         await Promise.all(
           [...new Set(temporaryUris)].map(uri => FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined)),
         );
         liveProbeBusyRef.current = false;
-        if (!cancelled) {
-          setLiveChecking(false);
-          schedule(nextDelay);
-        }
+        if (!cancelled) schedule(LIVE_CAPTURE_INTERVAL_MS);
       }
     };
 
@@ -360,6 +424,7 @@ export default function CameraScreen() {
       cancelled = true;
       if (timer) clearTimeout(timer);
       liveProbeBusyRef.current = false;
+      liveFrameCacheRef.current = [];
     };
   }, [blackDigits, cameraLayout, cameraReady, guideBoxLayout, guideLayout, hydrometerBrand, hydrometerModel, isFocused, lastReading, prepareReadingFrame, redDigits, stage]);
 
@@ -565,54 +630,38 @@ export default function CameraScreen() {
         showToast('Foto registrada com ressalva', `${message} Você pode continuar mesmo assim.`, 'warning');
       }
 
-      const framesBase64: string[] = [];
-      if (stage === 'reading' || stage === 'dev_test') {
-        for (let index = 0; index < BURST_EXTRA_FRAMES; index += 1) {
-          try {
-            await new Promise(resolve => setTimeout(resolve, BURST_INTERVAL_MS));
-            const frame = await cameraRef.current.takePictureAsync({
-              base64: false,
-              quality: 0.96,
-              shutterSound: false,
-            });
-            if (frame?.uri && frame?.width && frame?.height) {
-              let preparedFrame: PreparedFrame | null = null;
-              try {
-                preparedFrame = await prepareReadingFrame(frame, 0.90);
-                framesBase64.push(preparedFrame.base64);
-                frameMetadata.push({
-                  index: index + 1,
-                  captured_at: new Date().toISOString(),
-                  width: preparedFrame.width,
-                  height: preparedFrame.height,
-                  source_width: frame.width,
-                  source_height: frame.height,
-                  guide_crop: preparedFrame.crop || null,
-                  quality: 0.90,
-                  primary: false,
-                });
-              } finally {
-                await Promise.all(
-                  [...new Set([frame.uri, preparedFrame?.uri].filter(Boolean) as string[])]
-                    .map(uri => FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined)),
-                );
-              }
-            }
-          } catch {
-            break;
-          }
-        }
-      }
+      const cachedLiveFrames = stage === 'reading' || stage === 'dev_test'
+        ? liveFrameCacheRef.current
+            .filter(item => Date.now() - item.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS)
+            .slice(-BURST_EXTRA_FRAMES)
+        : [];
+      liveFrameCacheRef.current = [];
+      const framesBase64: string[] = cachedLiveFrames.map(item => item.base64);
+      cachedLiveFrames.forEach((frame, index) => {
+        frameMetadata.push({
+          index: index + 1,
+          captured_at: frame.capturedAt,
+          width: frame.width,
+          height: frame.height,
+          source_width: frame.sourceWidth,
+          source_height: frame.sourceHeight,
+          guide_crop: frame.crop || null,
+          quality: 0.58,
+          primary: false,
+          source: 'live_preview_cache',
+        });
+      });
       const captureMetadata = {
-        capture_pipeline: 'mobile-burst-v3-advisory',
+        capture_pipeline: 'mobile-burst-v5-zero-wait-live-cache',
         platform: Platform.OS,
         picture_size: pictureSize,
         torch_enabled: torchEnabled,
         requested_frames: 1 + BURST_EXTRA_FRAMES,
         captured_frames: 1 + framesBase64.length,
-        burst_interval_ms: BURST_INTERVAL_MS,
-        framing_contract: 'preview-cover-to-sensor-expanded-crop-v2',
+        live_capture_interval_ms: LIVE_CAPTURE_INTERVAL_MS,
+        framing_contract: 'full-sensor-with-guide-metadata-v1',
         guide_crop: preparedPhoto.crop || null,
+        reused_live_frames: cachedLiveFrames.length,
         quality_advisory: preflightQuality ? {
           usable: preflightQuality.usable,
           guidance_code: preflightQuality.guidance_code || null,
@@ -656,11 +705,21 @@ export default function CameraScreen() {
         return;
       }
 
-      let location = null;
-      try {
-        location = await getBestLocationSample();
-      } catch (error) {
-        console.warn('GPS indisponivel:', error);
+      const cachedLocation = locationSampleRef.current;
+      let location = cachedLocation && Date.now() - cachedLocation.capturedAtMs <= 30_000
+        ? cachedLocation.value
+        : null;
+      if (!location) {
+        try {
+          // O GPS já começou durante o enquadramento. No toque, damos apenas
+          // uma pequena janela para a amostra em andamento terminar.
+          location = await withTimeout(
+            locationPromiseRef.current || getBestLocationSample(),
+            350,
+          );
+        } catch (error) {
+          console.warn('GPS indisponivel:', error);
+        }
       }
 
       navigation.navigate('OCRResult', {
