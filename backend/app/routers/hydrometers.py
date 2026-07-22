@@ -369,7 +369,6 @@ async def kimi_vision_verdict(
             expensive_ocr=index in expensive_probe_indexes,
             hydrometer_brand=data.hydrometer_brand,
             hydrometer_model=data.hydrometer_model,
-            dataset_version="aqua-meter-capture-v2",
         )
         for index, frame in enumerate(frames)
     ])

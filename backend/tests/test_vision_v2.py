@@ -1,10 +1,15 @@
 import base64
+import unittest
+import uuid
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import cv2
 import numpy as np
 import pytest
 
 from app.schemas.hydrometer import HydrometerIdentifyRequest, KimiVisionFeedbackRequest
+from app.routers import hydrometers as hydrometers_router
 from app.scripts.calibrate_meter_vision import build_profile
 from app.scripts.promote_meter_vision import DEFAULT_GATES, evaluate
 from app.services.meter_vision import DigitObservation, VisionResult, meter_vision_service
@@ -135,3 +140,49 @@ def test_calibration_and_promotion_are_blocked_without_evidence():
             target_precision=0.998,
             allow_small_diagnostic=False,
         )
+
+
+class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_endpoint_uses_supported_meter_service_arguments(self):
+        result = _result("0012345", 0.91)
+        db = MagicMock()
+        db.flush = AsyncMock()
+        user = SimpleNamespace(id=uuid.uuid4())
+        request = HydrometerIdentifyRequest(
+            photo_base64=_synthetic_meter_data_uri(),
+            hydrometer_brand="Aqua",
+            hydrometer_model="M1",
+        )
+
+        def analyze(
+            image_base64: str,
+            *,
+            red_digits: int | None = 3,
+            black_digits: int | None = None,
+            previous_value: float | None = None,
+            expensive_ocr: bool = True,
+            hydrometer_brand: str | None = None,
+            hydrometer_model: str | None = None,
+        ) -> VisionResult:
+            self.assertTrue(image_base64)
+            self.assertEqual(red_digits, 3)
+            self.assertTrue(expensive_ocr)
+            self.assertEqual(hydrometer_brand, "Aqua")
+            self.assertEqual(hydrometer_model, "M1")
+            return result
+
+        with (
+            patch.object(hydrometers_router.meter_vision_service, "analyze", side_effect=analyze),
+            patch.object(
+                hydrometers_router,
+                "decode_base64_upload",
+                return_value=("jpg", b"frame", "image/jpeg"),
+            ),
+            patch.object(hydrometers_router, "save_binary", return_value="vision/test/frame.jpg"),
+            patch("app.config.get_settings", return_value=SimpleNamespace(vision_glm_shadow_enabled=False)),
+        ):
+            response = await hydrometers_router.kimi_vision_verdict(request, db, user)
+
+        self.assertEqual(response["predicted_code"], "0012345")
+        self.assertEqual(response["inference_id"], str(db.add.call_args.args[0].id))
+        db.flush.assert_awaited_once()
