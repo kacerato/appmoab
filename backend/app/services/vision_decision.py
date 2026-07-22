@@ -531,9 +531,7 @@ def fuse_burst_results(
     fused.calibrated_confidence = calibrated
     fused.decoder_version = DECODER_VERSION
     fused.decision = "confirm"
-    if not any(result.quality.get("usable", True) for result in eligible):
-        fused.decision = "recapture"
-    elif (
+    if (
         profile.calibrated
         and calibrated >= max(profile.minimum_autofill, get_settings().vision_min_autofill_confidence)
         and (not transitional or profile.allow_transition_autofill)
@@ -587,6 +585,7 @@ def fuse_burst_results(
             "calibrated_confidence": calibrated,
             "calibration_version": profile.version,
             "calibrated": profile.calibrated,
+            "consensus_valid": True,
         },
     }
     return best_result_index, fused

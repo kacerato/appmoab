@@ -14,11 +14,14 @@ import { colors } from '../styles/theme';
 
 const GPS_TARGET_ACCURACY_METERS = 25;
 const GPS_MAX_WAIT_MS = 4200;
-const BURST_EXTRA_FRAMES = 3;
-const LIVE_CAPTURE_INTERVAL_MS = 450;
+const BURST_EXTRA_FRAMES = 5;
+const LIVE_CAPTURE_INTERVAL_MS = 650;
 const LIVE_CAPTURE_BUSY_RETRY_MS = 220;
 const LIVE_VISION_START_DELAY_MS = 250;
-const LIVE_FRAME_MAX_AGE_MS = 6000;
+const LIVE_FRAME_MAX_AGE_MS = 15000;
+const LIVE_CONSENSUS_WINDOW_MS = 14000;
+const LIVE_CONSENSUS_MIN_VOTES = 2;
+const LIVE_CONSENSUS_MIN_SHARE = 0.60;
 const READING_FRAME_MAX_SIDE = 1800;
 const READING_CROP_PADDING_RATIO = 0.06;
 
@@ -70,6 +73,54 @@ interface CachedLiveFrame {
 interface CachedLocationSample {
   value: Location.LocationObject;
   capturedAtMs: number;
+}
+
+interface RecognizedLiveFrame extends CachedLiveFrame {
+  recognizedCode: string;
+}
+
+interface LiveRecognitionSample {
+  code: string;
+  confidence: number;
+  capturedAtMs: number;
+}
+
+interface LiveConsensus {
+  candidateCode: string | null;
+  stableCode: string | null;
+  votes: number;
+  samples: number;
+}
+
+function summarizeLiveRecognition(
+  samples: LiveRecognitionSample[],
+  now = Date.now(),
+): { activeSamples: LiveRecognitionSample[]; consensus: LiveConsensus } {
+  const activeSamples = samples.filter(sample => now - sample.capturedAtMs <= LIVE_CONSENSUS_WINDOW_MS);
+  const groups = new Map<string, { votes: number; confidence: number; latestAt: number }>();
+  for (const sample of activeSamples) {
+    const current = groups.get(sample.code) || { votes: 0, confidence: 0, latestAt: 0 };
+    groups.set(sample.code, {
+      votes: current.votes + 1,
+      confidence: current.confidence + sample.confidence,
+      latestAt: Math.max(current.latestAt, sample.capturedAtMs),
+    });
+  }
+  const best = [...groups.entries()].sort((left, right) => (
+    right[1].votes - left[1].votes
+    || right[1].confidence - left[1].confidence
+    || right[1].latestAt - left[1].latestAt
+  ))[0];
+  const candidateCode = best?.[0] || null;
+  const votes = best?.[1].votes || 0;
+  const share = votes / Math.max(activeSamples.length, 1);
+  const stableCode = votes >= LIVE_CONSENSUS_MIN_VOTES && share >= LIVE_CONSENSUS_MIN_SHARE
+    ? candidateCode
+    : null;
+  return {
+    activeSamples,
+    consensus: { candidateCode, stableCode, votes, samples: activeSamples.length },
+  };
 }
 
 function createCaptureId() {
@@ -195,6 +246,12 @@ export default function CameraScreen() {
   const [captureGuidance, setCaptureGuidance] = useState<string | null>(null);
   const [liveQuality, setLiveQuality] = useState<VisionQualityResult | null>(null);
   const [liveStableCode, setLiveStableCode] = useState<string | null>(null);
+  const [liveConsensus, setLiveConsensus] = useState<LiveConsensus>({
+    candidateCode: null,
+    stableCode: null,
+    votes: 0,
+    samples: 0,
+  });
   const [cameraLayout, setCameraLayout] = useState<CameraSize | null>(null);
   const [guideLayout, setGuideLayout] = useState<CameraRect | null>(null);
   const [guideBoxLayout, setGuideBoxLayout] = useState<CameraRect | null>(null);
@@ -206,12 +263,10 @@ export default function CameraScreen() {
   const liveAnalysisBusyRef = useRef(false);
   const liveCameraCaptureRef = useRef<Promise<void> | null>(null);
   const liveFrameCacheRef = useRef<CachedLiveFrame[]>([]);
+  const recognizedFrameCacheRef = useRef<RecognizedLiveFrame[]>([]);
   const locationSampleRef = useRef<CachedLocationSample | null>(null);
   const locationPromiseRef = useRef<Promise<Location.LocationObject | null> | null>(null);
-  const liveRecognitionRef = useRef<{ code: string | null; consecutive: number }>({
-    code: null,
-    consecutive: 0,
-  });
+  const liveRecognitionRef = useRef<LiveRecognitionSample[]>([]);
 
   const handleCameraReady = async () => {
     setCameraReady(true);
@@ -308,8 +363,10 @@ export default function CameraScreen() {
     if (!isFocused || stage === 'code' || !cameraReady || !cameraLayout || !guideLayout || !guideBoxLayout) {
       setLiveQuality(null);
       setLiveStableCode(null);
-      liveRecognitionRef.current = { code: null, consecutive: 0 };
+      setLiveConsensus({ candidateCode: null, stableCode: null, votes: 0, samples: 0 });
+      liveRecognitionRef.current = [];
       liveFrameCacheRef.current = [];
+      recognizedFrameCacheRef.current = [];
       return undefined;
     }
 
@@ -320,7 +377,7 @@ export default function CameraScreen() {
       timer = setTimeout(() => void probe(), delay);
     };
 
-    const analyzePreparedFrame = (prepared: PreparedFrame) => {
+    const analyzePreparedFrame = (prepared: PreparedFrame, cachedFrame: CachedLiveFrame) => {
       if (liveAnalysisBusyRef.current) return;
       liveAnalysisBusyRef.current = true;
       setLiveChecking(true);
@@ -341,21 +398,37 @@ export default function CameraScreen() {
         .then(quality => {
           if (cancelled) return;
           const recognizedCode = quality.recognition_ready ? quality.predicted_code || null : null;
-          const previousRecognition = liveRecognitionRef.current;
-          const consecutive = recognizedCode
-            ? previousRecognition.code === recognizedCode
-              ? previousRecognition.consecutive + 1
-              : 1
-            : 0;
-          liveRecognitionRef.current = { code: recognizedCode, consecutive };
+          const now = Date.now();
+          const nextSamples = recognizedCode
+            ? [
+                ...liveRecognitionRef.current,
+                {
+                  code: recognizedCode,
+                  confidence: Number(quality.recognition_confidence || 0),
+                  capturedAtMs: now,
+                },
+              ]
+            : liveRecognitionRef.current;
+          if (recognizedCode) {
+            recognizedFrameCacheRef.current = [
+              ...recognizedFrameCacheRef.current.filter(
+                frame => now - frame.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS,
+              ),
+              { ...cachedFrame, recognizedCode },
+            ].slice(-BURST_EXTRA_FRAMES);
+          }
+          const summarized = summarizeLiveRecognition(nextSamples, now);
+          liveRecognitionRef.current = summarized.activeSamples;
           setLiveQuality(quality);
-          setLiveStableCode(recognizedCode && consecutive >= 2 ? recognizedCode : null);
+          setLiveConsensus(summarized.consensus);
+          setLiveStableCode(summarized.consensus.stableCode);
         })
         .catch(() => {
           if (cancelled) return;
-          setLiveQuality(null);
-          setLiveStableCode(null);
-          liveRecognitionRef.current = { code: null, consecutive: 0 };
+          const summarized = summarizeLiveRecognition(liveRecognitionRef.current);
+          liveRecognitionRef.current = summarized.activeSamples;
+          setLiveConsensus(summarized.consensus);
+          setLiveStableCode(summarized.consensus.stableCode);
         })
         .finally(() => {
           liveAnalysisBusyRef.current = false;
@@ -394,20 +467,21 @@ export default function CameraScreen() {
         const prepared = await prepareReadingFrame(photo, 0.58);
         temporaryUris.push(prepared.uri);
         const capturedAtMs = Date.now();
+        const cachedFrame: CachedLiveFrame = {
+          base64: prepared.base64,
+          width: prepared.width,
+          height: prepared.height,
+          sourceWidth: photo.width,
+          sourceHeight: photo.height,
+          capturedAt: new Date(capturedAtMs).toISOString(),
+          capturedAtMs,
+          crop: prepared.crop,
+        };
         liveFrameCacheRef.current = [
           ...liveFrameCacheRef.current.filter(item => capturedAtMs - item.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS),
-          {
-            base64: prepared.base64,
-            width: prepared.width,
-            height: prepared.height,
-            sourceWidth: photo.width,
-            sourceHeight: photo.height,
-            capturedAt: new Date(capturedAtMs).toISOString(),
-            capturedAtMs,
-            crop: prepared.crop,
-          },
+          cachedFrame,
         ].slice(-BURST_EXTRA_FRAMES);
-        analyzePreparedFrame(prepared);
+        analyzePreparedFrame(prepared, cachedFrame);
       } catch {
         // O preview continua tentando; falha de um quadro não bloqueia o toque.
       } finally {
@@ -425,6 +499,7 @@ export default function CameraScreen() {
       if (timer) clearTimeout(timer);
       liveProbeBusyRef.current = false;
       liveFrameCacheRef.current = [];
+      recognizedFrameCacheRef.current = [];
     };
   }, [blackDigits, cameraLayout, cameraReady, guideBoxLayout, guideLayout, hydrometerBrand, hydrometerModel, isFocused, lastReading, prepareReadingFrame, redDigits, stage]);
 
@@ -624,18 +699,35 @@ export default function CameraScreen() {
       const preflightQuality = stage === 'reading' || stage === 'dev_test'
         ? liveQuality
         : null;
-      if (preflightQuality && !preflightQuality.usable) {
-        const message = preflightQuality.recapture_reason || 'A foto pode exigir confirmação no dashboard.';
+      if (preflightQuality && !preflightQuality.usable && !liveStableCode) {
+        const message = 'A leitura ao vivo ainda não reuniu quadros suficientes. A captura continua válida para análise e conferência.';
         setCaptureGuidance(message);
-        showToast('Foto registrada com ressalva', `${message} Você pode continuar mesmo assim.`, 'warning');
+        showToast('Captura registrada', message, 'warning');
       }
 
-      const cachedLiveFrames = stage === 'reading' || stage === 'dev_test'
-        ? liveFrameCacheRef.current
-            .filter(item => Date.now() - item.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS)
-            .slice(-BURST_EXTRA_FRAMES)
-        : [];
+      const cachedLiveFrames = (() => {
+        if (stage !== 'reading' && stage !== 'dev_test') return [];
+        const now = Date.now();
+        const supportingFrames = recognizedFrameCacheRef.current
+          .filter(frame => (
+            now - frame.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS
+            && Boolean(liveStableCode)
+            && frame.recognizedCode === liveStableCode
+          ))
+          .slice(-3);
+        const supportingTimes = new Set(supportingFrames.map(frame => frame.capturedAtMs));
+        const recentFrames = liveFrameCacheRef.current
+          .filter(frame => (
+            now - frame.capturedAtMs <= LIVE_FRAME_MAX_AGE_MS
+            && !supportingTimes.has(frame.capturedAtMs)
+          ))
+          .slice(-(BURST_EXTRA_FRAMES - supportingFrames.length));
+        return [...supportingFrames, ...recentFrames]
+          .sort((left, right) => left.capturedAtMs - right.capturedAtMs)
+          .slice(-BURST_EXTRA_FRAMES);
+      })();
       liveFrameCacheRef.current = [];
+      recognizedFrameCacheRef.current = [];
       const framesBase64: string[] = cachedLiveFrames.map(item => item.base64);
       cachedLiveFrames.forEach((frame, index) => {
         frameMetadata.push({
@@ -649,6 +741,7 @@ export default function CameraScreen() {
           quality: 0.58,
           primary: false,
           source: 'live_preview_cache',
+          preview_recognized_code: 'recognizedCode' in frame ? frame.recognizedCode : null,
         });
       });
       const captureMetadata = {
@@ -662,6 +755,14 @@ export default function CameraScreen() {
         framing_contract: 'full-sensor-with-guide-metadata-v1',
         guide_crop: preparedPhoto.crop || null,
         reused_live_frames: cachedLiveFrames.length,
+        reused_consensus_frames: cachedLiveFrames.filter(frame => 'recognizedCode' in frame).length,
+        live_consensus: {
+          code: liveStableCode,
+          candidate_code: liveConsensus.candidateCode,
+          votes: liveConsensus.votes,
+          samples: liveConsensus.samples,
+          window_ms: LIVE_CONSENSUS_WINDOW_MS,
+        },
         quality_advisory: preflightQuality ? {
           usable: preflightQuality.usable,
           guidance_code: preflightQuality.guidance_code || null,
@@ -770,23 +871,18 @@ export default function CameraScreen() {
       : isInstallation
         ? 'Centralize a face do hidrometro e alinhe os numeros na faixa interna.'
         : 'Centralize todo o mostrador; a faixa interna deve atravessar somente os numeros. Os avisos não impedem a foto.';
-  const liveReady = Boolean(
-    liveQuality?.usable &&
-    liveStableCode,
-  );
-  const liveStatusText = liveChecking
-    ? liveStableCode
-      ? 'Confirmando estabilidade da leitura...'
-      : 'Analisando hidrômetro, visor e números...'
-    : liveReady
-      ? 'Leitura reconhecida em quadros consecutivos'
-      : liveQuality?.recognition_ready
-        ? 'Números detectados; confirmando em outro quadro...'
-        : liveQuality?.display_found
-          ? 'Visor localizado; estabilizando a leitura...'
-      : liveQuality?.recapture_reason
-        ? `Sugestão: ${liveQuality.recapture_reason}`
-        : 'Aguardando hidrômetro no enquadramento';
+  const liveReady = Boolean(liveStableCode);
+  const liveStatusText = liveReady
+    ? `Leitura ${liveStableCode} consistente em ${liveConsensus.votes} quadros`
+    : liveConsensus.candidateCode
+      ? `Leitura ${liveConsensus.candidateCode} encontrada ${liveConsensus.votes}x; coletando mais quadros...`
+      : liveQuality?.display_found || liveQuality?.meter_found
+        ? 'Hidrômetro e visor localizados; procurando consistência nos números...'
+        : liveQuality?.recapture_reason
+          ? 'Um quadro foi descartado; mantenha o hidrômetro visível e continue normalmente.'
+          : liveChecking
+            ? 'Capturando hidrômetro, visor e números ao vivo...'
+            : 'Captura contínua ativa; aponte para o hidrômetro';
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
@@ -888,17 +984,11 @@ export default function CameraScreen() {
             )}
 
             <Text style={styles.captureLabel}>
-              {liveChecking && !capturing
-                  ? 'Visão ao vivo verificando o visor'
-                : capturing && stage !== 'code'
+              {capturing && stage !== 'code'
                   ? 'Capturando sequência de evidências'
                   : stage === 'code'
                 ? 'QR automatico ou toque para digitar'
-                : stage === 'dev_test'
-                  ? 'Toque para testar visao'
-                  : isInstallation
-                    ? 'Toque para registrar instalacao'
-                    : 'Toque para fotografar a leitura'}
+                : 'Captura ao vivo ativa • toque quando quiser'}
             </Text>
           </View>
         </View>

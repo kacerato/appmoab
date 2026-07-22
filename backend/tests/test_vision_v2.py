@@ -134,6 +134,29 @@ def test_temporal_fusion_keeps_transition_state_and_requires_calibration():
     assert result.quality["temporal_fusion"]["calibrated"] is False
 
 
+def test_temporal_text_consensus_overrides_isolated_blur_advisory():
+    frames = [
+        _result("0090645", 0.72, text_evidence=True),
+        _result("0090645", 0.69, text_evidence=True),
+        _result("0090645", 0.75, text_evidence=True),
+    ]
+    for frame in frames:
+        frame.quality["usable"] = False
+        frame.quality["recapture_reason"] = "Possível movimento no quadro."
+
+    _, result = fuse_burst_results(
+        frames,
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+        previous_value=90.640,
+    )
+
+    assert result.predicted_code == "0090645"
+    assert result.decision == "confirm"
+    assert result.quality["temporal_fusion"]["consensus_valid"] is True
+
+
 def test_temporal_fusion_rejects_repeated_slot_only_hallucination():
     _, result = fuse_burst_results(
         [

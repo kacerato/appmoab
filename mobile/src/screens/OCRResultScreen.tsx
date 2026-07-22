@@ -76,9 +76,7 @@ export default function OCRResultScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
   const selectedRedDigits = Number(redDigits || 3);
-  const captureNeedsAttention = Boolean(
-    verdict?.quality?.usable === false || verdict?.decision === 'recapture',
-  );
+  const captureNeedsAttention = verdict?.decision === 'recapture';
 
   useEffect(() => {
     setLoading(true);
@@ -175,8 +173,8 @@ export default function OCRResultScreen() {
             <View style={[shared.card, { borderColor: colors.warning, borderWidth: 1 }] }>
               <Text style={[shared.sectionTitle, { color: colors.warning }]}>Sugestão para melhorar a leitura automática</Text>
               <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-                {verdict?.quality?.recapture_reason || 'A visão encontrou baixa qualidade nesta captura.'}
-                {' '}Você pode refazer a foto ou enviá-la assim mesmo para conferência no dashboard.
+                A visão não reuniu consenso suficiente entre os quadros desta captura.
+                {' '}A foto continua válida: você pode refazer ou enviá-la para conferência no dashboard.
               </Text>
             </View>
           )}
