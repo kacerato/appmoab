@@ -701,6 +701,23 @@ def _sequence_ocr_engine():
     return RapidOCR() if RapidOCR is not None else None
 
 
+def warmup_meter_vision_runtime() -> bool:
+    """Carrega e executa os modelos OCR antes da primeira captura de campo."""
+    engine = _sequence_ocr_engine()
+    if engine is None:
+        return False
+    sample = np.full((96, 420, 3), 235, dtype=np.uint8)
+    cv2.putText(sample, "0000000", (18, 72), cv2.FONT_HERSHEY_SIMPLEX, 1.9, (20, 20, 20), 4, cv2.LINE_AA)
+    try:
+        with _sequence_ocr_lock:
+            engine(sample, use_det=True, use_cls=False, use_rec=True)
+            engine(sample, use_det=False, use_cls=False, use_rec=True)
+    except Exception:
+        logger.exception("Não foi possível aquecer o OCR de hidrômetros")
+        return False
+    return True
+
+
 def _ocr_detect_items(image):
     engine = _sequence_ocr_engine()
     if engine is None:
@@ -1607,6 +1624,7 @@ class MeterVisionService:
         detector = _trained_display_detector()
         learned_detection = detector.detect(inspection_image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
+        display_source = "detector_onnx" if learned_detection is not None else "red_roller_anchor"
         if corners is None:
             corners = _red_roller_strip_candidate(inspection_image, resolved_red, resolved_black)
         if corners is None:
@@ -1618,7 +1636,8 @@ class MeterVisionService:
             )
         used_fallback = corners is None
         if corners is None:
-            corners, _ = _display_candidate(inspection_image)
+            corners, used_guide_fallback = _display_candidate(inspection_image)
+            display_source = "guide_fallback" if used_guide_fallback else "geometric_fallback"
         rectified, perspective = _rectify(inspection_image, corners)
         quality = _quality(rectified)
         quality.perspective = perspective
@@ -1639,6 +1658,16 @@ class MeterVisionService:
             float(np.linalg.norm(ordered[2] - ordered[1])),
         )
         display_area_ratio = (display_width * display_height) / max(float(width * height), 1.0)
+        display_left = max(0.0, min(float(point[0]) for point in ordered) / max(width, 1))
+        display_top = max(0.0, min(float(point[1]) for point in ordered) / max(height, 1))
+        display_right = min(1.0, max(float(point[0]) for point in ordered) / max(width, 1))
+        display_bottom = min(1.0, max(float(point[1]) for point in ordered) / max(height, 1))
+        display_bounds = {
+            "x": round(display_left, 6),
+            "y": round(display_top, 6),
+            "width": round(max(display_right - display_left, 0.0), 6),
+            "height": round(max(display_bottom - display_top, 0.0), 6),
+        }
 
         guidance_code = None
         if display_area_ratio < 0.008:
@@ -1672,6 +1701,8 @@ class MeterVisionService:
             "meter_found": face_detection is not None,
             "meter_confidence": face_detection.confidence if face_detection is not None else 0.0,
             "display_found": not used_fallback,
+            "display_source": display_source,
+            "display_bounds": display_bounds,
             "display_area_ratio": round(display_area_ratio, 6),
             "image_width": original_width,
             "image_height": original_height,

@@ -86,6 +86,9 @@ def test_quality_preflight_returns_actionable_contract():
     assert result["image_height"] == 420
     assert isinstance(result["meter_found"], bool)
     assert 0 <= result["meter_confidence"] <= 1
+    assert set(result["display_bounds"]) == {"x", "y", "width", "height"}
+    assert 0 <= result["display_bounds"]["x"] <= 1
+    assert 0 < result["display_bounds"]["width"] <= 1
     if not result["usable"]:
         assert result["guidance_code"]
         assert result["recapture_reason"]
@@ -296,6 +299,45 @@ def test_calibration_and_promotion_are_blocked_without_evidence():
 
 
 class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_live_presence_uses_fast_detector_without_ocr(self):
+        user = SimpleNamespace(id=uuid.uuid4())
+        request = HydrometerIdentifyRequest(
+            photo_base64=_synthetic_meter_data_uri(),
+            red_digits=3,
+            black_digits=4,
+        )
+        expected = {
+            "meter_found": True,
+            "display_found": True,
+            "display_bounds": {"x": 0.2, "y": 0.3, "width": 0.6, "height": 0.2},
+        }
+
+        with patch.object(
+            hydrometers_router.meter_vision_service,
+            "inspect_capture",
+            return_value=expected,
+        ) as inspect_capture:
+            result = await hydrometers_router.inspect_vision_presence(request, user)
+
+        self.assertEqual(result, expected)
+        inspect_capture.assert_called_once_with(
+            request.photo_base64,
+            red_digits=3,
+            black_digits=4,
+        )
+
+    def test_tap_burst_gets_three_full_ocr_probes(self):
+        indexes = hydrometers_router._expensive_probe_indexes(6, [
+            {"primary": True},
+            {"source": "tap_burst"},
+            {"source": "tap_burst"},
+            {"source": "live_preview_cache"},
+            {"source": "live_preview_cache"},
+            {"source": "live_preview_cache"},
+        ])
+
+        self.assertEqual(indexes, {0, 1, 2})
+
     async def test_live_preview_requires_textual_digit_evidence(self):
         user = SimpleNamespace(id=uuid.uuid4())
         request = HydrometerIdentifyRequest(

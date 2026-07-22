@@ -44,8 +44,8 @@ from app.utils.storage import build_public_upload_url, decode_base64_upload, sav
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
 
-_PREVIEW_CACHE_TTL_SECONDS = 15.0
-_PREVIEW_CACHE_MAX_ITEMS = 32
+_PREVIEW_CACHE_TTL_SECONDS = 45.0
+_PREVIEW_CACHE_MAX_ITEMS = 96
 _preview_result_cache: OrderedDict[str, tuple[float, VisionResult]] = OrderedDict()
 _preview_result_cache_lock = threading.Lock()
 
@@ -94,6 +94,25 @@ def _recall_preview_result(key: str) -> VisionResult | None:
             return None
         _preview_result_cache.move_to_end(key)
         return copy.deepcopy(result)
+
+
+def _expensive_probe_indexes(frame_count: int, frame_metadata: list[dict]) -> set[int]:
+    """Escolhe até três quadros independentes para OCR completo.
+
+    O burst disparado pelo toque tem prioridade. Quadros silenciosos continuam
+    contribuindo com detector/classificador leve, sem multiplicar a latência.
+    """
+    if frame_count <= 0:
+        return set()
+    preferred = [
+        index
+        for index, metadata in enumerate(frame_metadata[:frame_count])
+        if metadata.get("primary") is True or metadata.get("source") == "tap_burst"
+    ]
+    indexes = list(dict.fromkeys([0, *preferred]))[:3]
+    if len(indexes) < 2 and frame_count > 1:
+        indexes.append(frame_count - 1)
+    return set(indexes)
 
 
 def _meter_result_code(result: VisionResult, total_digits: int, red_digits: int) -> int | None:
@@ -389,6 +408,21 @@ async def store_kimi_vision_feedback(
     }
 
 
+@router.post("/vision-presence")
+async def inspect_vision_presence(
+    data: HydrometerIdentifyRequest,
+    user: User = Depends(get_current_user),
+):
+    """Localiza hidrômetro/visor sem OCR para conduzir o preview em tempo real."""
+    del user
+    return await asyncio.to_thread(
+        meter_vision_service.inspect_capture,
+        data.photo_base64,
+        red_digits=data.red_digits,
+        black_digits=data.black_digits,
+    )
+
+
 @router.post("/vision-quality")
 async def inspect_vision_capture(
     data: HydrometerIdentifyRequest,
@@ -449,9 +483,7 @@ async def kimi_vision_verdict(
 ):
     """Executa o motor local especializado; GLM, quando habilitado, fica apenas em sombra."""
     frames = [data.photo_base64, *data.frames_base64[:7]]
-    expensive_probe_indexes = {0}
-    if len(frames) > 1:
-        expensive_probe_indexes.add(len(frames) - 1)
+    expensive_probe_indexes = _expensive_probe_indexes(len(frames), data.frame_metadata)
 
     async def analyze_frame(index: int, frame: str) -> VisionResult:
         cache_key = _preview_cache_key(
@@ -497,8 +529,8 @@ async def kimi_vision_verdict(
         hydrometer_brand=data.hydrometer_brand,
         hydrometer_model=data.hydrometer_model,
     )
-    # Não dispara uma segunda rodada síncrona depois do toque. Se os dois
-    # probes completos e os quadros já analisados no preview não concordarem,
+    # Não dispara uma segunda rodada síncrona depois do toque. Se os três
+    # quadros prioritários do burst e os quadros leves não concordarem,
     # a captura segue para revisão no dashboard sem uma sugestão inventada.
     inference_id = uuid.uuid4()
     original_key = None
