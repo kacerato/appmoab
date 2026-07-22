@@ -27,6 +27,7 @@ from app.routers import (
 from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
 from app.services.efi_api import efi_service
+from app.services.meter_vision import _trained_classifier
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.middleware import performance_and_security_middleware
 from app.utils.schema_startup import STARTUP_DATA_LOCK_ID, run_schema_bootstrap
@@ -43,6 +44,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s v%s iniciando...", settings.app_name, settings.app_version)
+
+    vision_classifier = _trained_classifier()
+    if vision_classifier is None:
+        raise RuntimeError(
+            "Modelo de hidrômetros indisponível. O serviço não iniciará com OCR inseguro."
+        )
+    logger.info("Modelo de hidrômetros carregado pelo classificador KNN portátil")
 
     await run_schema_bootstrap(engine, Base.metadata.create_all, logger)
 
@@ -109,6 +117,8 @@ async def health_check():
         "app": settings.app_name,
         "version": settings.app_version,
         "revision": os.getenv("RAILWAY_GIT_COMMIT_SHA") or os.getenv("VERCEL_GIT_COMMIT_SHA") or "",
+        "vision_model_ready": _trained_classifier() is not None,
+        "vision_classifier": "portable_numpy_knn",
         "whatsapp_enabled": settings.whatsapp_enabled,
         "payment_provider": "efi",
         "efi_sandbox": settings.efi_sandbox,

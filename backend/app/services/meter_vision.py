@@ -531,26 +531,67 @@ def hog_features(slot):
     return hog.compute(normalized).reshape(1, -1).astype("float32")
 
 
-class _OpenCvKnnClassifier:
+class _PortableKnnClassifier:
+    """KNN de inferencia independente do modulo opcional ``cv2.ml``.
+
+    O artefato continua no formato OpenCV YAML, mas a leitura usa somente
+    ``FileStorage`` (parte do core já exigido por todo o pipeline visual). A
+    busca dos vizinhos e feita em NumPy, garantindo o mesmo caminho no
+    desenvolvimento e nas imagens headless usadas em producao.
+    """
+
     def __init__(self, path: str):
-        loader = getattr(cv2.ml, "KNearest_load", None)
-        if callable(loader):
-            self.model = loader(path)
-        else:
-            # Algumas builds headless expõem somente o carregador herdado na
-            # instância. `load` devolve um novo modelo; não treina o objeto-base.
-            base_model = cv2.ml.KNearest_create()
-            self.model = base_model.load(path)
-        if self.model is None or not self.model.isTrained():
+        storage = cv2.FileStorage(path, cv2.FILE_STORAGE_READ)
+        try:
+            if not storage.isOpened():
+                raise RuntimeError("O arquivo do modelo KNN não pôde ser aberto.")
+            root = storage.getNode("opencv_ml_knn")
+            samples = root.getNode("samples").mat()
+            responses = root.getNode("responses").mat()
+        finally:
+            storage.release()
+        if samples is None or responses is None or samples.size == 0 or responses.size == 0:
             raise RuntimeError("O arquivo KNN foi aberto, mas não contém um modelo treinado.")
+        self.samples = np.ascontiguousarray(samples, dtype=np.float32)
+        self.responses = np.asarray(responses, dtype=np.float32).reshape(-1)
+        if self.samples.shape[0] != self.responses.shape[0]:
+            raise RuntimeError("O modelo KNN contém quantidades incompatíveis de amostras e respostas.")
+        self.sample_squared_norms = np.einsum(
+            "ij,ij->i",
+            self.samples,
+            self.samples,
+            optimize=True,
+        )
+
+    def is_trained(self) -> bool:
+        return bool(self.samples.size and self.responses.size)
 
     def classify(self, slot) -> tuple[int | None, float, list[float]]:
-        features = hog_features(slot)
-        _, result, neighbours, distances = self.model.findNearest(features, k=5)
-        digit = int(round(float(result[0, 0])))
-        votes = [int(round(float(value))) for value in neighbours[0]]
+        features = hog_features(slot).reshape(-1)
+        if features.shape[0] != self.samples.shape[1]:
+            raise RuntimeError(
+                f"Vetor HOG incompatível: recebido {features.shape[0]}, esperado {self.samples.shape[1]}."
+            )
+        # ||a-b||² = ||a||² + ||b||² - 2a.b evita materializar uma matriz de
+        # diferenças em cada slot e usa a multiplicação vetorial otimizada do NumPy.
+        squared_distances = (
+            self.sample_squared_norms
+            + float(np.dot(features, features))
+            - 2.0 * np.dot(self.samples, features)
+        )
+        squared_distances = np.maximum(squared_distances, 0.0)
+        neighbour_count = min(5, squared_distances.shape[0])
+        indices = np.argpartition(squared_distances, neighbour_count - 1)[:neighbour_count]
+        indices = indices[np.argsort(squared_distances[indices], kind="stable")]
+        votes = [int(round(float(self.responses[index]))) for index in indices]
+        labels, counts = np.unique(np.asarray(votes, dtype=np.int16), return_counts=True)
+        maximum_votes = int(counts.max())
+        tied = {int(label) for label, count in zip(labels, counts) if int(count) == maximum_votes}
+        # OpenCV resolve empate de classes pelo menor rótulo. Reproduzir isso
+        # mantém o artefato existente bit-a-bit compatível entre ambientes.
+        digit = min(tied)
         vote_share = votes.count(digit) / max(len(votes), 1)
-        distance_score = math.exp(-float(distances[0, 0]) / 120.0)
+        distance_score = math.exp(-float(squared_distances[indices[0]]) / 120.0)
         confidence = _clamp(vote_share * 0.75 + distance_score * 0.25)
         scores = [votes.count(value) / max(len(votes), 1) for value in range(10)]
         return digit, confidence, scores
@@ -566,12 +607,12 @@ def _trained_classifier():
         return None
     try:
         if path.lower().endswith((".yml", ".yaml", ".xml")) and cv2 is not None:
-            return _OpenCvKnnClassifier(path)
+            return _PortableKnnClassifier(path)
         if ort is None:
             return None
         return _OnnxClassifier(path)
     except Exception:
-        model_kind = "KNN do OpenCV" if path.lower().endswith((".yml", ".yaml", ".xml")) else "ONNX"
+        model_kind = "KNN portátil" if path.lower().endswith((".yml", ".yaml", ".xml")) else "ONNX"
         logger.exception("Nao foi possivel carregar o modelo %s de hidrometros", model_kind)
         return None
 
@@ -1339,71 +1380,11 @@ def _template_classify(slot) -> tuple[int | None, float, list[float]]:
     return best, confidence, scores
 
 
-@lru_cache(maxsize=1)
-def _synthetic_knn_classifier():
-    """Classificador inicial treinado em fontes e degradacoes variadas.
-
-    Ele e apenas o bootstrap ate o modelo aprendido com capturas confirmadas
-    assumir. Diferente de comparar com uma unica fonte Arial, cobre serifas,
-    condensacao, deslocamento vertical, leve rotacao, blur e espessura.
-    """
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf",
-        "C:/Windows/Fonts/times.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/ARIALN.TTF",
-    ]
-    font_paths = [path for path in font_paths if os.path.exists(path)]
-    if not font_paths or cv2 is None or np is None:
-        return None
-    features, labels = [], []
-    for font_path in font_paths:
-        for digit in range(10):
-            for size in (64, 72, 80):
-                font = ImageFont.truetype(font_path, size=size)
-                for dx, dy, angle in ((-2, -2, -2), (0, 0, 0), (2, 2, 2), (1, -3, 1)):
-                    canvas = Image.new("L", (72, 108), 255)
-                    draw = ImageDraw.Draw(canvas)
-                    bbox = draw.textbbox((0, 0), str(digit), font=font)
-                    x = (72 - (bbox[2] - bbox[0])) // 2 - bbox[0] + dx
-                    y = (108 - (bbox[3] - bbox[1])) // 2 - bbox[1] + dy
-                    draw.text((x, y), str(digit), fill=0, font=font)
-                    canvas = canvas.rotate(angle, resample=Image.Resampling.BILINEAR, fillcolor=255)
-                    gray = np.asarray(canvas)
-                    if angle:
-                        gray = cv2.GaussianBlur(gray, (3, 3), 0.45)
-                    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-                    features.append(hog_features(bgr).reshape(-1))
-                    labels.append(digit)
-    model = cv2.ml.KNearest_create()
-    model.train(np.asarray(features, dtype=np.float32), cv2.ml.ROW_SAMPLE, np.asarray(labels, dtype=np.float32))
-    return model
-
-
-def _synthetic_classify(slot) -> tuple[int | None, float, list[float]]:
-    model = _synthetic_knn_classifier()
-    if model is None:
-        return _template_classify(slot)
-    features = hog_features(slot)
-    _, result, neighbours, distances = model.findNearest(features, k=7)
-    digit = int(round(float(result[0, 0])))
-    votes = [int(round(float(value))) for value in neighbours[0]]
-    scores = [votes.count(value) / len(votes) for value in range(10)]
-    vote_share = scores[digit]
-    margin = vote_share - sorted(scores, reverse=True)[1]
-    distance_score = math.exp(-float(np.mean(distances[0])) / 850.0)
-    confidence = _clamp(vote_share * 0.62 + max(margin, 0) * 0.18 + distance_score * 0.20)
-    return digit, confidence, scores
-
-
 def _classify(slot) -> tuple[int | None, float, list[float]]:
     classifier = _trained_classifier()
     if classifier:
         return classifier.classify(slot)
-    return _synthetic_classify(slot)
+    return None, 0.0, [0.0] * 10
 
 
 def _slot_observation(slot, position: int) -> DigitObservation:
@@ -1550,17 +1531,32 @@ class MeterVisionService:
                 "guidance_code": "decode_failed",
             }
 
+        original_height, original_width = image.shape[:2]
+        # O preflight roda antes de cada frame do burst. Processar uma foto de
+        # 5-12 MP inteira não melhora foco/perspectiva, mas multiplica CPU no
+        # container. Mantemos a proporção e 1200 px no maior lado, resolução
+        # suficiente para a âncora vermelha e para o contorno do visor.
+        inspection_image = image
+        maximum_side = max(original_height, original_width)
+        if maximum_side > 1200:
+            scale = 1200.0 / maximum_side
+            inspection_image = cv2.resize(
+                image,
+                (max(1, int(original_width * scale)), max(1, int(original_height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+
         resolved_red = red_digits if red_digits is not None and red_digits >= 0 else 3
         resolved_black = black_digits or 4
         detector = _trained_display_detector()
-        learned_detection = detector.detect(image) if detector is not None else None
+        learned_detection = detector.detect(inspection_image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
         if corners is None:
-            corners = _red_roller_strip_candidate(image, resolved_red, resolved_black)
+            corners = _red_roller_strip_candidate(inspection_image, resolved_red, resolved_black)
         used_fallback = corners is None
         if corners is None:
-            corners, _ = _display_candidate(image)
-        rectified, perspective = _rectify(image, corners)
+            corners, _ = _display_candidate(inspection_image)
+        rectified, perspective = _rectify(inspection_image, corners)
         quality = _quality(rectified)
         quality.perspective = perspective
         # O preflight deve barrar somente defeitos inequívocos. O motor completo
@@ -1569,7 +1565,7 @@ class MeterVisionService:
         quality.usable = True
         quality.recapture_reason = None
 
-        height, width = image.shape[:2]
+        height, width = inspection_image.shape[:2]
         ordered = _order_corners(corners)
         display_width = max(
             float(np.linalg.norm(ordered[1] - ordered[0])),
@@ -1612,8 +1608,10 @@ class MeterVisionService:
             "guidance_code": guidance_code,
             "display_found": not used_fallback,
             "display_area_ratio": round(display_area_ratio, 6),
-            "image_width": width,
-            "image_height": height,
+            "image_width": original_width,
+            "image_height": original_height,
+            "inspection_width": width,
+            "inspection_height": height,
         }
 
     def analyze(

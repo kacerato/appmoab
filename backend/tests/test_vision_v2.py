@@ -74,6 +74,24 @@ def test_quality_preflight_returns_actionable_contract():
         assert result["recapture_reason"]
 
 
+def test_quality_preflight_downscales_large_frames_but_reports_original_dimensions():
+    image = np.full((1800, 3000, 3), 210, dtype=np.uint8)
+    cv2.rectangle(image, (400, 560), (2600, 1240), (15, 15, 15), -1)
+    cv2.putText(image, "0012345", (510, 1070), cv2.FONT_HERSHEY_SIMPLEX, 8.0, (250, 250, 250), 22, cv2.LINE_AA)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+
+    result = meter_vision_service.inspect_capture(
+        base64.b64encode(encoded.tobytes()).decode(),
+        red_digits=3,
+        black_digits=4,
+    )
+
+    assert result["image_width"] == 3000
+    assert result["image_height"] == 1800
+    assert max(result["inspection_width"], result["inspection_height"]) == 1200
+
+
 def test_temporal_fusion_keeps_transition_state_and_requires_calibration():
     _, result = fuse_burst_results(
         [

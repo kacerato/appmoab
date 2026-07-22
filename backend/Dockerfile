@@ -19,6 +19,10 @@ COPY . .
 
 RUN mkdir -p /app/uploads /app/certs
 
+# Impede publicar uma imagem incapaz de abrir o classificador embarcado. O
+# runtime usa FileStorage + NumPy e não depende do módulo opcional cv2.ml.
+RUN python -c "from app.services.meter_vision import _PortableKnnClassifier; c = _PortableKnnClassifier('/app/app/assets/meter-field-v3-20260622.yml'); assert c.is_trained()"
+
 ENV PORT=8000
 
 CMD ["python", "startup.py"]

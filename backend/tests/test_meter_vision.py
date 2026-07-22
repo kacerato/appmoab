@@ -11,7 +11,7 @@ from app.services.invoice_documents import validate_receipt_upload
 from app.services.meter_vision import (
     DigitObservation,
     VisionResult,
-    _OpenCvKnnClassifier,
+    _PortableKnnClassifier,
     _candidate_prefixes_from_digits,
     _candidate_sequences_from_digits,
     _decode_image,
@@ -85,13 +85,30 @@ def test_bundled_field_model_and_red_roller_anchor_are_available():
     assert corners.shape == (4, 2)
 
 
-def test_knn_model_loads_when_opencv_static_loader_is_missing():
+def test_knn_model_loads_without_opencv_ml_module():
     model_path = Path(__file__).parents[1] / "app" / "assets" / "meter-field-v3-20260622.yml"
 
-    with patch.object(cv2.ml, "KNearest_load", None):
-        classifier = _OpenCvKnnClassifier(str(model_path))
+    with patch.object(cv2, "ml", None):
+        classifier = _PortableKnnClassifier(str(model_path))
 
-    assert classifier.model.isTrained()
+    assert classifier.is_trained()
+
+
+def test_complete_decoder_does_not_touch_opencv_ml_module():
+    _trained_classifier.cache_clear()
+    try:
+        with patch.object(cv2, "ml", None):
+            classifier = _trained_classifier()
+            result = meter_vision_service.analyze(
+                _synthetic_meter_data_uri(),
+                red_digits=3,
+                black_digits=4,
+            )
+    finally:
+        _trained_classifier.cache_clear()
+
+    assert isinstance(classifier, _PortableKnnClassifier)
+    assert "trained_model_unavailable" not in result.flags
 
 
 def test_broken_primary_model_never_falls_back_to_unsafe_suggestion():
