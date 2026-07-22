@@ -25,7 +25,13 @@ def _synthetic_meter_data_uri() -> str:
     return base64.b64encode(encoded.tobytes()).decode()
 
 
-def _result(code: str, confidence: float, *, transition: bool = False) -> VisionResult:
+def _result(
+    code: str,
+    confidence: float,
+    *,
+    transition: bool = False,
+    text_evidence: bool = True,
+) -> VisionResult:
     digits = []
     for position, digit in enumerate(code):
         observation = DigitObservation(
@@ -51,10 +57,19 @@ def _result(code: str, confidence: float, *, transition: bool = False) -> Vision
         red_digits=3,
         black_digits=4,
         model_version="test",
-        quality={"usable": True, "blur": 0.1, "glare": 0.0, "perspective": 0.0},
+        quality={
+            "usable": True,
+            "blur": 0.1,
+            "glare": 0.0,
+            "perspective": 0.0,
+            "sequence_ocr": {
+                "digits": code if text_evidence else None,
+                "confidence": 0.91 if text_evidence else 0.0,
+            },
+        },
         digits=digits,
         alternatives=[],
-        flags=[],
+        flags=["sequence_exact"] if text_evidence else [],
     )
 
 
@@ -119,6 +134,63 @@ def test_temporal_fusion_keeps_transition_state_and_requires_calibration():
     assert result.quality["temporal_fusion"]["calibrated"] is False
 
 
+def test_temporal_fusion_rejects_repeated_slot_only_hallucination():
+    _, result = fuse_burst_results(
+        [
+            _result("5030441", 0.72, text_evidence=False),
+            _result("5030441", 0.69, text_evidence=False),
+            _result("5030441", 0.74, text_evidence=False),
+        ],
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+    )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert result.confidence == 0.0
+    assert result.decision == "confirm"
+    assert "burst_insufficient_text_evidence" in result.flags
+    assert result.quality["temporal_fusion"]["rejected_candidate"] == "5030441"
+
+
+def test_temporal_fusion_does_not_let_one_weak_text_frame_anchor_the_burst():
+    _, result = fuse_burst_results(
+        [
+            _result("0000000", 0.72, text_evidence=False),
+            _result("0090045", 0.61, text_evidence=True),
+            _result("1471009", 0.76, text_evidence=False),
+        ],
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+    )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert "burst_insufficient_text_evidence" in result.flags
+    assert result.quality["temporal_fusion"]["text_evidence_frames"] == 1
+
+
+def test_temporal_fusion_reapplies_history_guard_after_consensus():
+    _, result = fuse_burst_results(
+        [
+            _result("5030441", 0.90),
+            _result("5030441", 0.88),
+            _result("5030441", 0.92),
+        ],
+        selected_index=2,
+        red_digits=3,
+        black_digits=4,
+        previous_value=90.645,
+    )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert "implausible_consumption_jump" in result.flags
+    assert result.quality["temporal_fusion"]["rejected_candidate"] == "5030441"
+
+
 def test_capture_contract_limits_burst_and_accepts_slot_labels():
     request = HydrometerIdentifyRequest(
         photo_base64="abc",
@@ -163,6 +235,34 @@ def test_calibration_and_promotion_are_blocked_without_evidence():
 
 
 class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_live_preview_requires_textual_digit_evidence(self):
+        user = SimpleNamespace(id=uuid.uuid4())
+        request = HydrometerIdentifyRequest(
+            photo_base64=_synthetic_meter_data_uri(),
+            red_digits=3,
+            black_digits=4,
+            previous_value=90.640,
+        )
+
+        with patch.object(
+            hydrometers_router.meter_vision_service,
+            "analyze",
+            return_value=_result("0090645", 0.91, text_evidence=True),
+        ):
+            ready = await hydrometers_router.inspect_vision_capture(request, user)
+
+        with patch.object(
+            hydrometers_router.meter_vision_service,
+            "analyze",
+            return_value=_result("5030441", 0.91, text_evidence=False),
+        ):
+            rejected = await hydrometers_router.inspect_vision_capture(request, user)
+
+        self.assertTrue(ready["recognition_ready"])
+        self.assertEqual(ready["predicted_code"], "0090645")
+        self.assertFalse(rejected["recognition_ready"])
+        self.assertIsNone(rejected["predicted_code"])
+
     async def test_endpoint_uses_supported_meter_service_arguments(self):
         result = _result("0012345", 0.91)
         db = MagicMock()

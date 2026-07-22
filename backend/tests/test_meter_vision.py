@@ -239,10 +239,14 @@ def test_burst_consensus_uses_median_for_partial_last_digit():
             red_digits=3,
             black_digits=4,
             model_version="test",
-            quality={"usable": True, "blur": 0.1},
+            quality={
+                "usable": True,
+                "blur": 0.1,
+                "sequence_ocr": {"digits": code, "confidence": 0.91},
+            },
             digits=[{"position": index, "value": int(digit), "confidence": confidence} for index, digit in enumerate(code)],
             alternatives=[],
-            flags=[],
+            flags=["sequence_exact"],
         )
 
     selected_index, selected = _apply_burst_consensus(

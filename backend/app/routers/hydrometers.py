@@ -33,7 +33,7 @@ from app.schemas.hydrometer import (
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.services.meter_vision import VisionResult, meter_vision_service
-from app.services.vision_decision import fuse_burst_results
+from app.services.vision_decision import fuse_burst_results, has_textual_meter_evidence
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
 
@@ -338,14 +338,41 @@ async def inspect_vision_capture(
     data: HydrometerIdentifyRequest,
     user: User = Depends(get_current_user),
 ):
-    """Valida foco, reflexo, distância e perspectiva sem executar OCR."""
+    """Valida a foto e só sinaliza leitura pronta com evidência dos dígitos."""
     del user
-    return await asyncio.to_thread(
-        meter_vision_service.inspect_capture,
+    result = await asyncio.to_thread(
+        meter_vision_service.analyze,
         data.photo_base64,
         red_digits=data.red_digits,
         black_digits=data.black_digits,
+        previous_value=data.previous_value,
+        expensive_ocr=True,
+        hydrometer_brand=data.hydrometer_brand,
+        hydrometer_model=data.hydrometer_model,
     )
+    quality = dict(result.quality or {})
+    total_digits = max(3, min(int(data.black_digits or 4) + int(data.red_digits or 3), 10))
+    recognition_ready = bool(
+        result.predicted_code
+        and has_textual_meter_evidence(result, total_digits)
+        and "unsafe_prediction_rejected" not in result.flags
+    )
+    display_detection = quality.get("display_detection") or {}
+    meter_detection = quality.get("meter_detection") or {}
+    display_source = display_detection.get("source")
+    return {
+        **quality,
+        "display_found": bool(
+            recognition_ready
+            or display_source not in {None, "guide_fallback", "geometric_fallback"}
+        ),
+        "meter_found": bool(meter_detection.get("found")),
+        "meter_confidence": float(meter_detection.get("confidence") or 0.0),
+        "recognition_ready": recognition_ready,
+        "predicted_code": result.predicted_code if recognition_ready else None,
+        "recognition_confidence": result.confidence if recognition_ready else 0.0,
+        "recognition_flags": result.flags,
+    }
 
 
 @router.post("/vision-verdict")

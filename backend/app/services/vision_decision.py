@@ -133,6 +133,104 @@ def _result_code(result: VisionResult, *, total_digits: int, red_digits: int) ->
     return str(raw).zfill(total_digits)[-total_digits:]
 
 
+def has_textual_meter_evidence(result: VisionResult, total_digits: int) -> bool:
+    """Distingue leitura do visor de um palpite produzido apenas pelos slots.
+
+    O classificador posicional sempre devolve alguma classe, mesmo quando o ROI
+    contém borda, texto da carcaça ou fundo. Para um burst virar sugestão é
+    necessário que pelo menos um frame também reconheça a sequência mecânica
+    ou uma das recuperações de cauda com seus próprios gates de confiança.
+    """
+
+    if result.predicted_code is None and result.predicted_value is None:
+        return False
+
+    trusted_flags = {
+        "sequence_exact",
+        "sequence_exact_slot_guard",
+        "sequence_missing_transition",
+        "sequence_removed_separator",
+        "sequence_removed_separators",
+        "full_frame_sequence_exact",
+        "full_frame_sequence_normalized",
+        "ocr_missing_tail_slot",
+        "ocr_meter_tail_slot",
+        "meter_unit_tail_recovery",
+        "ocr_transition_geometry",
+        "ocr_transition_tail_recovery",
+    }
+    if trusted_flags.intersection(result.flags or []):
+        return True
+
+    quality = result.quality or {}
+    checks = (
+        ("sequence_ocr", 0.56, {total_digits - 1, total_digits, total_digits + 1}),
+        ("full_frame_ocr", 0.60, {total_digits}),
+        ("missing_tail_ocr", 0.66, {total_digits}),
+        ("meter_tail_ocr", 0.58, {total_digits}),
+    )
+    for key, minimum_confidence, allowed_lengths in checks:
+        evidence = quality.get(key) or {}
+        digits = "".join(character for character in str(evidence.get("digits") or "") if character.isdigit())
+        if len(digits) in allowed_lengths and float(evidence.get("confidence") or 0.0) >= minimum_confidence:
+            return True
+    return False
+
+
+def _history_rejection_reason(code: str, *, red_digits: int, previous_value: float | None) -> str | None:
+    """Reaplica o limite operacional depois da fusão temporal."""
+
+    if previous_value is None:
+        return None
+    value = int(code) / (10 ** max(red_digits, 0))
+    delta = value - float(previous_value)
+    if delta >= 0:
+        if delta > max(100.0, abs(float(previous_value)) * 0.5):
+            return "implausible_consumption_jump"
+        return None
+
+    rollover_limit = 10 ** max(len(code) - max(red_digits, 0), 1)
+    rollover_allowed = previous_value >= rollover_limit * 0.90 and value <= rollover_limit * 0.10
+    return None if rollover_allowed else "below_previous_reading"
+
+
+def _reject_burst_candidate(
+    results: list[VisionResult],
+    *,
+    selected_index: int,
+    reason: str,
+    rejected_code: str | None,
+    frame_codes: list[str],
+    text_evidence_frames: int,
+) -> tuple[int, VisionResult]:
+    selected = copy.deepcopy(results[selected_index])
+    selected.predicted_code = None
+    selected.predicted_value = None
+    selected.alternatives = []
+    selected.confidence = 0.0
+    selected.calibrated_confidence = 0.0
+    selected.auto_fill_allowed = False
+    selected.decision = "confirm" if selected.quality.get("usable", True) else "recapture"
+    selected.flags = list(dict.fromkeys([
+        "burst_candidate_rejected",
+        reason,
+        *selected.flags,
+    ]))
+    selected.quality = {
+        **selected.quality,
+        "temporal_fusion": {
+            "decoder_version": DECODER_VERSION,
+            "status": "rejected",
+            "reason": reason,
+            "rejected_candidate": rejected_code,
+            "frame_codes": frame_codes,
+            "frames_used": len(results),
+            "text_evidence_frames": text_evidence_frames,
+        },
+    }
+    return selected_index, selected
+
+
 def _normalize_distribution(values: list[float]) -> list[float]:
     safe = [max(float(value), 0.0) for value in values[:10]]
     safe.extend([0.0] * (10 - len(safe)))
@@ -266,14 +364,30 @@ def fuse_burst_results(
         selected.decision = "recapture" if not selected.quality.get("usable", True) else "confirm"
         return selected_index, selected
 
+    per_frame_codes = [
+        code
+        for result in eligible
+        if (code := _result_code(result, total_digits=total_digits, red_digits=red_digits)) is not None
+    ]
+    text_evidence_frames = sum(has_textual_meter_evidence(result, total_digits) for result in eligible)
+    if text_evidence_frames < 2:
+        return _reject_burst_candidate(
+            results,
+            selected_index=selected_index,
+            reason="burst_insufficient_text_evidence",
+            rejected_code=_result_code(
+                results[selected_index],
+                total_digits=total_digits,
+                red_digits=red_digits,
+            ),
+            frame_codes=per_frame_codes,
+            text_evidence_frames=text_evidence_frames,
+        )
+
     log_scores = [[0.0] * 10 for _ in range(total_digits)]
     weights = [0.0] * total_digits
-    per_frame_codes: list[str] = []
     for result in eligible:
         frame_weight = _quality_weight(result)
-        result_code = _result_code(result, total_digits=total_digits, red_digits=red_digits)
-        if result_code:
-            per_frame_codes.append(result_code)
         for position, observation in enumerate(result.digits[:total_digits]):
             observation_weight = frame_weight * max(0.15, float(observation.get("visibility") or 1.0))
             distribution = _observation_distribution(observation)
@@ -346,6 +460,21 @@ def fuse_burst_results(
         # excessivamente confiante do que uma votação ponderada isolada.
         selected_code = robust_consensus_code
 
+    history_rejection = _history_rejection_reason(
+        selected_code,
+        red_digits=red_digits,
+        previous_value=previous_value,
+    )
+    if history_rejection is not None:
+        return _reject_burst_candidate(
+            results,
+            selected_index=selected_index,
+            reason=history_rejection,
+            rejected_code=selected_code,
+            frame_codes=per_frame_codes,
+            text_evidence_frames=text_evidence_frames,
+        )
+
     best_result_index, best_result = max(
         enumerate(results),
         key=lambda item: (
@@ -417,6 +546,7 @@ def fuse_burst_results(
         "temporal_fusion": {
             "decoder_version": DECODER_VERSION,
             "frames_used": len(eligible),
+            "text_evidence_frames": text_evidence_frames,
             "selected": selected_code,
             "frame_codes": per_frame_codes,
             "transitions": {

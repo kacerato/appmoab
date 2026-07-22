@@ -19,7 +19,7 @@ const BURST_INTERVAL_MS = 120;
 const LIVE_VISION_INTERVAL_MS = 2800;
 const LIVE_VISION_READY_INTERVAL_MS = 6500;
 const LIVE_VISION_START_DELAY_MS = 900;
-const READING_CROP_PADDING_RATIO = 0.18;
+const READING_CROP_PADDING_RATIO = 0.06;
 
 interface VisionQualityResult {
   usable: boolean;
@@ -33,6 +33,9 @@ interface VisionQualityResult {
   display_area_ratio?: number;
   display_found?: boolean;
   meter_found?: boolean;
+  recognition_ready?: boolean;
+  predicted_code?: string | null;
+  recognition_confidence?: number;
 }
 
 interface CapturedFrame {
@@ -169,12 +172,12 @@ export default function CameraScreen() {
   const [cameraReady, setCameraReady] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [resolvingQr, setResolvingQr] = useState(false);
-  const [qualityChecking, setQualityChecking] = useState(false);
   const [liveChecking, setLiveChecking] = useState(false);
   const [torchEnabled, setTorchEnabled] = useState(false);
   const [pictureSize, setPictureSize] = useState<string | null>(null);
   const [captureGuidance, setCaptureGuidance] = useState<string | null>(null);
   const [liveQuality, setLiveQuality] = useState<VisionQualityResult | null>(null);
+  const [liveStableCode, setLiveStableCode] = useState<string | null>(null);
   const [cameraLayout, setCameraLayout] = useState<CameraSize | null>(null);
   const [guideLayout, setGuideLayout] = useState<CameraRect | null>(null);
   const [guideBoxLayout, setGuideBoxLayout] = useState<CameraRect | null>(null);
@@ -184,6 +187,10 @@ export default function CameraScreen() {
   const captureBusyRef = useRef(false);
   const liveProbeBusyRef = useRef(false);
   const liveCameraCaptureRef = useRef<Promise<void> | null>(null);
+  const liveRecognitionRef = useRef<{ code: string | null; consecutive: number }>({
+    code: null,
+    consecutive: 0,
+  });
 
   const handleCameraReady = async () => {
     setCameraReady(true);
@@ -258,6 +265,8 @@ export default function CameraScreen() {
   useEffect(() => {
     if (!isFocused || stage === 'code' || !cameraReady || !cameraLayout || !guideLayout || !guideBoxLayout) {
       setLiveQuality(null);
+      setLiveStableCode(null);
+      liveRecognitionRef.current = { code: null, consecutive: 0 };
       return undefined;
     }
 
@@ -304,19 +313,36 @@ export default function CameraScreen() {
           stage,
           red_digits: redDigits,
           black_digits: blackDigits || 4,
+          previous_value: lastReading,
+          hydrometer_brand: hydrometerBrand || null,
+          hydrometer_model: hydrometerModel || null,
           capture_metadata: {
             capture_pipeline: 'mobile-live-guide-v3',
             guide_crop: prepared.crop || null,
           },
         }, 12000);
         if (!cancelled) {
+          const recognizedCode = quality.recognition_ready ? quality.predicted_code || null : null;
+          const previousRecognition = liveRecognitionRef.current;
+          const consecutive = recognizedCode
+            ? previousRecognition.code === recognizedCode
+              ? previousRecognition.consecutive + 1
+              : 1
+            : 0;
+          liveRecognitionRef.current = { code: recognizedCode, consecutive };
+          const stableCode = recognizedCode && consecutive >= 2 ? recognizedCode : null;
           setLiveQuality(quality);
-          if (quality.usable && quality.display_found !== false) {
+          setLiveStableCode(stableCode);
+          if (quality.usable && stableCode) {
             nextDelay = LIVE_VISION_READY_INTERVAL_MS;
           }
         }
       } catch {
-        if (!cancelled) setLiveQuality(null);
+        if (!cancelled) {
+          setLiveQuality(null);
+          setLiveStableCode(null);
+          liveRecognitionRef.current = { code: null, consecutive: 0 };
+        }
       } finally {
         await Promise.all(
           [...new Set(temporaryUris)].map(uri => FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined)),
@@ -335,7 +361,7 @@ export default function CameraScreen() {
       if (timer) clearTimeout(timer);
       liveProbeBusyRef.current = false;
     };
-  }, [blackDigits, cameraLayout, cameraReady, guideBoxLayout, guideLayout, isFocused, prepareReadingFrame, redDigits, stage]);
+  }, [blackDigits, cameraLayout, cameraReady, guideBoxLayout, guideLayout, hydrometerBrand, hydrometerModel, isFocused, lastReading, prepareReadingFrame, redDigits, stage]);
 
   const activeHydrometerId = hydrometerId || expectedHydrometerId;
   const activeHydrometerCode = hydrometerCode || expectedHydrometerCode;
@@ -530,33 +556,13 @@ export default function CameraScreen() {
         primary: true,
       }];
 
-      let preflightQuality: VisionQualityResult | null = null;
-      if (stage === 'reading' || stage === 'dev_test') {
-        setQualityChecking(true);
-        try {
-          preflightQuality = await api.post<VisionQualityResult>('/hydrometers/vision-quality', {
-            photo_base64: preparedPhoto.base64,
-            stage,
-            red_digits: redDigits,
-            black_digits: blackDigits || 4,
-            capture_metadata: {
-              capture_pipeline: 'mobile-guided-crop-v4-advisory',
-              guide_crop: preparedPhoto.crop || null,
-            },
-          }, 20000);
-        } catch {
-          const message = 'Não foi possível avaliar a foto agora. Ela será enviada normalmente para análise.';
-          setCaptureGuidance(message);
-          showToast('Avaliação indisponível', message, 'warning');
-        } finally {
-          setQualityChecking(false);
-        }
-
-        if (preflightQuality && !preflightQuality.usable) {
-          const message = preflightQuality.recapture_reason || 'A foto pode exigir confirmação no dashboard.';
-          setCaptureGuidance(message);
-          showToast('Foto registrada com ressalva', `${message} Você pode continuar mesmo assim.`, 'warning');
-        }
+      const preflightQuality = stage === 'reading' || stage === 'dev_test'
+        ? liveQuality
+        : null;
+      if (preflightQuality && !preflightQuality.usable) {
+        const message = preflightQuality.recapture_reason || 'A foto pode exigir confirmação no dashboard.';
+        setCaptureGuidance(message);
+        showToast('Foto registrada com ressalva', `${message} Você pode continuar mesmo assim.`, 'warning');
       }
 
       const framesBase64: string[] = [];
@@ -701,20 +707,24 @@ export default function CameraScreen() {
   const guideText = stage === 'code'
     ? 'Aponte para o QR Code impresso no ponto do cliente. Se precisar, toque para fotografar e digitar.'
     : stage === 'dev_test'
-      ? 'Mantenha o hidrômetro visível. A faixa indica apenas a região provável dos números.'
+      ? 'Centralize a face do hidrometro e alinhe os roletes na faixa interna.'
       : isInstallation
-        ? 'Mantenha o hidrômetro visível; o sistema localizará o visor automaticamente.'
-        : 'Mantenha o hidrômetro visível. Os avisos ajudam, mas não impedem a foto.';
+        ? 'Centralize a face do hidrometro e alinhe os numeros na faixa interna.'
+        : 'Centralize todo o mostrador; a faixa interna deve atravessar somente os numeros. Os avisos não impedem a foto.';
   const liveReady = Boolean(
     liveQuality?.usable &&
-    liveQuality.display_found !== false,
+    liveStableCode,
   );
   const liveStatusText = liveChecking
-    ? 'Analisando hidrômetro e visor...'
+    ? liveStableCode
+      ? 'Confirmando estabilidade da leitura...'
+      : 'Analisando hidrômetro, visor e números...'
     : liveReady
-      ? liveQuality?.meter_found === false
-        ? 'Visor pronto; mantenha a face centralizada'
-        : 'Hidrômetro e visor prontos'
+      ? 'Leitura reconhecida em quadros consecutivos'
+      : liveQuality?.recognition_ready
+        ? 'Números detectados; confirmando em outro quadro...'
+        : liveQuality?.display_found
+          ? 'Visor localizado; estabilizando a leitura...'
       : liveQuality?.recapture_reason
         ? `Sugestão: ${liveQuality.recapture_reason}`
         : 'Aguardando hidrômetro no enquadramento';
@@ -761,7 +771,11 @@ export default function CameraScreen() {
               {stage !== 'code' && (
                 <>
                   <View style={styles.meterFaceGuide} />
-                  <View style={styles.rollerGuide} />
+                  <View style={styles.rollerGuide}>
+                    {Array.from({ length: Math.max(3, Number(blackDigits || 4) + Number(redDigits || 3)) }).map((_, index) => (
+                      <View key={index} style={styles.rollerSlot} />
+                    ))}
+                  </View>
                 </>
               )}
               <View style={[styles.corner, styles.cornerTL]} />
@@ -801,11 +815,11 @@ export default function CameraScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.btnCapture, (capturing || resolvingQr || qualityChecking || !cameraReady) && { opacity: 0.5 }]}
+              style={[styles.btnCapture, (capturing || resolvingQr || !cameraReady) && { opacity: 0.5 }]}
               onPress={capturePhoto}
-              disabled={capturing || resolvingQr || qualityChecking || !cameraReady}
+              disabled={capturing || resolvingQr || !cameraReady}
             >
-              {capturing || resolvingQr || qualityChecking || !cameraReady ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
+              {capturing || resolvingQr || !cameraReady ? <ActivityIndicator color="#fff" /> : <View style={styles.captureInner} />}
             </TouchableOpacity>
 
             {stage !== 'code' && (
@@ -815,9 +829,7 @@ export default function CameraScreen() {
             )}
 
             <Text style={styles.captureLabel}>
-              {qualityChecking
-                ? 'Validando foco, reflexo e enquadramento'
-                : liveChecking && !capturing
+              {liveChecking && !capturing
                   ? 'Visão ao vivo verificando o visor'
                 : capturing && stage !== 'code'
                   ? 'Capturando sequência de evidências'
@@ -894,8 +906,8 @@ const styles = StyleSheet.create({
     height: 240,
   },
   guideReading: {
-    width: '92%',
-    maxWidth: 390,
+    width: '84%',
+    maxWidth: 330,
     aspectRatio: 1,
   },
   guideWaiting: {
@@ -919,15 +931,23 @@ const styles = StyleSheet.create({
   },
   rollerGuide: {
     position: 'absolute',
-    left: '7%',
-    right: '7%',
-    top: '31%',
-    height: '36%',
-    borderWidth: 1,
-    borderStyle: 'dashed',
+    left: '10%',
+    right: '10%',
+    top: '36%',
+    height: '23%',
+    borderWidth: 2,
     borderColor: colors.cyan,
-    borderRadius: 10,
-    backgroundColor: 'rgba(0,0,0,0.08)',
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.14)',
+    flexDirection: 'row',
+    padding: 3,
+    gap: 2,
+  },
+  rollerSlot: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
+    borderRadius: 3,
   },
   corner: {
     position: 'absolute',
