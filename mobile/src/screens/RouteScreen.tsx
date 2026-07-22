@@ -281,13 +281,19 @@ export default function RouteScreen() {
             ListHeaderComponent={
               <>
                 <Hero userName={user?.name || 'Colaborador'} stats={stats} onLogout={logout} />
-                <TextInput
-                  style={styles.searchInput}
-                  value={query}
-                  onChangeText={setQuery}
-                  placeholder="Buscar por cliente, codigo ou local"
-                  placeholderTextColor={colors.textMuted}
-                />
+                <View style={styles.searchBox}>
+                  <Svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke={colors.textMuted} strokeWidth={2} strokeLinecap="round">
+                    <Circle cx="11" cy="11" r="7" />
+                    <Line x1="16" y1="16" x2="21" y2="21" />
+                  </Svg>
+                  <TextInput
+                    style={styles.searchInput}
+                    value={query}
+                    onChangeText={setQuery}
+                    placeholder="Buscar cliente, código ou local"
+                    placeholderTextColor={colors.textMuted}
+                  />
+                </View>
                 <View style={styles.sectionHeader}>
                   <Text style={styles.sectionTitle}>Pontos da rota</Text>
                   <Text style={styles.sectionMeta}>{lastLoadedAt ? `Atualizado ${new Date(lastLoadedAt).toLocaleTimeString('pt-BR')}` : ''}</Text>
@@ -309,10 +315,10 @@ export default function RouteScreen() {
             contentContainerStyle={styles.listContent}
             ListHeaderComponent={
               <>
-                <ScreenHeader eyebrow="Fila operacional" title="Minhas tarefas" subtitle="Leituras separadas por prioridade de campo." />
+                <ScreenHeader eyebrow="Fila operacional" title="Minhas tarefas" subtitle="Organize e execute as atividades da sua rota." />
                 <View style={styles.segmented}>
                   <Segment label="Pendentes" active={taskFilter === 'pending'} onPress={() => setTaskFilter('pending')} />
-                  <Segment label="Concluidas" active={taskFilter === 'done'} onPress={() => setTaskFilter('done')} />
+                  <Segment label="Concluídas" active={taskFilter === 'done'} onPress={() => setTaskFilter('done')} />
                   <Segment label="Todas" active={taskFilter === 'all'} onPress={() => setTaskFilter('all')} />
                 </View>
               </>
@@ -329,7 +335,7 @@ export default function RouteScreen() {
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
             contentContainerStyle={styles.listContent}
             ListHeaderComponent={
-              <ScreenHeader eyebrow="Resumo do dia" title="Historico" subtitle="Leituras enviadas, consumo registrado e status de aprovacao." />
+              <ScreenHeader eyebrow="Resumo do dia" title="Histórico" subtitle="Acompanhe leituras enviadas e o status de aprovação." />
             }
             renderItem={({ item }) => <HistoryCard item={item} />}
             ListEmptyComponent={<EmptyCard title="Nenhuma leitura hoje" text="As leituras aparecem aqui depois do envio." />}
@@ -388,10 +394,9 @@ export default function RouteScreen() {
 function Hero({ userName, stats, onLogout }: { userName: string; stats: { pending: number; completed: number; total: number; installations: number }; onLogout: () => void }) {
   return (
     <View style={styles.heroCard}>
-      <View style={styles.neoLine} />
       <View style={styles.heroTopRow}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.heroEyebrow}>Rota operacional</Text>
+          <Text style={styles.heroEyebrow}>Operação de campo</Text>
           <Text style={styles.heroTitle}>Olá, {userName.split(' ')[0]}</Text>
           <Text style={styles.heroSubtitle}>Instalações, leituras pendentes e histórico do dia.</Text>
         </View>
@@ -401,8 +406,8 @@ function Hero({ userName, stats, onLogout }: { userName: string; stats: { pendin
       </View>
       <View style={styles.summaryRow}>
         <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
-        <SummaryCard label="Concluidas" value={stats.completed} tone="success" />
-        <SummaryCard label="Instalacoes" value={stats.installations} tone="info" />
+        <SummaryCard label="Concluídas" value={stats.completed} tone="success" />
+        <SummaryCard label="Instalações" value={stats.installations} tone="info" />
       </View>
       <View style={styles.progressPanel}>
         <View style={styles.progressRing}>
@@ -410,7 +415,7 @@ function Hero({ userName, stats, onLogout }: { userName: string; stats: { pendin
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.progressTitle}>Progresso de hoje</Text>
-          <Text style={styles.progressSub}>Faça a leitura, confira o valor e envie com foto, hora e localização.</Text>
+          <Text style={styles.progressSub}>Faça a leitura e envie a captura com hora e localização.</Text>
         </View>
       </View>
     </View>
@@ -420,7 +425,6 @@ function Hero({ userName, stats, onLogout }: { userName: string; stats: { pendin
 function ScreenHeader({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) {
   return (
     <View style={styles.heroCard}>
-      <View style={styles.neoLine} />
       <Text style={styles.heroEyebrow}>{eyebrow}</Text>
       <Text style={styles.heroTitle}>{title}</Text>
       <Text style={styles.heroSubtitle}>{subtitle}</Text>
@@ -433,13 +437,17 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
   const locked = Boolean(item.todayStatus && item.todayStatus.status !== 'rejected');
   const actionLabel = locked
     ? item.todayStatus?.status === 'approved'
-      ? 'Concluido'
-      : 'Em revisao'
-    : isInstallation ? 'Iniciar instalacao' : 'Escanear';
+      ? 'Concluído'
+      : 'Em revisão'
+    : isInstallation ? 'Iniciar instalação' : 'Escanear';
   return (
     <TouchableOpacity activeOpacity={0.88} style={[styles.customerCard, locked && styles.customerCardLocked]} onPress={onPress} disabled={locked}>
-      <View style={styles.neoLine} />
       <View style={styles.cardTopRow}>
+        <View style={styles.meterIcon}>
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={colors.accent} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M12 3s5 5.4 5 10a5 5 0 0 1-10 0c0-4.6 5-10 5-10Z" />
+          </Svg>
+        </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.customerName}>{item.customer.name}</Text>
           <Text style={styles.customerCode}>QR {item.hydrometer.code}</Text>
@@ -449,10 +457,10 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
           mode={isInstallation ? 'installation' : 'reading'}
         />
       </View>
-      {isInstallation && <Text style={styles.installationPill}>Instalacao: informar valor inicial, foto e local</Text>}
+      {isInstallation && <Text style={styles.installationPill}>Instalação: informar valor inicial, foto e local</Text>}
       {!!item.hydrometer.location_description && <Text style={styles.locationText}>{item.hydrometer.location_description}</Text>}
       <Text style={styles.metaLine}>
-        Mostrador: {item.hydrometer.red_digits || 3} digitos vermelhos
+        Mostrador: {item.hydrometer.red_digits || 3} dígitos vermelhos
         {item.hydrometer.black_digits ? ` - ${item.hydrometer.black_digits} pretos` : ''}
       </Text>
       <View style={styles.rowActionButton}>
@@ -466,17 +474,28 @@ function TaskCard({ item, onPress }: { item: { customer: Customer; hydrometer: H
   const isInstallation = !item.hydrometer.last_reading_date;
   return (
     <TouchableOpacity style={styles.taskCard} onPress={onPress} disabled={item.done}>
+      <View style={styles.taskAccent} />
       <View style={[styles.checkbox, item.done && styles.checkboxDone]}>
-        <Text style={styles.checkboxText}>{item.done ? '✓' : ''}</Text>
+        {item.done ? (
+          <Text style={styles.checkboxText}>✓</Text>
+        ) : (
+          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={colors.accent} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <Rect x="5" y="4" width="14" height="17" rx="2" />
+            <Line x1="8" y1="9" x2="16" y2="9" />
+            <Line x1="8" y1="13" x2="14" y2="13" />
+          </Svg>
+        )}
       </View>
       <View style={{ flex: 1 }}>
         <Text style={styles.customerName}>{item.customer.name}</Text>
-        <Text style={styles.metaLine}>{isInstallation ? 'Instalacao pendente' : `QR ${item.hydrometer.code}`}</Text>
+        <Text style={styles.metaLine}>{isInstallation ? 'Instalação pendente' : `QR ${item.hydrometer.code}`}</Text>
+        {!!item.hydrometer.location_description && <Text style={styles.taskLocation}>{item.hydrometer.location_description}</Text>}
       </View>
       <StatusBadge
         status={item.todayStatus?.status || 'open'}
         mode={isInstallation ? 'installation' : 'reading'}
       />
+      <Text style={styles.chevron}>›</Text>
     </TouchableOpacity>
   );
 }
@@ -485,16 +504,21 @@ function HistoryCard({ item }: { item: ReadingItem }) {
   return (
     <View style={styles.customerCard}>
       <View style={styles.cardTopRow}>
+        <View style={styles.meterIcon}>
+          <Svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke={colors.accent} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M12 3s5 5.4 5 10a5 5 0 0 1-10 0c0-4.6 5-10 5-10Z" />
+          </Svg>
+        </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.customerName}>{item.customer_name || 'Cliente sem nome'}</Text>
-          <Text style={styles.metaLine}>{item.hydrometer_code || 'Sem codigo'} - {new Date(item.captured_at).toLocaleTimeString('pt-BR')}</Text>
+          <Text style={styles.metaLine}>{item.hydrometer_code || 'Sem código'} · {new Date(item.captured_at).toLocaleTimeString('pt-BR')}</Text>
         </View>
         <StatusBadge status={item.status} />
       </View>
       <Text style={styles.locationText}>
         {item.current_value === null || item.current_value === undefined || item.consumption === null || item.consumption === undefined
-          ? 'Captura aguardando conferencia no dashboard'
-          : `Leitura ${formatMeterReading(item.current_value)} m3 - Consumo ${formatMeterReading(item.consumption)} m3`}
+          ? 'Captura aguardando conferência no dashboard'
+          : `Leitura ${formatMeterReading(item.current_value)} m³ · Consumo ${formatMeterReading(item.consumption)} m³`}
       </Text>
     </View>
   );
@@ -526,12 +550,12 @@ function ProfileView({
         <View style={styles.summaryRow}>
           <SummaryCard label="Leituras" value={stats.completed} tone="success" />
           <SummaryCard label="Pendentes" value={stats.pending} tone="warning" />
-          <SummaryCard label="Instalacoes" value={stats.installations} tone="info" />
+          <SummaryCard label="Instalações" value={stats.installations} tone="info" />
         </View>
       </View>
       <View style={styles.customerCard}>
-        <Text style={shared.sectionTitle}>Configuracoes</Text>
-        <SettingRow label="Notificacoes" value="Ativas no painel" />
+        <Text style={shared.sectionTitle}>Configurações</Text>
+        <SettingRow label="Notificações" value="Ativas no painel" />
         <Text style={styles.settingLabel}>Tema</Text>
         <View style={styles.themeSwitch}>
           <TouchableOpacity
@@ -571,7 +595,7 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
     info: { bg: colors.accentSoft, text: colors.accent },
   }[tone];
   return (
-    <View style={[styles.summaryCard, { backgroundColor: palette.bg }]}>
+    <View style={styles.summaryCard}>
       <Text style={styles.summaryLabel}>{label}</Text>
       <Text style={[styles.summaryValue, { color: palette.text }]}>{value}</Text>
     </View>
@@ -582,7 +606,7 @@ function StatusBadge({ status, mode = 'reading' }: { status: string; mode?: 'rea
   let palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Disponivel' };
   if (mode === 'installation') palette = { backgroundColor: colors.accentSoft, color: colors.accent, label: 'Instalar' };
   if (status === 'open') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Disponivel' };
-  if (status === 'pending') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Revisao' };
+  if (status === 'pending') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Revisão' };
   if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
   if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };
   return (
@@ -614,7 +638,7 @@ function BottomTabs({ active, onTabPress }: { active: ActiveTab; onTabPress: (ta
     { key: 'home', label: 'Home', icon: 'home' },
     { key: 'tasks', label: 'Tarefas', icon: 'tasks' },
     { key: 'create', label: 'Criar', icon: 'plus' },
-    { key: 'history', label: 'Historico', icon: 'history' },
+    { key: 'history', label: 'Histórico', icon: 'history' },
     { key: 'profile', label: 'Perfil', icon: 'profile' },
   ];
   return (
@@ -639,7 +663,7 @@ function BottomTabs({ active, onTabPress }: { active: ActiveTab; onTabPress: (ta
 type TabIconName = 'home' | 'tasks' | 'plus' | 'history' | 'profile';
 
 function TabSvgIcon({ name, active }: { name: TabIconName; active: boolean }) {
-  const stroke = active ? '#fff' : colors.textMuted;
+  const stroke = name === 'plus' ? '#fff' : active ? colors.accent : colors.textMuted;
   const common = { stroke, strokeWidth: 2.2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, fill: 'none' };
   return (
     <Svg width={22} height={22} viewBox="0 0 24 24">
@@ -675,77 +699,69 @@ function createRouteStyles() {
   screen: { flex: 1, backgroundColor: colors.navy950 },
   loadingWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.navy950 },
   loadingText: { marginTop: 14, color: colors.textMuted, fontSize: 13 },
-  listContent: { paddingHorizontal: 16, paddingBottom: 104 },
+  listContent: { paddingHorizontal: 18, paddingTop: 8, paddingBottom: 108 },
   heroCard: {
-    marginTop: 10,
-    marginBottom: 16,
-    padding: 18,
-    borderRadius: 16,
-    backgroundColor: colors.navy900,
-    borderWidth: 1,
-    borderColor: colors.border,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.06,
-    shadowRadius: 14,
-    elevation: 2,
-    overflow: 'hidden',
+    marginTop: 8,
+    marginBottom: 18,
+    paddingHorizontal: 2,
+    paddingVertical: 10,
   },
-  neoLine: { position: 'absolute', top: 0, left: 0, right: 0, height: 3, backgroundColor: colors.accent },
   heroTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  heroEyebrow: { color: colors.textMuted, fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.8 },
-  heroTitle: { color: colors.textPrimary, fontSize: 26, fontWeight: '800', marginTop: 4, letterSpacing: 0 },
-  heroSubtitle: { color: colors.textMuted, fontSize: 13, marginTop: 6, lineHeight: 19 },
+  heroEyebrow: { color: colors.accent, fontSize: 11, fontWeight: '800', letterSpacing: 0.4 },
+  heroTitle: { color: colors.textPrimary, fontSize: 27, fontWeight: '800', marginTop: 5, letterSpacing: -0.4 },
+  heroSubtitle: { color: colors.textSecondary, fontSize: 13, marginTop: 5, lineHeight: 19 },
   logoutPill: {
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.navy900,
-    borderRadius: 8,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 9,
   },
   logoutText: { color: colors.textPrimary, fontWeight: '800', fontSize: 12 },
-  summaryRow: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  summaryCard: { flex: 1, borderRadius: 12, padding: 12, minHeight: 72, borderWidth: 1, borderColor: colors.border },
-  summaryLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
-  summaryValue: { fontSize: 24, fontWeight: '800', marginTop: 6 },
-  progressPanel: { marginTop: 16, padding: 14, borderRadius: 12, backgroundColor: colors.abyss, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', gap: 14, alignItems: 'center' },
+  summaryRow: { flexDirection: 'row', gap: 9, marginTop: 18, alignSelf: 'stretch' },
+  summaryCard: { flex: 1, borderRadius: 15, paddingHorizontal: 10, paddingVertical: 13, minHeight: 76, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.navy900, alignItems: 'center' },
+  summaryLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '700', textAlign: 'center' },
+  summaryValue: { fontSize: 23, fontWeight: '800', marginTop: 5 },
+  progressPanel: { marginTop: 12, padding: 15, borderRadius: 16, backgroundColor: colors.navy900, borderWidth: 1, borderColor: colors.border, flexDirection: 'row', gap: 14, alignItems: 'center' },
   progressRing: { width: 58, height: 58, borderRadius: 29, borderWidth: 4, borderColor: colors.accent, alignItems: 'center', justifyContent: 'center' },
   progressText: { color: colors.textPrimary, fontWeight: '800', fontSize: 14 },
   progressTitle: { color: colors.textPrimary, fontWeight: '800', fontSize: 14 },
   progressSub: { color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 3 },
-  searchInput: {
+  searchBox: {
     backgroundColor: colors.navy900,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 10,
-    color: colors.textPrimary,
-    fontSize: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
     marginBottom: 16,
   },
+  searchInput: { flex: 1, color: colors.textPrimary, fontSize: 14, paddingVertical: 13 },
   sectionHeader: { marginBottom: 10, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  sectionTitle: { color: colors.textPrimary, fontSize: 19, fontWeight: '800' },
+  sectionTitle: { color: colors.textPrimary, fontSize: 18, fontWeight: '800' },
   sectionMeta: { color: colors.textMuted, fontSize: 11 },
   customerCard: {
     backgroundColor: colors.navy900,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    elevation: 2,
+    padding: 15,
+    marginBottom: 10,
+    shadowColor: '#0B3150',
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 1,
     overflow: 'hidden',
   },
   customerCardLocked: {
     opacity: 0.78,
   },
   cardTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 },
-  customerName: { color: colors.textPrimary, fontWeight: '800', fontSize: 16 },
+  meterIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  customerName: { color: colors.textPrimary, fontWeight: '800', fontSize: 15 },
   customerCode: { color: colors.accent, fontSize: 12, fontWeight: '700', marginTop: 6 },
   metaLine: { color: colors.textMuted, fontSize: 12, marginTop: 6 },
   installationPill: {
@@ -761,42 +777,46 @@ function createRouteStyles() {
     textTransform: 'uppercase',
   },
   locationText: { color: colors.textSecondary, fontSize: 13, lineHeight: 19, marginTop: 12 },
-  rowActionButton: { marginTop: 14, backgroundColor: colors.accent, borderRadius: 8, paddingVertical: 12, alignItems: 'center' },
-  rowActionButtonText: { color: '#fff', fontSize: 14, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
-  emptyCard: { backgroundColor: colors.navy800, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 18 },
+  rowActionButton: { marginTop: 14, backgroundColor: colors.accent, borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  rowActionButtonText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  emptyCard: { backgroundColor: colors.abyss, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 20, alignItems: 'center' },
   emptyTitle: { color: colors.textPrimary, fontSize: 16, fontWeight: '800' },
   emptyText: { color: colors.textSecondary, fontSize: 13, lineHeight: 20, marginTop: 8 },
-  segmented: { flexDirection: 'row', backgroundColor: colors.abyss, borderRadius: 12, padding: 4, marginBottom: 14, borderWidth: 1, borderColor: colors.border },
-  segment: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
-  segmentActive: { backgroundColor: colors.accentSoft },
-  segmentText: { color: colors.textMuted, fontWeight: '800', fontSize: 12 },
-  segmentTextActive: { color: colors.accent },
+  segmented: { flexDirection: 'row', backgroundColor: colors.navy900, borderRadius: 14, padding: 3, marginBottom: 14, borderWidth: 1, borderColor: colors.border },
+  segment: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 11 },
+  segmentActive: { backgroundColor: colors.accent },
+  segmentText: { color: colors.textSecondary, fontWeight: '700', fontSize: 12 },
+  segmentTextActive: { color: '#FFFFFF' },
   taskCard: {
-    backgroundColor: colors.navy800,
-    borderRadius: 14,
+    backgroundColor: colors.navy900,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,
-    padding: 16,
-    marginBottom: 12,
+    padding: 14,
+    marginBottom: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    overflow: 'hidden',
   },
-  checkbox: { width: 28, height: 28, borderRadius: 10, borderWidth: 2, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+  taskAccent: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, backgroundColor: colors.cyan },
+  checkbox: { width: 38, height: 38, borderRadius: 12, borderWidth: 0, backgroundColor: colors.accentSoft, alignItems: 'center', justifyContent: 'center' },
   checkboxDone: { backgroundColor: colors.successSoft, borderColor: colors.success },
   checkboxText: { color: colors.success, fontWeight: '900' },
+  taskLocation: { color: colors.textSecondary, fontSize: 11, marginTop: 4 },
+  chevron: { color: colors.textMuted, fontSize: 24, lineHeight: 24 },
   profileHero: {
     marginTop: 10,
     marginBottom: 16,
     padding: 22,
-    borderRadius: 16,
+    borderRadius: 18,
     backgroundColor: colors.navy900,
     borderWidth: 1,
     borderColor: colors.border,
     alignItems: 'center',
   },
-  avatar: { width: 76, height: 76, borderRadius: 16, backgroundColor: colors.accentSoft, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
-  avatarText: { color: colors.accent, fontSize: 34, fontWeight: '800' },
+  avatar: { width: 76, height: 76, borderRadius: 38, backgroundColor: colors.accentSoft, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  avatarText: { color: colors.accent, fontSize: 32, fontWeight: '800' },
   profileName: { color: colors.textPrimary, fontSize: 24, fontWeight: '800' },
   settingRow: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: colors.border, flexDirection: 'row', justifyContent: 'space-between', gap: 12 },
   settingLabel: { color: colors.textPrimary, fontWeight: '800' },
@@ -811,23 +831,28 @@ function createRouteStyles() {
     left: 0,
     right: 0,
     bottom: 0,
-    height: 82,
+    height: 80,
     backgroundColor: colors.sidebarNavy,
     borderTopWidth: 1,
     borderTopColor: colors.border,
     flexDirection: 'row',
-    paddingTop: 8,
+    paddingTop: 9,
     paddingHorizontal: 8,
+    shadowColor: '#0B3150',
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    elevation: 8,
   },
   tabItem: { flex: 1, alignItems: 'center' },
   tabIcon: { width: 34, height: 34, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  tabIconActive: { backgroundColor: colors.accentSoft },
-  createIcon: { backgroundColor: colors.accent, width: 52, height: 52, borderRadius: 16, marginTop: -16, borderWidth: 4, borderColor: '#FFFFFF' },
-  activeBeam: { position: 'absolute', bottom: -8, width: 22, height: 3, borderRadius: 2, backgroundColor: colors.accent },
+  tabIconActive: { backgroundColor: 'transparent' },
+  createIcon: { backgroundColor: colors.accent, width: 50, height: 50, borderRadius: 25, marginTop: -16, borderWidth: 4, borderColor: colors.sidebarNavy, shadowColor: colors.accent, shadowOpacity: 0.22, shadowRadius: 7, elevation: 4 },
+  activeBeam: { display: 'none' },
   tabIconText: { color: colors.textMuted, fontWeight: '900', fontSize: 14 },
   tabIconTextActive: { color: '#fff' },
   tabLabel: { color: colors.textMuted, fontSize: 10, fontWeight: '800', marginTop: 3 },
-  tabLabelActive: { color: colors.textPrimary },
+  tabLabelActive: { color: colors.accent },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.38)', justifyContent: 'flex-end', padding: 16 },
   modalCard: { backgroundColor: colors.navy900, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: 18, marginBottom: 70 },
   modalTitle: { color: colors.textPrimary, fontSize: 20, fontWeight: '800' },
@@ -840,10 +865,10 @@ function createRouteStyles() {
     position: 'absolute',
     right: 18,
     bottom: 96,
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: colors.cyan,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    backgroundColor: colors.textPrimary,
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 6,
