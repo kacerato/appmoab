@@ -32,7 +32,10 @@ redis==5.3.0
 python-magic==0.4.27
 Pillow==11.2.1
 numpy==2.2.6
-opencv-python-headless==4.11.0.86
+# RapidOCR requer opencv-python. Instalar também a variante headless faz os
+# dois pacotes sobrescreverem o mesmo namespace `cv2` e pode gerar um módulo
+# parcial no container. Mantemos uma única distribuição, fixada na mesma versão.
+opencv-python==4.11.0.86
 onnxruntime==1.22.0
 rapidocr_onnxruntime==1.4.4
 pypdf==5.5.0

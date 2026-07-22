@@ -49,6 +49,13 @@ class PortableKnnModel:
     def is_trained(self) -> bool:
         return bool(self.samples.size and self.responses.size)
 
+    def verify_runtime(self) -> None:
+        """Exercita o mesmo HOG e a mesma classificação usados nas requisições."""
+
+        probe = np.zeros((28, 28), dtype=np.uint8)
+        probe[5:23, 11:17] = 255
+        self.classify_features(hog_features(probe))
+
     def classify_features(self, features: np.ndarray) -> tuple[int, float, list[float]]:
         features = np.asarray(features, dtype=np.float32).reshape(-1)
         if features.shape[0] != self.samples.shape[1]:
@@ -78,3 +85,20 @@ class PortableKnnModel:
         confidence = _clamp(vote_share * 0.75 + distance_score * 0.25)
         scores = [votes.count(value) / max(len(votes), 1) for value in range(10)]
         return digit, confidence, scores
+
+
+def hog_features(normalized_slot: np.ndarray) -> np.ndarray:
+    """Extrai o descritor que foi usado para treinar o artefato embarcado."""
+
+    constructor = getattr(cv2, "HOGDescriptor", None)
+    if not callable(constructor):
+        raise RuntimeError(
+            "OpenCV incompleto: HOGDescriptor não está disponível. "
+            "Verifique se existe apenas uma distribuição OpenCV instalada."
+        )
+    hog = constructor((28, 28), (14, 14), (7, 7), (7, 7), 9)
+    features = hog.compute(np.ascontiguousarray(normalized_slot, dtype=np.uint8))
+    if features is None or features.size != 324:
+        size = 0 if features is None else int(features.size)
+        raise RuntimeError(f"Descritor HOG incompatível: recebido {size}, esperado 324.")
+    return features.reshape(1, -1).astype("float32")

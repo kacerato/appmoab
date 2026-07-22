@@ -19,7 +19,7 @@ from itertools import combinations
 from PIL import Image, ImageDraw, ImageFile, ImageFont
 
 from app.config import get_settings
-from app.services.portable_knn import PortableKnnModel
+from app.services.portable_knn import PortableKnnModel, hog_features as _portable_hog_features
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -528,8 +528,7 @@ class _OnnxDisplayDetector:
 
 def hog_features(slot):
     normalized = _normalize_slot(slot, size=(28, 28))
-    hog = cv2.HOGDescriptor((28, 28), (14, 14), (7, 7), (7, 7), 9)
-    return hog.compute(normalized).reshape(1, -1).astype("float32")
+    return _portable_hog_features(normalized)
 
 
 class _PortableKnnClassifier(PortableKnnModel):
@@ -555,7 +554,9 @@ def _trained_classifier():
         return None
     try:
         if path.lower().endswith((".yml", ".yaml", ".xml")) and cv2 is not None:
-            return _PortableKnnClassifier(path)
+            classifier = _PortableKnnClassifier(path)
+            classifier.verify_runtime()
+            return classifier
         if ort is None:
             return None
         return _OnnxClassifier(path)
@@ -1563,6 +1564,61 @@ class MeterVisionService:
         }
 
     def analyze(
+        self,
+        image_base64: str,
+        *,
+        red_digits: int | None = 3,
+        black_digits: int | None = None,
+        previous_value: float | None = None,
+        expensive_ocr: bool = True,
+        hydrometer_brand: str | None = None,
+        hydrometer_model: str | None = None,
+    ) -> VisionResult:
+        """Executa a leitura sem permitir que uma falha interna derrube a API.
+
+        O startup e o build já validam o caminho nominal. Esta contenção é a
+        última barreira: diante de qualquer incompatibilidade inesperada, a
+        foto segue para revisão humana sem uma sugestão potencialmente falsa.
+        """
+
+        try:
+            return self._analyze(
+                image_base64,
+                red_digits=red_digits,
+                black_digits=black_digits,
+                previous_value=previous_value,
+                expensive_ocr=expensive_ocr,
+                hydrometer_brand=hydrometer_brand,
+                hydrometer_model=hydrometer_model,
+            )
+        except Exception:
+            logger.exception("Falha interna contida no pipeline de visão de hidrômetros")
+            resolved_red = red_digits if red_digits is not None and red_digits >= 0 else 3
+            return VisionResult(
+                predicted_code=None,
+                predicted_value=None,
+                confidence=0.0,
+                auto_fill_allowed=False,
+                red_digits=resolved_red,
+                black_digits=black_digits,
+                model_version=settings.vision_model_version,
+                quality={
+                    "usable": False,
+                    "model_ready": False,
+                    "recapture_reason": (
+                        "A leitura automática ficou indisponível. "
+                        "A foto foi preservada para confirmação no dashboard."
+                    ),
+                },
+                digits=[],
+                alternatives=[],
+                flags=["vision_runtime_error"],
+                decision="confirm",
+                calibrated_confidence=0.0,
+                decoder_version=None,
+            )
+
+    def _analyze(
         self,
         image_base64: str,
         *,

@@ -19,9 +19,9 @@ COPY . .
 
 RUN mkdir -p /app/uploads /app/certs
 
-# Impede publicar uma imagem incapaz de abrir o classificador embarcado. O
-# runtime usa FileStorage + NumPy e não depende do módulo opcional cv2.ml.
-RUN python -c "from app.services.portable_knn import PortableKnnModel; c = PortableKnnModel('/app/app/assets/meter-field-v3-20260622.yml'); assert c.is_trained()"
+# Impede publicar uma imagem que apenas abre o artefato, mas falha ao extrair
+# HOG/classificar na primeira requisição. Não importa Settings nem usa segredos.
+RUN python -c "from app.services.portable_knn import PortableKnnModel; c = PortableKnnModel('/app/app/assets/meter-field-v3-20260622.yml'); assert c.is_trained(); c.verify_runtime()"
 
 ENV PORT=8000
 

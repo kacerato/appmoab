@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import cv2
 import numpy as np
+import pytest
 
 from app.routers.hydrometers import _apply_burst_consensus
 from app.schemas.hydrometer import KimiVisionFeedbackRequest
@@ -94,6 +95,17 @@ def test_knn_model_loads_without_opencv_ml_module():
     assert classifier.is_trained()
 
 
+def test_model_runtime_self_test_requires_complete_opencv_hog():
+    model_path = Path(__file__).parents[1] / "app" / "assets" / "meter-field-v3-20260622.yml"
+    classifier = _PortableKnnClassifier(str(model_path))
+
+    with patch.object(cv2, "HOGDescriptor", None), pytest.raises(
+        RuntimeError,
+        match="HOGDescriptor não está disponível",
+    ):
+        classifier.verify_runtime()
+
+
 def test_complete_decoder_does_not_touch_opencv_ml_module():
     _trained_classifier.cache_clear()
     try:
@@ -109,6 +121,33 @@ def test_complete_decoder_does_not_touch_opencv_ml_module():
 
     assert isinstance(classifier, _PortableKnnClassifier)
     assert "trained_model_unavailable" not in result.flags
+
+
+def test_runtime_ocr_failure_is_contained_for_dashboard_review():
+    with patch("app.services.meter_vision._slot_observation", side_effect=RuntimeError("broken runtime")):
+        result = meter_vision_service.analyze(
+            _synthetic_meter_data_uri(),
+            red_digits=3,
+            black_digits=4,
+        )
+
+    assert result.predicted_code is None
+    assert result.predicted_value is None
+    assert result.auto_fill_allowed is False
+    assert result.decision == "confirm"
+    assert result.flags == ["vision_runtime_error"]
+    assert "dashboard" in result.quality["recapture_reason"]
+
+
+def test_requirements_install_only_one_opencv_distribution():
+    requirements = (Path(__file__).parents[1] / "requirements.txt").read_text(encoding="utf-8")
+    packages = [
+        line.strip().split("==", 1)[0].lower()
+        for line in requirements.splitlines()
+        if line.strip().lower().startswith("opencv-")
+    ]
+
+    assert packages == ["opencv-python"]
 
 
 def test_broken_primary_model_never_falls_back_to_unsafe_suggestion():
