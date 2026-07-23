@@ -99,20 +99,43 @@ def _recall_preview_result(key: str) -> VisionResult | None:
 def _expensive_probe_indexes(frame_count: int, frame_metadata: list[dict]) -> set[int]:
     """Escolhe até dois quadros do clique para OCR completo.
 
-    O burst disparado pelo toque tem prioridade. Quadros silenciosos continuam
+    A foto principal continua sendo a autoridade. Entre os quadros extras do
+    toque, priorizamos o último: ele é capturado depois que foco e exposição
+    tiveram mais tempo para estabilizar. Quadros silenciosos continuam
     contribuindo com detector/classificador leve. Dois OCRs textuais bastam
     para consenso e evitam serializar três execuções caras do RapidOCR.
     """
     if frame_count <= 0:
         return set()
-    preferred = [
+
+    primary_indexes = [
         index
         for index, metadata in enumerate(frame_metadata[:frame_count])
-        if metadata.get("primary") is True or metadata.get("source") == "tap_burst"
+        if metadata.get("primary") is True
     ]
-    indexes = list(dict.fromkeys([0, *preferred]))[:2]
-    if len(indexes) < 2 and frame_count > 1:
+    tap_indexes = [
+        index
+        for index, metadata in enumerate(frame_metadata[:frame_count])
+        if metadata.get("source") == "tap_burst"
+    ]
+    live_indexes = [
+        index
+        for index, metadata in enumerate(frame_metadata[:frame_count])
+        if metadata.get("source") == "live_preview_cache"
+    ]
+
+    primary_index = primary_indexes[0] if primary_indexes else 0
+    indexes = [primary_index]
+    if tap_indexes:
+        indexes.append(tap_indexes[-1])
+    elif live_indexes:
+        indexes.append(max(
+            live_indexes,
+            key=lambda index: float(frame_metadata[index].get("detection_score") or 0.0),
+        ))
+    elif frame_count > 1:
         indexes.append(frame_count - 1)
+
     return set(indexes)
 
 

@@ -784,10 +784,12 @@ export default function CameraScreen() {
           quality: 0.58,
           primary: false,
           source: 'live_preview_cache',
+          detected: frame.detected ?? null,
+          detection_score: frame.detectionScore ?? null,
         });
       });
       const captureMetadata = {
-        capture_pipeline: 'mobile-burst-v7-manual-tap-with-live-evidence',
+        capture_pipeline: 'mobile-burst-v8-manual-tap-with-ranked-live-evidence',
         platform: Platform.OS,
         picture_size: pictureSize,
         torch_enabled: torchEnabled,

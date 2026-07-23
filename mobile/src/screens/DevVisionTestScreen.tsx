@@ -313,7 +313,11 @@ export default function DevVisionTestScreen() {
 
           {photoUri ? (
             <View>
-              <Image source={{ uri: photoUri }} style={styles.capturedImage} />
+              <Image
+                source={{ uri: photoUri }}
+                resizeMode="contain"
+                style={styles.capturedImage}
+              />
               <View style={styles.photoActions}>
                 <TouchableOpacity style={shared.btnSecondary} onPress={handleOpenCamera}>
                   <Text style={shared.btnSecondaryText}>Refazer Captura</Text>

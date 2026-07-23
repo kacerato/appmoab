@@ -373,7 +373,7 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             black_digits=4,
         )
 
-    def test_tap_burst_gets_two_full_ocr_probes(self):
+    def test_tap_burst_uses_primary_and_last_settled_frame_for_full_ocr(self):
         indexes = hydrometers_router._expensive_probe_indexes(6, [
             {"primary": True},
             {"source": "tap_burst"},
@@ -383,7 +383,16 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             {"source": "live_preview_cache"},
         ])
 
-        self.assertEqual(indexes, {0, 1})
+        self.assertEqual(indexes, {0, 2})
+
+    def test_live_fallback_uses_highest_detection_score(self):
+        indexes = hydrometers_router._expensive_probe_indexes(3, [
+            {"primary": True},
+            {"source": "live_preview_cache", "detection_score": 3.2},
+            {"source": "live_preview_cache", "detection_score": 6.8},
+        ])
+
+        self.assertEqual(indexes, {0, 2})
 
     async def test_live_preview_requires_textual_digit_evidence(self):
         user = SimpleNamespace(id=uuid.uuid4())
