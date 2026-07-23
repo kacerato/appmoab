@@ -17,7 +17,6 @@ from app.services.meter_vision import (
     _candidate_sequences_from_digits,
     _decode_image,
     _fuse_digit_sequences,
-    _hydrometer_face_candidate,
     _prediction_anomaly,
     _red_roller_strip_candidate,
     _temporal_candidates,
@@ -85,22 +84,6 @@ def test_bundled_field_model_and_red_roller_anchor_are_available():
     corners = _red_roller_strip_candidate(image, red_digits=3, black_digits=4)
     assert corners is not None
     assert corners.shape == (4, 2)
-
-
-def test_hydrometer_face_is_detected_independently_from_digit_window():
-    image = np.full((900, 900, 3), 32, dtype=np.uint8)
-    cv2.circle(image, (450, 455), 330, (225, 225, 225), -1)
-    cv2.circle(image, (450, 455), 330, (35, 78, 130), 18)
-    cv2.rectangle(image, (245, 350), (655, 455), (250, 250, 250), -1)
-    cv2.putText(image, "0090645", (265, 425), cv2.FONT_HERSHEY_SIMPLEX, 1.65, (20, 20, 20), 5, cv2.LINE_AA)
-
-    detection = _hydrometer_face_candidate(image)
-
-    assert detection is not None
-    assert detection.confidence >= 0.46
-    _, _, width, height = detection.bounds
-    assert width >= 600
-    assert height >= 600
 
 
 def test_knn_model_loads_without_opencv_ml_module():
@@ -229,7 +212,7 @@ def test_meter_tail_prefix_normalization_prefers_trailing_unit_noise():
     assert best[0] == [0, 0, 9, 0, 6, 4]
 
 
-def test_burst_consensus_rejects_three_different_last_digits():
+def test_burst_consensus_uses_median_for_partial_last_digit():
     def result(code: str, confidence: float) -> VisionResult:
         return VisionResult(
             predicted_code=None,
@@ -239,14 +222,10 @@ def test_burst_consensus_rejects_three_different_last_digits():
             red_digits=3,
             black_digits=4,
             model_version="test",
-            quality={
-                "usable": True,
-                "blur": 0.1,
-                "sequence_ocr": {"digits": code, "confidence": 0.91},
-            },
+            quality={"usable": True, "blur": 0.1},
             digits=[{"position": index, "value": int(digit), "confidence": confidence} for index, digit in enumerate(code)],
             alternatives=[],
-            flags=["sequence_exact"],
+            flags=[],
         )
 
     selected_index, selected = _apply_burst_consensus(
@@ -256,15 +235,11 @@ def test_burst_consensus_rejects_three_different_last_digits():
         black_digits=4,
     )
 
-    assert selected_index == 1
-    assert selected.predicted_value is None
-    assert selected.predicted_code is None
-    assert "burst_text_evidence_disagreement" in selected.flags
-    assert selected.quality["temporal_fusion"]["text_evidence_codes"] == [
-        "0090645",
-        "0090642",
-        "0090646",
-    ]
+    assert selected_index == 0
+    assert selected.predicted_value == 90.645
+    assert selected.predicted_code == "0090645"
+    assert "burst_consensus_median" in selected.flags
+    assert selected.quality["burst_consensus"]["selected"] == "0090645"
 
 
 def test_transition_decoder_considers_both_visible_digits_and_history():

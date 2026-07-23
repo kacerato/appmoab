@@ -27,7 +27,7 @@ from app.routers import (
 from app.services.billing import seed_default_tariffs
 from app.services.hydrometer_codes import ensure_numeric_hydrometer_codes
 from app.services.efi_api import efi_service
-from app.services.meter_vision import _trained_classifier, warmup_meter_vision_runtime
+from app.services.meter_vision import _trained_classifier
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.middleware import performance_and_security_middleware
 from app.utils.schema_startup import STARTUP_DATA_LOCK_ID, run_schema_bootstrap
@@ -51,11 +51,6 @@ async def lifespan(app: FastAPI):
             "Modelo de hidrômetros indisponível. O serviço não iniciará com OCR inseguro."
         )
     logger.info("Modelo de hidrômetros carregado pelo classificador KNN portátil")
-    if not warmup_meter_vision_runtime():
-        raise RuntimeError(
-            "OCR sequencial de hidrômetros indisponível. O serviço não iniciará sem o caminho principal."
-        )
-    logger.info("OCR sequencial de hidrômetros aquecido e pronto")
 
     await run_schema_bootstrap(engine, Base.metadata.create_all, logger)
 
