@@ -58,6 +58,28 @@ def _installation_billing_values(settings: SystemSetting) -> tuple[float, float,
     return float(settings.installation_fee_amount), 0.0, 0.0
 
 
+def _resolve_reading_photo_url(
+    data: ReadingCreate,
+    vision_inference: VisionInference | None,
+) -> str:
+    """Reusa a foto primaria ja persistida pelo veredito visual.
+
+    O primeiro frame sempre e a foto acionada pelo operador. Nao usamos
+    ``original_object_key`` porque ele aponta para o melhor frame do OCR, que
+    pode ser um recorte silencioso e nao a foto completa da leitura.
+    """
+    if vision_inference and vision_inference.frame_object_keys:
+        primary_key = vision_inference.frame_object_keys[0]
+        if isinstance(primary_key, str) and primary_key:
+            return primary_key
+    if data.photo_base64:
+        return save_photo_from_base64(data.photo_base64, prefix="reading")
+    raise HTTPException(
+        status_code=422,
+        detail="A foto da captura não foi armazenada. Refaca a foto e tente novamente.",
+    )
+
+
 def _flag(code: str, label: str, message: str, severity: str = "warning") -> dict:
     return {"code": code, "label": label, "message": message, "severity": severity}
 
@@ -332,8 +354,9 @@ async def create_reading(
             detail="Este ciclo ja possui uma leitura ativa.",
         )
 
-    # Salva foto
-    photo_url = save_photo_from_base64(data.photo_base64, prefix="reading")
+    # O veredito visual ja armazenou a foto primaria. Reutiliza-la elimina o
+    # segundo upload que fazia o app aguardar novamente em redes lentas.
+    photo_url = _resolve_reading_photo_url(data, vision_inference)
 
     # A inferencia visual e apenas uma sugestao. O valor oficial so sera
     # definido por um gestor no endpoint de aprovacao.
@@ -358,7 +381,7 @@ async def create_reading(
         }
     else:
         try:
-            ocr_result = await glm_ocr_service.extract_hydrometer_data(data.photo_base64)
+            ocr_result = await glm_ocr_service.extract_hydrometer_data(data.photo_base64 or "")
         except Exception as e:
             # OCR falhou, mas a captura ainda segue para conferencia no painel.
             logger.warning("OCR falhou: %s", e)

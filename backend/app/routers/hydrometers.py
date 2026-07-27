@@ -396,6 +396,25 @@ async def inspect_vision_capture(
     )
 
 
+@router.post("/vision-presence")
+async def inspect_vision_presence(
+    data: HydrometerIdentifyRequest,
+    user: User = Depends(get_current_user),
+):
+    """Localiza hidrômetro/visor no preview sem executar OCR pesado."""
+    del user
+    return await asyncio.to_thread(
+        meter_vision_service.inspect_capture,
+        data.photo_base64,
+        red_digits=data.red_digits,
+        black_digits=data.black_digits,
+        guide_crop=(
+            (data.frame_metadata[0].get("guide_crop") if data.frame_metadata else None)
+            or (data.capture_metadata or {}).get("guide_crop")
+        ),
+    )
+
+
 @router.post("/vision-verdict")
 async def kimi_vision_verdict(
     data: HydrometerIdentifyRequest,

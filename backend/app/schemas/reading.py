@@ -3,13 +3,16 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ReadingCreate(BaseModel):
     """Enviado pelo app mobile ao capturar foto."""
     hydrometer_id: UUID
-    photo_base64: str
+    # O app atual envia a foto no veredito visual e referencia a inferencia
+    # aqui, evitando transmitir a mesma imagem duas vezes em conexoes moveis.
+    # APKs antigos continuam podendo enviar photo_base64 diretamente.
+    photo_base64: str | None = None
     # Compatibilidade temporaria com APKs antigos. O valor recebido aqui e
     # apenas uma sugestao legada e nunca e consolidado como leitura oficial.
     current_value: float | None = None
@@ -21,6 +24,12 @@ class ReadingCreate(BaseModel):
     anomaly_override_reason: str | None = None
     vision_inference_id: UUID | None = None
     cycle_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_photo_source(self):
+        if not self.photo_base64 and not self.vision_inference_id:
+            raise ValueError("Informe a foto ou a inferência visual da captura")
+        return self
 
 
 class ReadingOCRResult(BaseModel):

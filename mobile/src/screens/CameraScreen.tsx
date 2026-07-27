@@ -872,7 +872,6 @@ export default function CameraScreen() {
       }
 
       navigation.navigate('OCRResult', {
-        autoSubmit: true,
         photoBase64: preparedPhoto.base64,
         photoUri: preparedPhoto.uri,
         framesBase64,

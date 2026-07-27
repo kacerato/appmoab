@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -28,21 +28,6 @@ interface VisionVerdict {
   confidence: number | null;
   auto_fill_allowed: boolean;
   decision?: 'accepted' | 'confirm' | 'recapture' | 'unsupported';
-  calibrated_confidence?: number | null;
-  decoder_version?: string | null;
-  red_digits: number | null;
-  black_digits: number | null;
-  quality?: { usable?: boolean; recapture_reason?: string | null };
-  flags?: string[];
-  digits?: Array<{
-    position: number;
-    value: number | null;
-    confidence: number;
-    current_digit?: number | null;
-    next_digit?: number | null;
-    transition_phase?: number | null;
-    transitional?: boolean;
-  }>;
 }
 
 export default function OCRResultScreen() {
@@ -50,7 +35,6 @@ export default function OCRResultScreen() {
   const route = useRoute<any>();
   const { showToast } = useFeedback();
   const {
-    autoSubmit = false,
     photoBase64,
     photoUri,
     framesBase64 = [],
@@ -62,59 +46,28 @@ export default function OCRResultScreen() {
     locationAccuracyMeters,
     capturedAt,
     hydrometerId,
-    hydrometerCode,
-    customerName,
     lastReading,
     redDigits = 3,
     blackDigits = null,
     hydrometerBrand = '',
     hydrometerModel = '',
-    locationDescription,
     isInstallation = false,
     cycleId = null,
-    cycleReferenceMonth = null,
   } = route.params;
 
-  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [verdict, setVerdict] = useState<VisionVerdict | null>(null);
+  const verdictRef = useRef<VisionVerdict | null>(null);
+  const verdictPromiseRef = useRef<Promise<VisionVerdict | null> | null>(null);
   const processingStartedRef = useRef(false);
   const selectedRedDigits = Number(redDigits || 3);
-  const captureNeedsAttention = verdict?.decision === 'recapture';
-
-  const submitCapture = useCallback(async (resolvedVerdict: VisionVerdict | null) => {
-    setSubmitting(true);
-    try {
-      await api.post<OCRData>('/readings', {
-        hydrometer_id: hydrometerId,
-        photo_base64: photoBase64,
-        latitude,
-        longitude,
-        location_accuracy_meters: locationAccuracyMeters,
-        captured_at: capturedAt,
-        vision_inference_id: resolvedVerdict?.inference_id || null,
-        cycle_id: cycleId,
-      });
-      showToast(
-        isInstallation ? 'Captura da instalação enviada' : 'Leitura capturada',
-        'A foto e a sugestão foram enviadas para confirmação no dashboard.',
-        'success',
-      );
-      navigation.navigate('Route', { refreshToken: Date.now() });
-      return true;
-    } catch (error) {
-      showToast('Falha ao enviar captura', error instanceof Error ? error.message : 'Não foi possível enviar a captura.', 'error');
-      return false;
-    } finally {
-      setSubmitting(false);
-    }
-  }, [capturedAt, cycleId, hydrometerId, isInstallation, latitude, locationAccuracyMeters, longitude, navigation, photoBase64, showToast]);
 
   useEffect(() => {
     if (processingStartedRef.current) return;
     processingStartedRef.current = true;
-    setLoading(true);
-    void api.post<VisionVerdict>('/hydrometers/vision-verdict', {
+
+    // A análise pode começar enquanto o operador confere a foto, mas a leitura
+    // só será criada depois do toque explícito no botão de confirmação.
+    const pendingVerdict = api.post<VisionVerdict>('/hydrometers/vision-verdict', {
       photo_base64: photoBase64,
       frames_base64: framesBase64,
       capture_id: captureId || null,
@@ -128,117 +81,149 @@ export default function OCRResultScreen() {
       hydrometer_brand: hydrometerBrand || null,
       hydrometer_model: hydrometerModel || null,
     }, 75000)
-      .then(async result => {
-        setVerdict(result);
-        setLoading(false);
-        if (autoSubmit) await submitCapture(result);
+      .then(result => {
+        verdictRef.current = result;
+        return result;
       })
-      .catch(error => {
-        setVerdict(null);
-        showToast(
-          'Não foi possível analisar a captura',
-          error instanceof Error ? error.message : 'Tente enviar novamente.',
-          'error',
-        );
-      })
-      .finally(() => setLoading(false));
-  }, [autoSubmit, blackDigits, captureId, captureMetadata, frameMetadata, framesBase64, hydrometerBrand, hydrometerId, hydrometerModel, lastReading, photoBase64, selectedRedDigits, showToast, submitCapture]);
+      .catch(() => null);
 
-  const sendCapture = async () => {
-    await submitCapture(verdict);
+    verdictPromiseRef.current = pendingVerdict;
+  }, [
+    blackDigits,
+    captureId,
+    captureMetadata,
+    frameMetadata,
+    framesBase64,
+    hydrometerBrand,
+    hydrometerId,
+    hydrometerModel,
+    lastReading,
+    photoBase64,
+    selectedRedDigits,
+  ]);
+
+  const submitCapture = useCallback(async (resolvedVerdict: VisionVerdict | null) => {
+    const inferenceId = resolvedVerdict?.inference_id || null;
+    const payload = {
+      hydrometer_id: hydrometerId,
+      // Quando ha inferencia, o backend reutiliza a foto primaria que ja foi
+      // armazenada. O base64 so segue como fallback se a analise falhar.
+      ...(inferenceId ? {} : { photo_base64: photoBase64 }),
+      latitude,
+      longitude,
+      location_accuracy_meters: locationAccuracyMeters,
+      captured_at: capturedAt,
+      vision_inference_id: inferenceId,
+      cycle_id: cycleId,
+    };
+
+    await api.post<OCRData>('/readings', payload);
+    showToast(
+      isInstallation ? 'Captura da instalação enviada' : 'Leitura capturada',
+      'A leitura foi enviada para confirmação no dashboard.',
+      'success',
+    );
+    navigation.navigate('Route', { refreshToken: Date.now() });
+  }, [
+    capturedAt,
+    cycleId,
+    hydrometerId,
+    isInstallation,
+    latitude,
+    locationAccuracyMeters,
+    longitude,
+    navigation,
+    photoBase64,
+    showToast,
+  ]);
+
+  const confirmReading = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const resolvedVerdict = verdictRef.current || await verdictPromiseRef.current;
+      await submitCapture(resolvedVerdict);
+    } catch (error) {
+      showToast(
+        'Falha ao enviar captura',
+        error instanceof Error ? error.message : 'Não foi possível enviar a captura.',
+        'error',
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const locationLabel = useMemo(() => {
-    if (latitude && longitude) {
-      return `${Number(latitude).toFixed(5)}, ${Number(longitude).toFixed(5)}`;
-    }
-    return 'GPS não disponível';
-  }, [latitude, longitude]);
-
   return (
-    <ScrollView style={shared.container} contentContainerStyle={{ padding: 20, paddingBottom: 32 }}>
-      <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={{ color: colors.accent, fontWeight: '700', marginBottom: 16 }}>
-            {isInstallation ? '← Refazer instalacao' : '← Refazer leitura'}
-          </Text>
+    <ScrollView
+      style={shared.container}
+      contentContainerStyle={{
+        flexGrow: 1,
+        padding: 20,
+        paddingBottom: 32,
+        justifyContent: 'center',
+      }}
+    >
+      <TouchableOpacity
+        onPress={() => navigation.goBack()}
+        disabled={submitting}
+        style={{ alignSelf: 'flex-start', marginBottom: 18 }}
+      >
+        <Text style={{ color: colors.accent, fontWeight: '700' }}>
+          ← Tirar outra foto
+        </Text>
       </TouchableOpacity>
 
       {photoUri ? (
         <Image
           source={{ uri: photoUri }}
           resizeMode="contain"
-          style={{ width: '100%', height: 280, borderRadius: 16, marginBottom: 16, backgroundColor: colors.navy700 }}
+          style={{
+            width: '100%',
+            height: 300,
+            borderRadius: 18,
+            marginBottom: 24,
+            backgroundColor: colors.navy700,
+          }}
         />
       ) : null}
 
-      {loading || (autoSubmit && submitting) ? (
-        <View style={shared.card}>
-          <ActivityIndicator size="large" color={colors.accent} />
-          <Text style={{ marginTop: 14, color: colors.textMuted, textAlign: 'center' }}>
-            {loading ? 'Escolhendo a melhor leitura...' : 'Enviando para confirmação no dashboard...'}
-          </Text>
-        </View>
-      ) : (
-        <>
-          <View style={shared.card}>
-            <Text style={shared.sectionTitle}>{isInstallation ? 'Revisao da instalacao' : 'Revisão da associação'}</Text>
-            <Field label="Cliente" value={customerName} />
-            <Field label="Código esperado" value={hydrometerCode} />
-            <Field label="Formato cadastrado" value={`${selectedRedDigits} digitos vermelhos${blackDigits ? `, ${blackDigits} pretos` : ''}`} />
-            {!!hydrometerBrand && <Field label="Marca/modelo" value={[hydrometerBrand, hydrometerModel].filter(Boolean).join(' ')} />}
-            <Field label="Local do hidrômetro" value={locationDescription || 'Não informado'} />
-            <Field label="Localização da coleta" value={locationLabel} />
-            <Field label="Capturado em" value={new Date(capturedAt).toLocaleString('pt-BR')} />
-          </View>
+      <View style={[shared.card, { alignItems: 'center', paddingVertical: 28 }]}>
+        <Text
+          style={{
+            color: colors.textPrimary,
+            fontSize: 22,
+            lineHeight: 29,
+            fontWeight: '800',
+            textAlign: 'center',
+          }}
+        >
+          Tem certeza de que deseja confirmar esta leitura?
+        </Text>
+        <Text
+          style={{
+            color: colors.textSecondary,
+            fontSize: 14,
+            lineHeight: 21,
+            textAlign: 'center',
+            marginTop: 10,
+          }}
+        >
+          Ela só será enviada para revisão no dashboard depois da sua confirmação.
+        </Text>
+      </View>
 
-          {captureNeedsAttention && (
-            <View style={[shared.card, { borderColor: colors.warning, borderWidth: 1 }] }>
-              <Text style={[shared.sectionTitle, { color: colors.warning }]}>Sugestão para melhorar a leitura automática</Text>
-              <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 19 }}>
-                A visão não reuniu consenso suficiente entre os quadros desta captura.
-                {' '}A foto continua válida: você pode refazer ou enviá-la para conferência no dashboard.
-              </Text>
-            </View>
-          )}
-
-          <View style={shared.card}>
-            <Text style={shared.sectionTitle}>Conferencia no dashboard</Text>
-            <Text style={{ color: colors.textSecondary, fontSize: 13, lineHeight: 20 }}>
-              O aplicativo envia somente a foto, o GPS e a analise visual. A medicao oficial e o consumo serao definidos por quem aprovar no dashboard.
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={[shared.btnPrimary, submitting && { opacity: 0.45 }]}
-            onPress={sendCapture}
-            disabled={submitting}
-          >
-            {submitting ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={shared.btnPrimaryText}>
-                {captureNeedsAttention ? 'Enviar assim mesmo para conferência' : 'Enviar captura para conferência'}
-              </Text>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[shared.btnSecondary, { marginTop: 10 }]}
-            onPress={() => navigation.goBack()}
-          >
-            <Text style={shared.btnSecondaryText}>Refazer captura</Text>
-          </TouchableOpacity>
-        </>
-      )}
+      <TouchableOpacity
+        style={[shared.btnPrimary, submitting && { opacity: 0.65 }]}
+        onPress={confirmReading}
+        disabled={submitting}
+      >
+        {submitting ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={shared.btnPrimaryText}>Sim, confirmar leitura</Text>
+        )}
+      </TouchableOpacity>
     </ScrollView>
-  );
-}
-
-function Field({ label, value }: { label: string; value: string }) {
-  return (
-    <View style={{ marginBottom: 12 }}>
-      <Text style={{ color: colors.textMuted, fontSize: 11, fontWeight: '700', marginBottom: 4 }}>{label}</Text>
-      <Text style={{ color: colors.textPrimary, fontSize: 14, fontWeight: '600' }}>{value}</Text>
-    </View>
   );
 }

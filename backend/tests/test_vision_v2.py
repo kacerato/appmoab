@@ -172,6 +172,33 @@ def test_calibration_and_promotion_are_blocked_without_evidence():
 
 
 class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_presence_endpoint_uses_lightweight_inspection(self):
+        user = SimpleNamespace(id=uuid.uuid4())
+        request = HydrometerIdentifyRequest(
+            photo_base64="preview-frame",
+            red_digits=3,
+            black_digits=4,
+            capture_metadata={
+                "guide_crop": {"x": 0.1, "y": 0.2, "width": 0.7, "height": 0.3}
+            },
+        )
+        expected = {"usable": True, "display_found": True}
+
+        with patch.object(
+            hydrometers_router.meter_vision_service,
+            "inspect_capture",
+            return_value=expected,
+        ) as inspect:
+            response = await hydrometers_router.inspect_vision_presence(request, user)
+
+        self.assertEqual(response, expected)
+        inspect.assert_called_once_with(
+            "preview-frame",
+            red_digits=3,
+            black_digits=4,
+            guide_crop={"x": 0.1, "y": 0.2, "width": 0.7, "height": 0.3},
+        )
+
     async def test_training_is_blocked_when_counter_localization_is_not_validated(self):
         inference_id = uuid.uuid4()
         inference = VisionInference(

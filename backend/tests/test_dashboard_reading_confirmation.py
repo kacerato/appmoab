@@ -8,15 +8,43 @@ from fastapi import HTTPException
 from app.models.hydrometer import Hydrometer
 from app.models.notification import Notification
 from app.models.system_setting import SystemSetting
-from app.routers.readings import _evaluate_location, _installation_billing_values
+from app.models.vision_inference import VisionInference
+from app.routers.readings import (
+    _evaluate_location,
+    _installation_billing_values,
+    _resolve_reading_photo_url,
+)
 from app.routers.hydrometers import _validate_manual_base_adjustment
-from app.schemas.reading import ReadingApprove, ReadingResponse
+from app.schemas.reading import ReadingApprove, ReadingCreate, ReadingResponse
 from app.schemas.invoice import InvoiceCancelRequest
 from app.services.invoice_whatsapp import MAX_ATTEMPTS, _schedule_retry
 from app.services.whatsapp_api import WhatsAppService
 
 
 class DashboardReadingContractTest(unittest.TestCase):
+    def test_current_app_reuses_primary_vision_frame_without_uploading_photo_again(self):
+        primary_photo = "r2://bucket/vision/capture/frames/frame-00.jpg"
+        inference = VisionInference(
+            stage="reading",
+            model_version="test",
+            confidence=0.8,
+            frame_object_keys=[
+                primary_photo,
+                "r2://bucket/vision/capture/frames/frame-01.jpg",
+            ],
+        )
+        request = ReadingCreate(
+            hydrometer_id="22222222-2222-2222-2222-222222222222",
+            captured_at=datetime(2026, 7, 27, tzinfo=timezone.utc),
+            vision_inference_id="33333333-3333-3333-3333-333333333333",
+        )
+
+        with patch("app.routers.readings.save_photo_from_base64") as upload:
+            resolved = _resolve_reading_photo_url(request, inference)
+
+        self.assertEqual(resolved, primary_photo)
+        upload.assert_not_called()
+
     def test_installation_cannot_be_bypassed_by_manual_base_patch(self):
         hydrometer = Hydrometer(last_reading_date=None, last_reading_value=0)
 
