@@ -9,6 +9,7 @@ from urllib.parse import quote
 from app.config import get_settings
 
 settings = get_settings()
+HISTORICAL_IMPORT_PHOTO_PREFIX = "historical-import:"
 
 
 def _r2_enabled() -> bool:
@@ -120,6 +121,8 @@ def save_photo_from_base64(base64_data: str, prefix: str = "reading") -> str:
 
 
 def build_public_upload_url(filepath: str) -> str:
+    if filepath.startswith(HISTORICAL_IMPORT_PHOTO_PREFIX):
+        return ""
     if filepath.startswith("r2://"):
         bucket_and_key = filepath.removeprefix("r2://")
         _, _, key = bucket_and_key.partition("/")

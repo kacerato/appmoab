@@ -17,3 +17,9 @@ def test_r2_client_is_reused_between_artifact_uploads():
         storage._r2_client.cache_clear()
 
     boto3.client.assert_called_once()
+
+
+def test_historical_import_has_no_fake_photo_url():
+    assert storage.build_public_upload_url(
+        "historical-import:mar-azul-2026-07-27/2026-06"
+    ) == ""

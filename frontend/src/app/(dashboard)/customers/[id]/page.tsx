@@ -467,9 +467,13 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                     {reading.collaborator_name ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{reading.collaborator_name}</div> : null}
                   </td>
                   <td>
-                    <a className="btn btn-secondary btn-sm" href={reading.photo_url.startsWith('http') ? reading.photo_url : `${API_BASE}${reading.photo_url}`} target="_blank" rel="noreferrer">
-                      Abrir foto
-                    </a>
+                    {reading.photo_url ? (
+                      <a className="btn btn-secondary btn-sm" href={reading.photo_url.startsWith('http') ? reading.photo_url : `${API_BASE}${reading.photo_url}`} target="_blank" rel="noreferrer">
+                        Abrir foto
+                      </a>
+                    ) : (
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Sem foto (importada)</span>
+                    )}
                   </td>
                 </tr>
               ))}

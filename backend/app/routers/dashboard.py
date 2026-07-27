@@ -15,6 +15,7 @@ from app.models.deduction import Deduction
 from app.models.notification import Notification
 from app.models.user import User
 from app.utils.security import get_current_user
+from app.utils.storage import HISTORICAL_IMPORT_PHOTO_PREFIX
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
@@ -43,7 +44,11 @@ async def _operational_issues(db: AsyncSession, limit: int = 12) -> list[dict]:
         .join(Hydrometer, Hydrometer.id == Reading.hydrometer_id)
         .join(Customer, Customer.id == Hydrometer.customer_id)
         .outerjoin(Invoice, Invoice.reading_id == Reading.id)
-        .where(Reading.status == "approved", Invoice.id.is_(None))
+        .where(
+            Reading.status == "approved",
+            Invoice.id.is_(None),
+            Reading.photo_url.not_like(f"{HISTORICAL_IMPORT_PHOTO_PREFIX}%"),
+        )
         .with_only_columns(
             literal("approved_reading_without_invoice").label("code"),
             literal("Leitura aprovada sem fatura").label("title"),
