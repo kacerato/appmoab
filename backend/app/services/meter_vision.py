@@ -357,11 +357,14 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
             continue
         if area < image.shape[0] * image.shape[1] * 0.000018:
             continue
-        # O ponteiro circular é vermelho, grande e quase preenchido. Os glifos
-        # dos roletes são mais altos que largos e têm bastante fundo claro
-        # dentro da caixa. Sem este filtro, o dial passa a ser o "último slot".
+        # O ponteiro circular é vermelho, grande e quase preenchido. Alguns
+        # mostradores Akvometer, porém, usam glifos vermelhos largos/blocados
+        # que passam de 0.68 de preenchimento. O limite antigo eliminava os
+        # três roletes reais e fazia o fallback recortar a metade inferior do
+        # hidrômetro. A geometria do grupo e a validação semântica posterior
+        # continuam impedindo que o ponteiro isolado vire uma janela.
         fill_ratio = area / max(float(component_width * component_height), 1.0)
-        if fill_ratio > 0.68:
+        if fill_ratio > 0.90:
             continue
         center_x = x + component_width / 2
         center_y = y + component_height / 2

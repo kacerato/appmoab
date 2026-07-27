@@ -17,6 +17,7 @@ import * as SecureStore from 'expo-secure-store';
 import Svg, { Circle, Line, Path, Rect } from 'react-native-svg';
 import { useAuth } from '../lib/auth';
 import { api } from '../lib/api';
+import { getActiveCaptureUploads, subscribeCaptureUploads } from '../lib/capture-upload';
 import { useFeedback } from '../lib/feedback';
 import { useMobileTheme } from '../lib/mobile-theme';
 import { formatMeterReading } from '../lib/meter-reading';
@@ -92,6 +93,9 @@ export default function RouteScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
+  const [uploadingHydrometerIds, setUploadingHydrometerIds] = useState<ReadonlySet<string>>(
+    () => getActiveCaptureUploads(),
+  );
   const lastLoadedAtRef = useRef<number | null>(null);
   const loadInFlightRef = useRef<Promise<void> | null>(null);
   const [query, setQuery] = useState('');
@@ -221,6 +225,11 @@ export default function RouteScreen() {
     return () => subscription.remove();
   }, [load]);
 
+  useEffect(() => subscribeCaptureUploads(activeIds => {
+    setUploadingHydrometerIds(activeIds);
+    void load(true);
+  }), [load]);
+
   const routeItems = useMemo(() => {
     const byHydrometer = new Map<string, ReadingItem>();
     for (const reading of todayReadings) {
@@ -236,7 +245,14 @@ export default function RouteScreen() {
         return {
           customer,
           hydrometer,
-          todayStatus: hydrometer?.cycle_status === 'pending_review'
+          todayStatus: hydrometer && uploadingHydrometerIds.has(hydrometer.id)
+            ? {
+                hydrometer_id: hydrometer.id,
+                collaborator_id: '',
+                captured_at: new Date().toISOString(),
+                status: 'uploading',
+              }
+            : hydrometer?.cycle_status === 'pending_review'
             ? {
                 hydrometer_id: hydrometer.id,
                 collaborator_id: '',
@@ -263,11 +279,15 @@ export default function RouteScreen() {
           (item.hydrometer.location_description || '').toLowerCase().includes(search)
         );
       });
-  }, [customers, query, todayReadings]);
+  }, [customers, query, todayReadings, uploadingHydrometerIds]);
 
   const stats = useMemo(() => {
     const total = routeItems.length;
-    const completed = routeItems.filter(item => item.todayStatus && item.todayStatus.status !== 'rejected').length;
+    const completed = routeItems.filter(item => (
+      item.todayStatus
+      && item.todayStatus.status !== 'rejected'
+      && item.todayStatus.status !== 'uploading'
+    )).length;
     const installations = routeItems.filter(item => !item.hydrometer.last_reading_date).length;
     return { total, pending: Math.max(total - completed, 0), completed, installations };
   }, [routeItems]);
@@ -275,7 +295,11 @@ export default function RouteScreen() {
   const tasks = useMemo(() => {
     const mapped = routeItems.map(item => ({
       ...item,
-      done: Boolean(item.todayStatus && item.todayStatus.status !== 'rejected'),
+      done: Boolean(
+        item.todayStatus
+        && item.todayStatus.status !== 'rejected'
+        && item.todayStatus.status !== 'uploading',
+      ),
     }));
     if (taskFilter === 'pending') return mapped.filter(item => !item.done);
     if (taskFilter === 'done') return mapped.filter(item => item.done);
@@ -485,7 +509,9 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
   const isInstallation = !item.hydrometer.last_reading_date;
   const locked = Boolean(item.todayStatus && item.todayStatus.status !== 'rejected');
   const actionLabel = locked
-    ? item.todayStatus?.status === 'approved'
+    ? item.todayStatus?.status === 'uploading'
+      ? 'Enviando...'
+      : item.todayStatus?.status === 'approved'
       ? 'Concluído'
       : 'Em revisão'
     : isInstallation ? 'Iniciar instalação' : 'Escanear';
@@ -666,6 +692,7 @@ function StatusBadge({ status, mode = 'reading' }: { status: string; mode?: 'rea
   if (mode === 'installation') palette = { backgroundColor: colors.accentSoft, color: colors.accent, label: 'Instalar' };
   if (status === 'open') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Disponivel' };
   if (status === 'pending') palette = { backgroundColor: colors.warningSoft, color: colors.warning, label: 'Revisão' };
+  if (status === 'uploading') palette = { backgroundColor: colors.accentSoft, color: colors.accent, label: 'Enviando' };
   if (status === 'approved') palette = { backgroundColor: colors.successSoft, color: colors.success, label: 'Ok' };
   if (status === 'rejected') palette = { backgroundColor: colors.dangerSoft, color: colors.danger, label: 'Revisar' };
   return (

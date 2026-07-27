@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { api } from '../lib/api';
+import { enqueueCaptureUpload } from '../lib/capture-upload';
 import { useFeedback } from '../lib/feedback';
 import { colors, shared } from '../styles/theme';
 
@@ -140,18 +141,34 @@ export default function OCRResultScreen() {
   const confirmReading = async () => {
     if (submitting) return;
     setSubmitting(true);
-    try {
-      const resolvedVerdict = verdictRef.current || await verdictPromiseRef.current;
-      await submitCapture(resolvedVerdict);
-    } catch (error) {
+
+    const enqueued = enqueueCaptureUpload(hydrometerId, async () => {
+      try {
+        const resolvedVerdict = verdictRef.current || await verdictPromiseRef.current;
+        await submitCapture(resolvedVerdict);
+      } catch (error) {
+        showToast(
+          'Falha ao enviar captura',
+          error instanceof Error ? error.message : 'Não foi possível enviar a captura.',
+          'error',
+        );
+      }
+    });
+
+    if (!enqueued) {
       showToast(
-        'Falha ao enviar captura',
-        error instanceof Error ? error.message : 'Não foi possível enviar a captura.',
-        'error',
+        'Captura já está sendo enviada',
+        'Aguarde a conclusão antes de iniciar outra captura neste hidrômetro.',
+        'warning',
       );
-    } finally {
-      setSubmitting(false);
+    } else {
+      showToast(
+        'Envio iniciado',
+        'Você pode continuar usando o app enquanto a captura é processada.',
+        'info',
+      );
     }
+    navigation.navigate('Route', { refreshToken: Date.now() });
   };
 
   return (

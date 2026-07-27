@@ -133,6 +133,24 @@ def _result_code(result: VisionResult, *, total_digits: int, red_digits: int) ->
     return str(raw).zfill(total_digits)[-total_digits:]
 
 
+def _is_fusion_eligible(result: VisionResult, *, total_digits: int) -> bool:
+    """Aceita apenas quadros que realmente localizaram e leram o visor."""
+
+    if len(result.digits or []) != total_digits:
+        return False
+    if result.predicted_code is None and result.predicted_value is None:
+        return False
+    if {
+        "insufficient_text_evidence",
+        "unsafe_prediction_rejected",
+    }.intersection(result.flags or []):
+        return False
+    display_detection = (result.quality or {}).get("display_detection") or {}
+    if display_detection and not display_detection.get("localization_valid", False):
+        return False
+    return True
+
+
 def _normalize_distribution(values: list[float]) -> list[float]:
     safe = [max(float(value), 0.0) for value in values[:10]]
     safe.extend([0.0] * (10 - len(safe)))
@@ -260,10 +278,42 @@ def fuse_burst_results(
         raise ValueError("Burst sem resultados")
     selected_index = max(0, min(selected_index, len(results) - 1))
     total_digits = max(3, min(int(black_digits) + int(red_digits), 10))
-    eligible = [result for result in results if len(result.digits or []) == total_digits]
+    eligible_pairs = [
+        (index, result)
+        for index, result in enumerate(results)
+        if _is_fusion_eligible(result, total_digits=total_digits)
+    ]
+    eligible = [result for _, result in eligible_pairs]
     if len(eligible) < 2:
+        if eligible_pairs:
+            eligible_index, eligible_result = max(
+                eligible_pairs,
+                key=lambda item: (_quality_weight(item[1]), item[1].confidence),
+            )
+            selected = copy.deepcopy(eligible_result)
+            selected.decision = "confirm" if selected.quality.get("usable", True) else "recapture"
+            selected.auto_fill_allowed = False
+            return eligible_index, selected
+
         selected = copy.deepcopy(results[selected_index])
-        selected.decision = "recapture" if not selected.quality.get("usable", True) else "confirm"
+        selected.predicted_code = None
+        selected.predicted_value = None
+        selected.alternatives = []
+        selected.confidence = 0.0
+        selected.calibrated_confidence = 0.0
+        selected.decision = "recapture"
+        selected.auto_fill_allowed = False
+        selected.flags = list(dict.fromkeys([
+            *selected.flags,
+            "burst_without_valid_display_evidence",
+        ]))
+        selected.quality = {
+            **(selected.quality or {}),
+            "recapture_reason": (
+                (selected.quality or {}).get("recapture_reason")
+                or "O visor não foi localizado com segurança. Refaca a foto."
+            ),
+        }
         return selected_index, selected
 
     log_scores = [[0.0] * 10 for _ in range(total_digits)]

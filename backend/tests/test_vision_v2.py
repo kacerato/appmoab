@@ -118,6 +118,34 @@ def test_temporal_fusion_keeps_transition_state_and_requires_calibration():
     assert result.quality["temporal_fusion"]["calibrated"] is False
 
 
+def test_temporal_fusion_never_revives_prediction_from_invalid_display_crops():
+    invalid_results = []
+    for _ in range(3):
+        result = _result("0000410", 0.84)
+        result.predicted_code = None
+        result.predicted_value = None
+        result.flags = ["insufficient_text_evidence", "fallback_roi"]
+        result.quality["display_detection"] = {
+            "source": "guide_fallback",
+            "localization_valid": False,
+        }
+        invalid_results.append(result)
+
+    _, fused = fuse_burst_results(
+        invalid_results,
+        selected_index=0,
+        red_digits=3,
+        black_digits=4,
+        previous_value=90.6,
+    )
+
+    assert fused.predicted_code is None
+    assert fused.predicted_value is None
+    assert fused.decision == "recapture"
+    assert fused.confidence == 0.0
+    assert "burst_without_valid_display_evidence" in fused.flags
+
+
 def test_capture_contract_limits_burst_and_accepts_slot_labels():
     request = HydrometerIdentifyRequest(
         photo_base64="abc",
