@@ -96,22 +96,6 @@ def _has_stable_visual_pair(results: list[VisionResult], *, red_digits: int, bla
     return bool(codes and Counter(codes).most_common(1)[0][1] >= 2)
 
 
-async def _upload_vision_frames(frames: list[str], object_prefix: str) -> list[str]:
-    decoded_frames = await asyncio.gather(*[
-        asyncio.to_thread(decode_base64_upload, frame, "jpg")
-        for frame in frames
-    ])
-    return list(await asyncio.gather(*[
-        asyncio.to_thread(
-            save_binary,
-            raw,
-            f"{object_prefix}/frames/frame-{index:02d}.{ext}",
-            content_type,
-        )
-        for index, (ext, raw, content_type) in enumerate(decoded_frames)
-    ]))
-
-
 async def _fetch_hydrometer_response(db: AsyncSession, hydrometer_id: uuid.UUID) -> Hydrometer | None:
     result = await db.execute(
         select(Hydrometer)
@@ -420,9 +404,6 @@ async def kimi_vision_verdict(
 ):
     """Executa o motor local especializado; GLM, quando habilitado, fica apenas em sombra."""
     frames = [data.photo_base64, *data.frames_base64[:7]]
-    inference_id = uuid.uuid4()
-    object_prefix = f"vision/{datetime.now(timezone.utc):%Y/%m/%d}/{inference_id}"
-    frame_upload_task = asyncio.create_task(_upload_vision_frames(frames, object_prefix))
     frame_guide_crops = []
     for index in range(len(frames)):
         frame_metadata = data.frame_metadata[index] if index < len(data.frame_metadata) else {}
@@ -506,11 +487,23 @@ async def kimi_vision_verdict(
                 hydrometer_brand=data.hydrometer_brand,
                 hydrometer_model=data.hydrometer_model,
             )
+    inference_id = uuid.uuid4()
     original_key = None
     rectified_key = None
     frame_keys: list[str] = []
     try:
-        frame_keys = await frame_upload_task
+        object_prefix = f"vision/{datetime.now(timezone.utc):%Y/%m/%d}/{inference_id}"
+        decoded_frames = [decode_base64_upload(frame, "jpg") for frame in frames]
+        frame_uploads = [
+            asyncio.to_thread(
+                save_binary,
+                raw,
+                f"{object_prefix}/frames/frame-{index:02d}.{ext}",
+                content_type,
+            )
+            for index, (ext, raw, content_type) in enumerate(decoded_frames)
+        ]
+        frame_keys = list(await asyncio.gather(*frame_uploads))
         original_key = frame_keys[best_index]
         if vision_result.rectified_jpeg:
             rectified_key = await asyncio.to_thread(
