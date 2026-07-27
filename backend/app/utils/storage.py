@@ -2,6 +2,7 @@ import base64
 import hashlib
 import os
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -20,6 +21,7 @@ def _r2_enabled() -> bool:
     )
 
 
+@lru_cache(maxsize=1)
 def _r2_client():
     try:
         import boto3
