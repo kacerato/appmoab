@@ -62,6 +62,7 @@ class Hydrometer(Base):
     # ── Relationships ──────────────────────────────────────────
     customer = relationship("Customer", back_populates="hydrometers")
     readings = relationship("Reading", back_populates="hydrometer", cascade="all, delete-orphan")
+    reading_cycles = relationship("ReadingCycle", back_populates="hydrometer", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         return f"<Hydrometer {self.code} (last: {self.last_reading_value} m³)>"

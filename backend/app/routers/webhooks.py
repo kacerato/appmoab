@@ -14,6 +14,7 @@ from app.database import get_db
 from app.config import get_settings
 from app.models.customer import Customer
 from app.models.invoice import Invoice
+from app.models.reading_cycle import ReadingCycle
 from app.models.invoice_event import InvoiceEvent
 from app.models.whatsapp_message import WhatsAppMessage
 from app.services.efi_api import efi_service
@@ -240,6 +241,10 @@ async def efi_webhook(
     invoice.efi_raw_response = detail
     mapped_status = _map_efi_status(current_status, invoice)
     invoice.status = mapped_status
+    if invoice.cycle_id and mapped_status in {"paid", "cancelled"}:
+        cycle = await db.get(ReadingCycle, invoice.cycle_id)
+        if cycle:
+            cycle.status = "paid" if mapped_status == "paid" else "invoice_cancelled"
     if mapped_status == "paid":
         received_at = latest.get("received_by_bank_at") or latest.get("created_at")
         try:

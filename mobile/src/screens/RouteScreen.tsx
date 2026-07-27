@@ -36,6 +36,12 @@ interface Hydrometer {
   model?: string | null;
   location_description?: string | null;
   last_reading_date?: string | null;
+  cycle_id?: string | null;
+  cycle_status?: string | null;
+  cycle_state?: string | null;
+  cycle_reference_month?: string | null;
+  cycle_due_date?: string | null;
+  rejection_reason?: string | null;
 }
 
 interface Customer {
@@ -56,6 +62,17 @@ interface ReadingItem {
   status: string;
   customer_name?: string | null;
   hydrometer_code?: string | null;
+}
+
+interface RouteTask {
+  cycle_id: string;
+  reference_month: string;
+  due_date: string;
+  cycle_status: string;
+  state: string;
+  rejection_reason?: string | null;
+  customer: Customer;
+  hydrometer: Hydrometer;
 }
 
 function getMessage(error: unknown, fallback: string) {
@@ -93,7 +110,7 @@ export default function RouteScreen() {
 
   const load = useCallback(async (force = false, notifyFailure = false) => {
     const now = Date.now();
-    if (!force && lastLoadedAtRef.current && now - lastLoadedAtRef.current < 45000) {
+    if (!force && lastLoadedAtRef.current && now - lastLoadedAtRef.current < 5000) {
       setLoading(false);
       setRefreshing(false);
       return;
@@ -105,14 +122,25 @@ export default function RouteScreen() {
 
     if (!force && !lastLoadedAtRef.current) setLoading(true);
     const request = (async () => {
-      const customersRequest = api.get<{ items: Customer[] }>('/customers?has_hydrometer=true&status=active&per_page=2000&route_scope=true');
+      const customersRequest = api.get<{ items: RouteTask[] }>('/customers/route-tasks');
       const readingsRequest = api.get<{ items: ReadingItem[] }>('/readings?per_page=100');
       const [customersResult, readingsResult] = await Promise.allSettled([customersRequest, readingsRequest]);
 
       let nextCustomers: Customer[] | null = null;
       let nextReadings: ReadingItem[] | null = null;
       if (customersResult.status === 'fulfilled') {
-        nextCustomers = (customersResult.value.items || []).filter(customer => customer.hydrometers?.length);
+        nextCustomers = (customersResult.value.items || []).map(task => ({
+          ...task.customer,
+          hydrometers: [{
+            ...task.hydrometer,
+            cycle_id: task.cycle_id,
+            cycle_status: task.cycle_status,
+            cycle_state: task.state,
+            cycle_reference_month: task.reference_month,
+            cycle_due_date: task.due_date,
+            rejection_reason: task.rejection_reason || null,
+          }],
+        }));
         setCustomers(nextCustomers);
       } else if (notifyFailure) {
         showToast('Falha ao carregar clientes', getMessage(customersResult.reason, 'Nao foi possivel buscar sua rota.'), 'error');
@@ -175,14 +203,18 @@ export default function RouteScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      void load();
+      void load(true);
+      const interval = setInterval(() => {
+        void load(true);
+      }, 5000);
+      return () => clearInterval(interval);
     }, [load]),
   );
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
-        void load();
+        void load(true);
       }
     });
     return () => subscription.remove();
@@ -203,7 +235,21 @@ export default function RouteScreen() {
         return {
           customer,
           hydrometer,
-          todayStatus: hydrometer ? byHydrometer.get(hydrometer.id) : undefined,
+          todayStatus: hydrometer?.cycle_status === 'pending_review'
+            ? {
+                hydrometer_id: hydrometer.id,
+                collaborator_id: '',
+                captured_at: new Date().toISOString(),
+                status: 'pending',
+              }
+            : hydrometer?.cycle_status === 'recapture_required'
+              ? {
+                  hydrometer_id: hydrometer.id,
+                  collaborator_id: '',
+                  captured_at: new Date().toISOString(),
+                  status: 'rejected',
+                }
+              : hydrometer ? byHydrometer.get(hydrometer.id) : undefined,
         };
       })
       .filter(item => item.hydrometer)
@@ -250,6 +296,8 @@ export default function RouteScreen() {
       hydrometerModel: item.hydrometer.model || '',
       locationDescription: item.hydrometer.location_description || '',
       isInstallation: !item.hydrometer.last_reading_date,
+      cycleId: item.hydrometer.cycle_id || null,
+      cycleReferenceMonth: item.hydrometer.cycle_reference_month || null,
     });
   }, [navigation]);
 
@@ -275,7 +323,7 @@ export default function RouteScreen() {
         {activeTab === 'home' && (
           <FlatList
             data={routeItems}
-            keyExtractor={item => item.customer.id}
+            keyExtractor={item => `${item.customer.id}-${item.hydrometer.id}`}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
             contentContainerStyle={styles.listContent}
             ListHeaderComponent={
@@ -310,7 +358,7 @@ export default function RouteScreen() {
         {activeTab === 'tasks' && (
           <FlatList
             data={tasks}
-            keyExtractor={item => item.customer.id}
+            keyExtractor={item => `${item.customer.id}-${item.hydrometer.id}`}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
             contentContainerStyle={styles.listContent}
             ListHeaderComponent={
@@ -458,6 +506,14 @@ function CustomerCard({ item, onPress }: { item: { customer: Customer; hydromete
         />
       </View>
       {isInstallation && <Text style={styles.installationPill}>Instalação: informar valor inicial, foto e local</Text>}
+      {item.hydrometer.cycle_state === 'late' && (
+        <Text style={styles.installationPill}>Leitura {item.hydrometer.cycle_reference_month} atrasada</Text>
+      )}
+      {item.hydrometer.cycle_state === 'recapture_required' && (
+        <Text style={styles.installationPill}>
+          Nova captura: {item.hydrometer.rejection_reason || 'leitura rejeitada no painel'}
+        </Text>
+      )}
       {!!item.hydrometer.location_description && <Text style={styles.locationText}>{item.hydrometer.location_description}</Text>}
       <Text style={styles.metaLine}>
         Mostrador: {item.hydrometer.red_digits || 3} dígitos vermelhos

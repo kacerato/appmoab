@@ -590,6 +590,46 @@ def _trained_display_detector():
         return None
 
 
+def _normalize_meter_orientation(image, red_digits: int, black_digits: int):
+    """Normaliza fotos feitas com o aparelho de lado antes de localizar o visor."""
+    candidates = (
+        (0, image),
+        (90, cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)),
+        (-90, cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)),
+    )
+    detector = _trained_display_detector()
+    best = None
+    for degrees, candidate in candidates:
+        learned = detector.detect(candidate) if detector is not None else None
+        corners = learned.corners if learned is not None else None
+        source = "detector_onnx" if corners is not None else "red_roller_anchor"
+        if corners is None:
+            corners = _red_roller_strip_candidate(candidate, red_digits, black_digits)
+        if corners is None:
+            continue
+        ordered = _order_corners(corners)
+        horizontal = max(
+            float(np.linalg.norm(ordered[1] - ordered[0])),
+            float(np.linalg.norm(ordered[2] - ordered[3])),
+        )
+        vertical = max(
+            float(np.linalg.norm(ordered[3] - ordered[0])),
+            float(np.linalg.norm(ordered[2] - ordered[1])),
+        )
+        area_ratio = horizontal * vertical / max(float(candidate.shape[0] * candidate.shape[1]), 1.0)
+        aspect = horizontal / max(vertical, 1.0)
+        score = min(aspect, 8.0) * 0.08 + min(area_ratio, 0.25) * 2.0
+        if learned is not None:
+            score += float(learned.confidence) * 1.5
+        if degrees == 0:
+            score += 0.015
+        if best is None or score > best[0]:
+            best = (score, candidate, degrees, source)
+    if best is None:
+        return image, 0, "unresolved"
+    return best[1], best[2], best[3]
+
+
 @lru_cache(maxsize=1)
 def _sequence_ocr_engine():
     return RapidOCR() if RapidOCR is not None else None
@@ -730,8 +770,6 @@ def _full_frame_ocr_sequences(
         if len(digits) < total_digits or len(digits) > total_digits + 3:
             continue
         has_meter_hint = any(token in lowered for token in ("m", "b", "h", "）", ")"))
-        if not has_meter_hint and len(digits) != total_digits:
-            continue
         geometry_bonus = 0.0
         if box is not None and box.size:
             center_y = float(box[:, 1].mean()) / max(frame.shape[0], 1)
@@ -746,6 +784,8 @@ def _full_frame_ocr_sequences(
             agreement = 0
             if len(slot_digits) == total_digits:
                 agreement = sum(left == right for left, right in zip(sequence, slot_digits))
+            if not has_meter_hint and agreement < total_digits - 1:
+                continue
             # Score composto: texto do OCR + concordância com os slots, punindo
             # deleções extras. O limiar fica no chamador.
             candidate_score = _clamp(score * 0.78 + (agreement / total_digits) * 0.22 + geometry_bonus - penalty)
@@ -948,7 +988,7 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
                 if abs(hint_center_y - center_y) <= box_height * 1.8 and 0 <= hint_left_x - right_x <= box_width * 0.28:
                     has_meter_hint = True
                     break
-        if not has_meter_hint and len(digits) != total_digits:
+        if not has_meter_hint:
             continue
         unit_x = horizontal / max(box_width, 1.0)
         unit_y = vertical / max(box_height, 1.0)
@@ -1497,6 +1537,11 @@ class MeterVisionService:
 
         resolved_red = red_digits if red_digits is not None and red_digits >= 0 else 3
         resolved_black = black_digits or 4
+        inspection_image, orientation_degrees, orientation_source = _normalize_meter_orientation(
+            inspection_image,
+            resolved_red,
+            resolved_black,
+        )
         detector = _trained_display_detector()
         learned_detection = detector.detect(inspection_image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
@@ -1561,6 +1606,8 @@ class MeterVisionService:
             "image_height": original_height,
             "inspection_width": width,
             "inspection_height": height,
+            "orientation_correction_degrees": orientation_degrees,
+            "orientation_source": orientation_source,
         }
 
     def analyze(
@@ -1639,8 +1686,13 @@ class MeterVisionService:
                 "recapture_reason": "Não foi possível abrir a imagem capturada.",
             }, [], [], ["decode_failed"])
 
-        frame_quality = _quality(image)
         resolved_black_digits = black_digits or 4
+        image, orientation_degrees, orientation_source = _normalize_meter_orientation(
+            image,
+            red_digits,
+            resolved_black_digits,
+        )
+        frame_quality = _quality(image)
         total_digits = resolved_black_digits + red_digits
         total_digits = max(3, min(total_digits, 10))
         detector = _trained_display_detector()
@@ -2057,6 +2109,8 @@ class MeterVisionService:
             "rejected_prediction": rejected_prediction,
         }
         quality_payload["model_ready"] = True
+        quality_payload["orientation_correction_degrees"] = orientation_degrees
+        quality_payload["orientation_source"] = orientation_source
         predicted_code_result = None
         if predicted_value is not None:
             predicted_code_result = str(

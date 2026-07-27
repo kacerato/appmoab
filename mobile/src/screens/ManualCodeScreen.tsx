@@ -34,6 +34,8 @@ export default function ManualCodeScreen() {
     hydrometerModel = '',
     locationDescription,
     isInstallation = false,
+    cycleId = null,
+    cycleReferenceMonth = null,
   } = route.params;
   const [code, setCode] = useState(expectedHydrometerCode || '');
   const [submitting, setSubmitting] = useState(false);
@@ -85,6 +87,8 @@ export default function ManualCodeScreen() {
         hydrometerModel: result.model || hydrometerModel,
         locationDescription: result.location_description || locationDescription,
         isInstallation: result.last_reading_date === null || result.last_reading_date === undefined ? true : isInstallation,
+        cycleId,
+        cycleReferenceMonth,
       });
     } catch (error) {
       showToast('Falha ao validar codigo', error instanceof Error ? error.message : 'Nao foi possivel validar o codigo.', 'error');

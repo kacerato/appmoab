@@ -20,6 +20,7 @@ class ReadingCreate(BaseModel):
     captured_at: datetime
     anomaly_override_reason: str | None = None
     vision_inference_id: UUID | None = None
+    cycle_id: UUID | None = None
 
 
 class ReadingOCRResult(BaseModel):
@@ -62,6 +63,9 @@ class ReadingResponse(BaseModel):
     photo_extracted_value: float | None
     ocr_confidence: float | None
     vision_inference_id: UUID | None = None
+    cycle_id: UUID | None = None
+    reference_month: str | None = None
+    reading_kind: str = "water"
     latitude: float | None
     longitude: float | None
     location_accuracy_meters: float | None = None
@@ -93,6 +97,9 @@ class ReadingResponse(BaseModel):
     vision_quality: dict = Field(default_factory=dict)
     vision_flags: list = Field(default_factory=list)
     vision_rectified_url: str | None = None
+    vision_original_url: str | None = None
+    vision_frame_urls: list[str] = Field(default_factory=list)
+    vision_selected_frame_index: int | None = None
 
     model_config = {"from_attributes": True}
 

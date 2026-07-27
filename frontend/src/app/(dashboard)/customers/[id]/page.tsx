@@ -8,6 +8,8 @@ import { api } from '@/lib/api';
 import { fileToDataUrl } from '@/lib/file-base64';
 import { ArrowLeft, Calendar, Droplets, Edit2, FileText, Loader2, MapPin, Plus, Trash2, Upload, X } from 'lucide-react';
 
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
+
 interface CustomerAttachment {
   id: string;
   original_name: string;
@@ -68,6 +70,19 @@ interface Invoice {
   days_until_due: number | null;
   reference_month: string;
   consumption_m3: number;
+  charge_type: string;
+  reading_id: string | null;
+}
+
+interface ApprovedReading {
+  id: string;
+  current_value: number | null;
+  consumption: number | null;
+  captured_at: string;
+  reference_month: string | null;
+  reading_kind: string;
+  photo_url: string;
+  collaborator_name: string | null;
 }
 
 function fmt(value: number) {
@@ -110,6 +125,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const { confirm, notify } = useAppFeedback();
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [approvedReadings, setApprovedReadings] = useState<ApprovedReading[]>([]);
   const [loading, setLoading] = useState(true);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showAttachmentModal, setShowAttachmentModal] = useState(false);
@@ -135,7 +151,10 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
   const billingReferenceMonth = customer?.next_invoice_reference_month || currentReferenceMonth();
   const currentCycleInvoice = useMemo(
-    () => invoices.find(invoice => invoice.reference_month === billingReferenceMonth),
+    () => invoices.find(invoice => (
+      invoice.reference_month === billingReferenceMonth
+      && (invoice.charge_type === 'water' || invoice.charge_type === 'installation')
+    )),
     [billingReferenceMonth, invoices],
   );
   const primaryHydrometer = customer?.hydrometers[0] || null;
@@ -153,10 +172,12 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     Promise.all([
       api.get<Customer>(`/customers/${id}`, { skipCache: true }),
       api.get<{ items: Invoice[] }>(`/invoices?customer_id=${id}&per_page=10`, { skipCache: true }),
+      api.get<{ items: ApprovedReading[] }>(`/readings?customer_id=${id}&status=approved&per_page=100`, { skipCache: true }),
     ])
-      .then(([c, inv]) => {
+      .then(([c, inv, readings]) => {
         setCustomer(c);
         setInvoices(inv.items);
+        setApprovedReadings(readings.items);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -351,8 +372,24 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           <CycleStep label="Referencia" value={billingReferenceMonth} tone="info" />
           <CycleStep
             label="Leitura"
-            value={primaryHydrometer?.last_reading_date ? new Date(primaryHydrometer.last_reading_date).toLocaleDateString('pt-BR') : 'Pendente'}
-            tone={primaryHydrometer?.last_reading_date ? 'success' : 'warning'}
+            value={
+              customer.billing_status === 'reading_pending'
+                ? 'Aguardando aprovacao'
+                : customer.billing_status === 'reading_rejected'
+                  ? 'Nova captura obrigatoria'
+                  : customer.billing_status === 'reading_overdue'
+                    ? 'Pendente e atrasada'
+                    : primaryHydrometer?.last_reading_date
+                      ? new Date(primaryHydrometer.last_reading_date).toLocaleDateString('pt-BR')
+                      : 'Pendente'
+            }
+            tone={
+              customer.billing_status === 'reading_overdue' || customer.billing_status === 'reading_rejected'
+                ? 'danger'
+                : customer.billing_status === 'reading_pending' || !primaryHydrometer?.last_reading_date
+                  ? 'warning'
+                  : 'success'
+            }
           />
           <CycleStep
             label="Fatura"
@@ -393,11 +430,51 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                   {hydrometer.last_reading_date && ` • ${new Date(hydrometer.last_reading_date).toLocaleDateString('pt-BR')}`}
                 </div>
               </div>
-              <button className="btn btn-secondary btn-sm" onClick={() => openHydrometerAdjust(hydrometer)}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => openHydrometerAdjust(hydrometer)}
+                disabled={!hydrometer.last_reading_date}
+                title={!hydrometer.last_reading_date ? 'Conclua a instalacao pelo app antes de ajustar a base.' : undefined}
+              >
                 Ajustar base
               </button>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card-header">
+          <div>
+            <span className="card-title">Historico de leituras aprovadas</span>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>{approvedReadings.length} registro(s)</span>
+          </div>
+        </div>
+        <div className="table-wrapper" style={{ border: 'none' }}>
+          <table className="data-table">
+            <thead><tr><th>Referencia</th><th>Tipo</th><th>Leitura</th><th>Consumo</th><th>Capturada em</th><th>Foto</th></tr></thead>
+            <tbody>
+              {!approvedReadings.length ? (
+                <tr><td colSpan={6}><div className="empty-state" style={{ padding: 24 }}><p>Nenhuma leitura aprovada.</p></div></td></tr>
+              ) : approvedReadings.map(reading => (
+                <tr key={reading.id}>
+                  <td className="cell-primary">{reading.reference_month || '--'}</td>
+                  <td>{reading.reading_kind === 'installation' ? 'Instalacao' : 'Agua'}</td>
+                  <td>{formatM3(reading.current_value)} m³</td>
+                  <td>{formatM3(reading.consumption)} m³</td>
+                  <td>
+                    {new Date(reading.captured_at).toLocaleString('pt-BR')}
+                    {reading.collaborator_name ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{reading.collaborator_name}</div> : null}
+                  </td>
+                  <td>
+                    <a className="btn btn-secondary btn-sm" href={reading.photo_url.startsWith('http') ? reading.photo_url : `${API_BASE}${reading.photo_url}`} target="_blank" rel="noreferrer">
+                      Abrir foto
+                    </a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -616,7 +693,7 @@ function statusLabel(status: string) {
 }
 
 function billingColor(status: string) {
-  if (status === 'overdue' || status === 'due_today') return 'var(--danger)';
-  if (status === 'near_due') return 'var(--warning)';
+  if (status === 'overdue' || status === 'due_today' || status === 'reading_overdue' || status === 'reading_rejected') return 'var(--danger)';
+  if (status === 'near_due' || status === 'reading_pending' || status === 'reading_due') return 'var(--warning)';
   return 'var(--success)';
 }

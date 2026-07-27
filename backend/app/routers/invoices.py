@@ -692,7 +692,9 @@ async def cancel_invoice(
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice)
+        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -720,6 +722,8 @@ async def cancel_invoice(
 
     previous_status = invoice.status
     invoice.status = "cancelled"
+    if invoice.cycle:
+        invoice.cycle.status = "invoice_cancelled"
     if invoice.efi_charge_id:
         invoice.efi_status = "canceled"
         invoice.efi_raw_response = _merge_efi_raw(
@@ -752,7 +756,9 @@ async def update_invoice_amount(
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice)
+        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -793,7 +799,9 @@ async def refresh_invoice_overdue_amount(
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice)
+        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -860,7 +868,9 @@ async def mark_invoice_paid(
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice)
+        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -870,6 +880,8 @@ async def mark_invoice_paid(
     _recalculate_overdue_amount(invoice, settings)
     previous_status = invoice.status
     invoice.status = "paid"
+    if invoice.cycle:
+        invoice.cycle.status = "paid"
     invoice.paid_date = data.paid_date or date.today()
     _record_invoice_event(
         db,
@@ -928,7 +940,9 @@ async def reopen_invoice(
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice)
+        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -946,6 +960,8 @@ async def reopen_invoice(
     )
     _clear_efi_payment_data(invoice)
     invoice.status = "pending"
+    if invoice.cycle:
+        invoice.cycle.status = "invoiced"
     invoice.paid_date = None
     _record_invoice_event(
         db,

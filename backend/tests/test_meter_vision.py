@@ -17,6 +17,9 @@ from app.services.meter_vision import (
     _candidate_sequences_from_digits,
     _decode_image,
     _fuse_digit_sequences,
+    _full_frame_ocr_sequences,
+    _normalize_meter_orientation,
+    _ocr_counter_window_candidate,
     _prediction_anomaly,
     _red_roller_strip_candidate,
     _temporal_candidates,
@@ -84,6 +87,40 @@ def test_bundled_field_model_and_red_roller_anchor_are_available():
     corners = _red_roller_strip_candidate(image, red_digits=3, black_digits=4)
     assert corners is not None
     assert corners.shape == (4, 2)
+
+
+def test_sideways_capture_is_rotated_before_display_detection():
+    image = np.full((700, 900, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (125, 270), (790, 390), (250, 250, 250), -1)
+    for index, digit in enumerate("0025748"):
+        color = (25, 25, 25) if index < 4 else (30, 30, 205)
+        cv2.putText(
+            image,
+            digit,
+            (145 + index * 88, 365),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            2.5,
+            color,
+            7,
+            cv2.LINE_AA,
+        )
+    sideways = cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    normalized, degrees, source = _normalize_meter_orientation(sideways, 3, 4)
+
+    assert degrees == 90
+    assert source == "red_roller_anchor"
+    assert normalized.shape[:2] == image.shape[:2]
+    assert _red_roller_strip_candidate(normalized, 3, 4) is not None
+
+
+def test_technical_serial_number_is_not_used_as_counter_without_meter_hint():
+    image = np.full((500, 800, 3), 230, dtype=np.uint8)
+    box = np.array([[100, 190], [550, 190], [550, 250], [100, 250]], dtype="float32")
+    items = [(box, "1234567", 0.99)]
+
+    assert _ocr_counter_window_candidate(image, 7, items) is None
+    assert _full_frame_ocr_sequences(image, 7, [0, 0, 2, 5, 7, 4, 8], items) == ([], 0.0, None)
 
 
 def test_knn_model_loads_without_opencv_ml_module():

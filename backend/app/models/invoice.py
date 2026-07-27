@@ -30,6 +30,12 @@ class Invoice(Base):
     reading_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("readings.id"), nullable=True, index=True
     )
+    cycle_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reading_cycles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # ── Dados de Cálculo ───────────────────────────────────────
     consumption_m3: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -87,6 +93,7 @@ class Invoice(Base):
     # ── Relationships ──────────────────────────────────────────
     customer = relationship("Customer", back_populates="invoices")
     reading = relationship("Reading", back_populates="invoice")
+    cycle = relationship("ReadingCycle", back_populates="invoices")
     notifications = relationship("Notification", back_populates="invoice", cascade="all, delete-orphan")
     events = relationship("InvoiceEvent", back_populates="invoice", cascade="all, delete-orphan")
     documents = relationship(

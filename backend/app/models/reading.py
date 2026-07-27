@@ -31,6 +31,12 @@ class Reading(Base):
     collaborator_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
     )
+    cycle_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reading_cycles.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # ── Valores de Leitura ─────────────────────────────────────
     # A leitura capturada so vira valor oficial depois da conferencia no dashboard.
@@ -43,6 +49,8 @@ class Reading(Base):
     photo_extracted_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     photo_extracted_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_month: Mapped[str | None] = mapped_column(String(7), nullable=True, index=True)
+    reading_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="water")
     vision_inference_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("vision_inferences.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -84,6 +92,7 @@ class Reading(Base):
     approver = relationship("User", back_populates="readings_approved", foreign_keys=[approved_by])
     invoice = relationship("Invoice", back_populates="reading", uselist=False)
     vision_inference = relationship("VisionInference", foreign_keys=[vision_inference_id])
+    cycle = relationship("ReadingCycle", back_populates="readings")
 
     def __repr__(self) -> str:
         consumption = f"{self.consumption:.2f}m³" if self.consumption is not None else "aguardando conferencia"

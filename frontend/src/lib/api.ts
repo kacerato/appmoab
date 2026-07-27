@@ -11,7 +11,8 @@ function clearGetCache() {
 }
 
 function cacheTtl(path: string): number {
-  if (path.startsWith('/readings') || path.startsWith('/whatsapp/')) return 10_000;
+  if (path.startsWith('/readings') || path.startsWith('/customers/route-tasks')) return 0;
+  if (path.startsWith('/whatsapp/')) return 10_000;
   if (path.startsWith('/dashboard')) return 30_000;
   if (path.startsWith('/tariffs') || path.startsWith('/system-settings')) return 5 * 60_000;
   return 60_000;

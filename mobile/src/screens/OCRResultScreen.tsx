@@ -71,6 +71,8 @@ export default function OCRResultScreen() {
     hydrometerModel = '',
     locationDescription,
     isInstallation = false,
+    cycleId = null,
+    cycleReferenceMonth = null,
   } = route.params;
 
   const [loading, setLoading] = useState(true);
@@ -91,13 +93,14 @@ export default function OCRResultScreen() {
         location_accuracy_meters: locationAccuracyMeters,
         captured_at: capturedAt,
         vision_inference_id: resolvedVerdict?.inference_id || null,
+        cycle_id: cycleId,
       });
       showToast(
         isInstallation ? 'Captura da instalação enviada' : 'Leitura capturada',
         'A foto e a sugestão foram enviadas para confirmação no dashboard.',
         'success',
       );
-      navigation.navigate('Route');
+      navigation.navigate('Route', { refreshToken: Date.now() });
       return true;
     } catch (error) {
       showToast('Falha ao enviar captura', error instanceof Error ? error.message : 'Não foi possível enviar a captura.', 'error');
@@ -105,7 +108,7 @@ export default function OCRResultScreen() {
     } finally {
       setSubmitting(false);
     }
-  }, [capturedAt, hydrometerId, isInstallation, latitude, locationAccuracyMeters, longitude, navigation, photoBase64, showToast]);
+  }, [capturedAt, cycleId, hydrometerId, isInstallation, latitude, locationAccuracyMeters, longitude, navigation, photoBase64, showToast]);
 
   useEffect(() => {
     if (processingStartedRef.current) return;

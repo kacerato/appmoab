@@ -170,6 +170,10 @@ export default function CustomersPage() {
 function billingBadgeClass(status: string) {
   const m: Record<string, string> = {
     overdue: 'overdue',
+    reading_overdue: 'overdue',
+    reading_rejected: 'rejected',
+    reading_pending: 'pending',
+    reading_due: 'upcoming',
     due_today: 'rejected',
     near_due: 'upcoming',
     normal: 'active',

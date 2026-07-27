@@ -91,6 +91,9 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "readings", "validation_flags JSONB NOT NULL DEFAULT '[]'::jsonb", "validation_flags")
     await _add_column_if_missing(conn, "readings", "anomaly_override_reason TEXT", "anomaly_override_reason")
     await _add_column_if_missing(conn, "readings", "vision_inference_id UUID REFERENCES vision_inferences(id) ON DELETE SET NULL", "vision_inference_id")
+    await _add_column_if_missing(conn, "readings", "cycle_id UUID REFERENCES reading_cycles(id) ON DELETE SET NULL", "cycle_id")
+    await _add_column_if_missing(conn, "readings", "reference_month VARCHAR(7)", "reference_month")
+    await _add_column_if_missing(conn, "readings", "reading_kind VARCHAR(20) NOT NULL DEFAULT 'water'", "reading_kind")
     if await _column_is_not_null(conn, "readings", "current_value"):
         await conn.execute(text("ALTER TABLE readings ALTER COLUMN current_value DROP NOT NULL"))
     if await _column_is_not_null(conn, "readings", "consumption"):
@@ -137,6 +140,7 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "invoices", "efi_pix_qrcode TEXT", "efi_pix_qrcode")
     await _add_column_if_missing(conn, "invoices", "efi_payment_receipt_url TEXT", "efi_payment_receipt_url")
     await _add_column_if_missing(conn, "invoices", "efi_raw_response JSONB", "efi_raw_response")
+    await _add_column_if_missing(conn, "invoices", "cycle_id UUID REFERENCES reading_cycles(id) ON DELETE SET NULL", "cycle_id")
 
     await _add_column_if_missing(conn, "system_settings", "daily_interest_percent DOUBLE PRECISION NOT NULL DEFAULT 0.033", "daily_interest_percent")
     await _add_column_if_missing(conn, "system_settings", "late_fee_percent DOUBLE PRECISION NOT NULL DEFAULT 10", "late_fee_percent")
@@ -184,11 +188,15 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _create_index_if_missing(conn, "ix_hydrometers_active_code", "CREATE INDEX ix_hydrometers_active_code ON hydrometers (is_active, code)")
     await _create_index_if_missing(conn, "ix_readings_status_created_at", "CREATE INDEX ix_readings_status_created_at ON readings (status, created_at DESC)")
     await _create_index_if_missing(conn, "ix_readings_hydrometer_created_at", "CREATE INDEX ix_readings_hydrometer_created_at ON readings (hydrometer_id, created_at DESC)")
+    await _create_index_if_missing(conn, "ix_readings_cycle_id", "CREATE INDEX ix_readings_cycle_id ON readings (cycle_id)")
+    await _create_index_if_missing(conn, "ix_readings_reference_month", "CREATE INDEX ix_readings_reference_month ON readings (reference_month)")
     await _create_index_if_missing(conn, "ix_invoices_status_due_date", "CREATE INDEX ix_invoices_status_due_date ON invoices (status, due_date DESC)")
     await _create_index_if_missing(conn, "ix_invoices_customer_status_due", "CREATE INDEX ix_invoices_customer_status_due ON invoices (customer_id, status, due_date DESC)")
     await _create_index_if_missing(conn, "ix_invoices_customer_paid_date", "CREATE INDEX ix_invoices_customer_paid_date ON invoices (customer_id, paid_date DESC) WHERE paid_date IS NOT NULL")
     await _create_index_if_missing(conn, "ix_invoices_reference_month", "CREATE INDEX ix_invoices_reference_month ON invoices (reference_month)")
     await _create_index_if_missing(conn, "ix_invoices_efi_charge_id", "CREATE INDEX ix_invoices_efi_charge_id ON invoices (efi_charge_id)")
+    await _create_index_if_missing(conn, "ix_invoices_cycle_id", "CREATE INDEX ix_invoices_cycle_id ON invoices (cycle_id)")
+    await _create_index_if_missing(conn, "ix_reading_cycles_route", "CREATE INDEX ix_reading_cycles_route ON reading_cycles (status, due_date, customer_id)")
     await _create_index_if_missing(conn, "ux_invoices_reading_id", "CREATE UNIQUE INDEX ux_invoices_reading_id ON invoices (reading_id) WHERE reading_id IS NOT NULL")
     await _create_index_if_missing(conn, "ix_invoice_documents_invoice_created", "CREATE INDEX ix_invoice_documents_invoice_created ON invoice_documents (invoice_id, created_at DESC)")
     await _create_index_if_missing(conn, "ix_invoice_documents_customer_id", "CREATE INDEX ix_invoice_documents_customer_id ON invoice_documents (customer_id)")

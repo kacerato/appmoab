@@ -186,6 +186,8 @@ interface ReadingNavigationPayload {
   hydrometerModel?: string | null;
   locationDescription?: string | null;
   isInstallation?: boolean;
+  cycleId?: string | null;
+  cycleReferenceMonth?: string | null;
 }
 
 export default function CameraScreen() {
@@ -210,6 +212,8 @@ export default function CameraScreen() {
     hydrometerCode,
     customerName,
     isInstallation = false,
+    cycleId = null,
+    cycleReferenceMonth = null,
   } = route.params || {};
 
   const [permission, requestPermission] = useCameraPermissions();
@@ -530,6 +534,8 @@ export default function CameraScreen() {
       hydrometerModel: payload.hydrometerModel || '',
       locationDescription: payload.locationDescription || '',
       isInstallation: Boolean(payload.isInstallation),
+      cycleId: payload.cycleId || cycleId || null,
+      cycleReferenceMonth: payload.cycleReferenceMonth || cycleReferenceMonth || null,
     });
   };
 
@@ -563,6 +569,8 @@ export default function CameraScreen() {
           hydrometerModel,
           locationDescription,
           isInstallation,
+          cycleId,
+          cycleReferenceMonth,
         });
         return;
       }
@@ -825,6 +833,8 @@ export default function CameraScreen() {
           hydrometerModel,
           locationDescription,
           isInstallation,
+          cycleId,
+          cycleReferenceMonth,
         });
         return;
       }
@@ -883,6 +893,8 @@ export default function CameraScreen() {
         hydrometerModel,
         locationDescription,
         isInstallation,
+        cycleId,
+        cycleReferenceMonth,
       });
     } catch (error) {
       showToast(

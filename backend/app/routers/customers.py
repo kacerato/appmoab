@@ -12,6 +12,8 @@ from app.models.customer import Customer
 from app.models.customer_attachment import CustomerAttachment
 from app.models.hydrometer import Hydrometer
 from app.models.invoice import Invoice
+from app.models.reading import Reading
+from app.models.reading_cycle import ReadingCycle
 from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.schemas.customer import (
@@ -25,6 +27,12 @@ from app.schemas.customer import (
 )
 from app.schemas.customer_attachment import CustomerAttachmentCreate, CustomerAttachmentResponse
 from app.services.hydrometer_codes import get_next_hydrometer_code
+from app.services.reading_cycles import (
+    ACTIONABLE_CYCLE_STATUSES,
+    cycle_timing,
+    ensure_actionable_cycle,
+    reference_due_date,
+)
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, delete_photo, save_binary_from_base64
 
@@ -126,6 +134,7 @@ def _apply_billing_status(
     today: date,
     oldest_open_overdue_due_date: date | None = None,
     last_paid_date: date | None = None,
+    active_cycle: ReadingCycle | None = None,
 ) -> None:
     if oldest_open_overdue_due_date:
         days_overdue = (today - oldest_open_overdue_due_date).days
@@ -135,6 +144,45 @@ def _apply_billing_status(
             f"Vencido desde {oldest_open_overdue_due_date.strftime('%d/%m/%Y')} "
             f"ha {days_overdue} dia(s)"
         )
+        return
+
+    if active_cycle is not None:
+        due_date = active_cycle.due_date
+        reference_month = active_cycle.reference_month
+        response.next_invoice_reference_month = reference_month
+        response.next_invoice_due_date = datetime.combine(due_date, datetime.min.time())
+        days_until_due = (due_date - today).days
+        response.days_until_due = days_until_due
+        formatted_reference = _format_reference_month(reference_month)
+        if active_cycle.status == "pending_review":
+            response.billing_status = "reading_pending"
+            response.billing_status_label = (
+                f"Leitura de {formatted_reference} aguardando aprovacao"
+            )
+        elif active_cycle.status == "recapture_required":
+            response.billing_status = "reading_rejected"
+            response.billing_status_label = (
+                f"Nova captura obrigatoria para {formatted_reference}"
+            )
+        elif today > due_date:
+            response.billing_status = "reading_overdue"
+            response.billing_status_label = (
+                f"Leitura de {formatted_reference} atrasada ha {(today - due_date).days} dia(s); "
+                "fatura ainda nao gerada"
+            )
+        elif days_until_due == 0:
+            response.billing_status = "reading_due"
+            response.billing_status_label = f"Leitura de {formatted_reference} vence hoje"
+        elif days_until_due <= 3:
+            response.billing_status = "reading_due"
+            response.billing_status_label = (
+                f"Leitura de {formatted_reference} vence em {days_until_due} dia(s)"
+            )
+        else:
+            response.billing_status = "normal"
+            response.billing_status_label = (
+                f"Proxima leitura {formatted_reference} em {due_date.strftime('%d/%m/%Y')}"
+            )
         return
 
     due_date = _next_due_date(customer, today)
@@ -206,9 +254,27 @@ async def _build_customer_response(db: AsyncSession, customer_id: uuid.UUID) -> 
         )
     )
     last_paid_date = paid_result.scalar_one_or_none()
+    active_cycle = (
+        await db.execute(
+            select(ReadingCycle)
+            .where(
+                ReadingCycle.customer_id == customer.id,
+                ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES),
+            )
+            .order_by(ReadingCycle.due_date)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     response = CustomerResponse.model_validate(customer)
-    _apply_billing_status(response, customer, today, oldest_overdue_due_date, last_paid_date)
+    _apply_billing_status(
+        response,
+        customer,
+        today,
+        oldest_overdue_due_date,
+        last_paid_date,
+        active_cycle,
+    )
     return response
 
 
@@ -276,6 +342,7 @@ async def list_customers(
     response_items = []
     overdue_by_customer: dict[uuid.UUID, date] = {}
     paid_by_customer: dict[uuid.UUID, date] = {}
+    cycle_by_customer: dict[uuid.UUID, ReadingCycle] = {}
     customer_ids = [customer.id for customer in paged_items]
     if customer_ids:
         overdue_result = await db.execute(
@@ -300,6 +367,16 @@ async def list_customers(
             .group_by(Invoice.customer_id)
         )
         paid_by_customer = {row[0]: row[1] for row in paid_result.all()}
+        cycle_result = await db.execute(
+            select(ReadingCycle)
+            .where(
+                ReadingCycle.customer_id.in_(customer_ids),
+                ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES),
+            )
+            .order_by(ReadingCycle.due_date)
+        )
+        for cycle in cycle_result.scalars().all():
+            cycle_by_customer.setdefault(cycle.customer_id, cycle)
 
     for customer in paged_items:
         response = CustomerResponse.model_validate(customer)
@@ -309,6 +386,7 @@ async def list_customers(
             today,
             overdue_by_customer.get(customer.id),
             paid_by_customer.get(customer.id),
+            cycle_by_customer.get(customer.id),
         )
         response_items.append(response)
 
@@ -328,6 +406,14 @@ async def update_all_customers_due_day(
         .returning(Customer.id)
     )
     updated_ids = result.scalars().all()
+    cycle_result = await db.execute(
+        select(ReadingCycle).where(
+            ReadingCycle.customer_id.in_(updated_ids),
+            ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES),
+        )
+    )
+    for cycle in cycle_result.scalars().all():
+        cycle.due_date = reference_due_date(cycle.reference_month, data.due_day)
     await db.flush()
     return {"updated": len(updated_ids), "due_day": data.due_day}
 
@@ -365,6 +451,92 @@ async def list_customer_options(
         items=[CustomerOptionResponse.model_validate(customer) for customer in result.scalars().all()],
         total=total,
     )
+
+
+@router.get("/route-tasks")
+async def list_route_tasks(
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Fila duravel de campo: atrasos nunca somem depois da janela de vencimento."""
+    hydrometers_result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .join(Hydrometer.customer)
+        .where(
+            Hydrometer.is_active.is_(True),
+            Customer.status == "active",
+        )
+    )
+    for hydrometer in hydrometers_result.scalars().all():
+        await ensure_actionable_cycle(db, hydrometer)
+
+    settings = await _get_system_settings(db)
+    today = date.today()
+    result = await db.execute(
+        select(ReadingCycle)
+        .options(
+            selectinload(ReadingCycle.customer).selectinload(Customer.hydrometers),
+            selectinload(ReadingCycle.hydrometer),
+            selectinload(ReadingCycle.readings).selectinload(Reading.collaborator),
+        )
+        .where(ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES))
+        .order_by(ReadingCycle.due_date, ReadingCycle.created_at)
+    )
+
+    items = []
+    for cycle in result.scalars().unique().all():
+        state, day_count = cycle_timing(
+            cycle,
+            today,
+            settings.route_window_days_before_due if settings.route_window_enabled else 10000,
+            settings.route_window_days_after_due,
+        )
+        if state == "scheduled" and settings.route_window_enabled:
+            continue
+        latest_reading = max(cycle.readings, key=lambda item: item.created_at, default=None)
+        items.append({
+            "id": str(cycle.id),
+            "cycle_id": str(cycle.id),
+            "reference_month": cycle.reference_month,
+            "due_date": cycle.due_date.isoformat(),
+            "cycle_type": cycle.cycle_type,
+            "cycle_status": cycle.status,
+            "state": state,
+            "day_count": day_count,
+            "rejection_reason": (
+                latest_reading.rejection_reason
+                if latest_reading and latest_reading.status == "rejected"
+                else None
+            ),
+            "pending_collaborator_name": (
+                latest_reading.collaborator.name
+                if latest_reading
+                and latest_reading.status == "pending"
+                and latest_reading.collaborator
+                else None
+            ),
+            "customer": CustomerResponse.model_validate(cycle.customer).model_dump(mode="json"),
+            "hydrometer": {
+                "id": str(cycle.hydrometer.id),
+                "code": cycle.hydrometer.code,
+                "qr_code_token": cycle.hydrometer.qr_code_token,
+                "last_reading_value": cycle.hydrometer.last_reading_value,
+                "last_reading_date": (
+                    cycle.hydrometer.last_reading_date.isoformat()
+                    if cycle.hydrometer.last_reading_date
+                    else None
+                ),
+                "red_digits": cycle.hydrometer.red_digits,
+                "black_digits": cycle.hydrometer.black_digits,
+                "brand": cycle.hydrometer.brand,
+                "model": cycle.hydrometer.model,
+                "latitude": cycle.hydrometer.latitude,
+                "longitude": cycle.hydrometer.longitude,
+                "location_description": cycle.hydrometer.location_description,
+            },
+        })
+    return {"items": items, "total": len(items), "generated_at": datetime.now(timezone.utc)}
 
 
 @router.get("/{customer_id}", response_model=CustomerDetailResponse)
@@ -413,7 +585,25 @@ async def get_customer(
     total_inv, pending, overdue, oldest_overdue_due_date, last_paid_date = inv_result.one()
 
     response = CustomerDetailResponse.model_validate(customer)
-    _apply_billing_status(response, customer, date.today(), oldest_overdue_due_date, last_paid_date)
+    active_cycle = (
+        await db.execute(
+            select(ReadingCycle)
+            .where(
+                ReadingCycle.customer_id == customer.id,
+                ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES),
+            )
+            .order_by(ReadingCycle.due_date)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    _apply_billing_status(
+        response,
+        customer,
+        date.today(),
+        oldest_overdue_due_date,
+        last_paid_date,
+        active_cycle,
+    )
     response.attachments = [_attachment_response(attachment) for attachment in customer.attachments]
     response.total_invoices = total_inv
     response.total_pending = float(pending)
@@ -460,6 +650,8 @@ async def create_customer(
         )
         db.add(hydrometer)
         await db.flush()
+        hydrometer.customer = customer
+        await ensure_actionable_cycle(db, hydrometer)
 
     await db.flush()
     return await _build_customer_response(db, customer.id)
@@ -477,8 +669,18 @@ async def update_customer(
     if not customer:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    update_data = data.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
         setattr(customer, field, value)
+    if update_data.get("due_day") is not None:
+        cycle_result = await db.execute(
+            select(ReadingCycle).where(
+                ReadingCycle.customer_id == customer.id,
+                ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES),
+            )
+        )
+        for cycle in cycle_result.scalars().all():
+            cycle.due_date = reference_due_date(cycle.reference_month, customer.due_day)
 
     await db.flush()
     await db.refresh(customer)

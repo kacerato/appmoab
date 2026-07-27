@@ -68,6 +68,12 @@ def _cache_control(request: Request, response: Response) -> str:
     if path.startswith("/api/"):
         if response.status_code >= 400:
             return "no-store"
+        if (
+            path.startswith("/api/readings")
+            or path.startswith("/api/customers/route-tasks")
+            or path.startswith("/api/customers/")
+        ):
+            return "no-store"
         return f"private, max-age={settings.api_private_cache_seconds}, stale-while-revalidate=60"
 
     return response.headers.get("Cache-Control", "no-store")

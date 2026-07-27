@@ -33,11 +33,27 @@ from app.schemas.hydrometer import (
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.services.meter_vision import VisionResult, meter_vision_service
+from app.services.reading_cycles import ensure_actionable_cycle
 from app.services.vision_decision import fuse_burst_results
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
 
 router = APIRouter(prefix="/hydrometers", tags=["Hidrometros"])
+
+
+def _validate_manual_base_adjustment(hydrometer: Hydrometer, update_data: dict) -> None:
+    if (
+        "last_reading_value" in update_data
+        and update_data["last_reading_value"] is not None
+        and hydrometer.last_reading_date is None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A instalacao ainda nao foi concluida. Envie foto e local pelo app "
+                "e aprove a captura no painel para criar a leitura-base."
+            ),
+        )
 
 
 def _meter_result_code(result: VisionResult, total_digits: int, red_digits: int) -> int | None:
@@ -780,6 +796,8 @@ async def create_hydrometer(
     )
     db.add(hydrometer)
     await db.flush()
+    hydrometer.customer = customer
+    await ensure_actionable_cycle(db, hydrometer)
     created = await _fetch_hydrometer_response(db, hydrometer.id)
     return created or hydrometer
 
@@ -816,8 +834,7 @@ async def update_hydrometer(
         raise HTTPException(status_code=400, detail="Digitos pretos deve ser maior que zero")
     if "allowed_radius_meters" in update_data and update_data["allowed_radius_meters"] is not None and update_data["allowed_radius_meters"] < 10:
         raise HTTPException(status_code=400, detail="Raio permitido deve ser pelo menos 10 metros")
-    if "last_reading_value" in update_data and update_data["last_reading_value"] is not None:
-        hydrometer.last_reading_date = datetime.now(timezone.utc)
+    _validate_manual_base_adjustment(hydrometer, update_data)
     if (
         ("latitude" in update_data or "longitude" in update_data)
         and update_data.get("latitude", hydrometer.latitude) is not None

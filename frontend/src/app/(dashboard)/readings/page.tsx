@@ -52,6 +52,11 @@ interface Reading {
   vision_quality: Record<string, unknown>;
   vision_flags: string[];
   vision_rectified_url: string | null;
+  vision_original_url: string | null;
+  vision_frame_urls: string[];
+  vision_selected_frame_index: number | null;
+  reference_month: string | null;
+  reading_kind: string;
 }
 
 function alertTone(flags: Reading['validation_flags']) {
@@ -86,8 +91,8 @@ export default function ReadingsPage() {
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
   const [draftReasons, setDraftReasons] = useState<Record<string, string>>({});
 
-  const load = useCallback(async (force = false) => {
-    setLoading(true);
+  const load = useCallback(async (force = false, silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const res = await api.get<ListRes>(`/readings?status=${filter}&per_page=50`, { skipCache: force });
       setData(res);
@@ -104,7 +109,7 @@ export default function ReadingsPage() {
     } catch (e) {
       console.error(e);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [filter]);
 
@@ -115,10 +120,10 @@ export default function ReadingsPage() {
   useEffect(() => {
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
-        void load(true);
+        void load(true, true);
       }
     }, 5000);
-    const handleFocus = () => void load();
+    const handleFocus = () => void load(true, true);
     window.addEventListener('focus', handleFocus);
     return () => {
       window.clearInterval(interval);
@@ -146,6 +151,11 @@ export default function ReadingsPage() {
           ? (draftReasons[reading.id]?.trim() || 'Valor ajustado manualmente no dashboard')
           : null,
       });
+      setData(current => current ? {
+        ...current,
+        total: Math.max(0, current.total - 1),
+        items: current.items.filter(item => item.id !== reading.id),
+      } : current);
       notify(
         'Leitura confirmada',
         result.whatsapp_status === 'queued'
@@ -153,7 +163,7 @@ export default function ReadingsPage() {
           : 'Consumo e fatura gerados com o valor confirmado.',
         'success',
       );
-      await load();
+      void load(true, true);
     } catch (e) {
       notify('Falha ao aprovar leitura', e instanceof Error ? e.message : 'Erro ao aprovar leitura.', 'error');
     } finally {
@@ -171,8 +181,13 @@ export default function ReadingsPage() {
     setActionLoading(id);
     try {
       await api.post(`/readings/${id}/reject`, { reason });
+      setData(current => current ? {
+        ...current,
+        total: Math.max(0, current.total - 1),
+        items: current.items.filter(item => item.id !== id),
+      } : current);
       notify('Leitura rejeitada', 'O motivo foi salvo para revisão posterior.', 'warning');
-      await load();
+      void load(true, true);
     } catch (e) {
       notify('Falha ao rejeitar leitura', e instanceof Error ? e.message : 'Erro ao rejeitar leitura.', 'error');
     } finally {
@@ -215,6 +230,7 @@ export default function ReadingsPage() {
                   </div>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     {r.is_installation && <span className="badge upcoming">Instalação</span>}
+                    {r.reference_month && <span className="badge suspended">Ref. {r.reference_month.slice(5)}/{r.reference_month.slice(0, 4)}</span>}
                     <span className={`badge ${r.status}`}>{r.status === 'pending' ? 'Pendente' : r.status === 'approved' ? 'Aprovada' : 'Rejeitada'}</span>
                   </div>
                 </div>
@@ -292,9 +308,15 @@ export default function ReadingsPage() {
                 <div>{r.collaborator_name}</div>
               </div>
 
-              <div style={{ padding: '0 20px 14px', display: 'grid', gridTemplateColumns: r.vision_rectified_url ? '120px 120px 1fr' : '120px 1fr', gap: 12, alignItems: 'center' }}>
-                <ReadingPhoto url={r.photo_url} label="Original" />
-                {r.vision_rectified_url && <ReadingPhoto url={r.vision_rectified_url} label="Visor" />}
+              <div style={{ padding: '0 20px 14px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, max-content)) minmax(180px, 1fr)', gap: 12, alignItems: 'center' }}>
+                <ReadingPhoto url={r.photo_url} label="Foto enviada" />
+                {r.vision_original_url && r.vision_original_url !== r.photo_url && (
+                  <ReadingPhoto url={r.vision_original_url} label="Frame analisado" />
+                )}
+                {r.vision_selected_frame_index !== null && r.vision_frame_urls?.[r.vision_selected_frame_index] && (
+                  <ReadingPhoto url={r.vision_frame_urls[r.vision_selected_frame_index]} label={`Frame escolhido #${r.vision_selected_frame_index + 1}`} />
+                )}
+                {r.vision_rectified_url && <ReadingPhoto url={r.vision_rectified_url} label="Recorte do visor" />}
                 <div style={{ display: 'grid', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
                   <div><strong>Hora da foto:</strong> {new Date(r.captured_at).toLocaleString('pt-BR')}</div>
                   <div><strong>Localizacao:</strong> {r.latitude && r.longitude ? `${r.latitude.toFixed(6)}, ${r.longitude.toFixed(6)}` : 'Nao registrada'}</div>
@@ -363,6 +385,7 @@ export default function ReadingsPage() {
 
 function ReadingPhoto({ url, label }: { url: string | null; label?: string }) {
   const [failed, setFailed] = useState(false);
+  const [open, setOpen] = useState(false);
   if (!url || failed) {
     return (
       <div style={{ width: 120, height: 90, borderRadius: 8, background: 'var(--blue-50)', display: 'grid', placeItems: 'center', color: 'var(--text-muted)' }}>
@@ -371,14 +394,42 @@ function ReadingPhoto({ url, label }: { url: string | null; label?: string }) {
     );
   }
 
+  const resolvedUrl = url.startsWith('http') ? url : `${API_BASE}${url}`;
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={url.startsWith('http') ? url : `${API_BASE}${url}`}
-      alt={label || 'Foto da leitura'}
-      onError={() => setFailed(true)}
-      style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)' }}
-    />
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label={`Abrir ${label || 'foto da leitura'}`}
+        style={{ width: 120, padding: 0, border: 0, background: 'transparent', cursor: 'zoom-in', textAlign: 'left' }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={resolvedUrl}
+          alt={label || 'Foto da leitura'}
+          onError={() => setFailed(true)}
+          style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border)', display: 'block' }}
+        />
+        {label && <span style={{ display: 'block', marginTop: 4, fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>{label}</span>}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setOpen(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(2, 8, 23, 0.88)', display: 'grid', placeItems: 'center', padding: 24, cursor: 'zoom-out' }}
+        >
+          <div style={{ maxWidth: '95vw', maxHeight: '92vh', display: 'grid', gap: 10, justifyItems: 'center' }} onClick={event => event.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={resolvedUrl} alt={label || 'Foto da leitura ampliada'} style={{ maxWidth: '95vw', maxHeight: '82vh', objectFit: 'contain', borderRadius: 10 }} />
+            <div style={{ color: '#fff', display: 'flex', gap: 12, alignItems: 'center' }}>
+              <span>{label || 'Foto da leitura'}</span>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setOpen(false)}>Fechar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

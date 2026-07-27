@@ -3,16 +3,27 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+from fastapi import HTTPException
 
 from app.models.hydrometer import Hydrometer
 from app.models.notification import Notification
 from app.routers.readings import _evaluate_location
+from app.routers.hydrometers import _validate_manual_base_adjustment
 from app.schemas.reading import ReadingApprove, ReadingResponse
 from app.services.invoice_whatsapp import MAX_ATTEMPTS, _schedule_retry
 from app.services.whatsapp_api import WhatsAppService
 
 
 class DashboardReadingContractTest(unittest.TestCase):
+    def test_installation_cannot_be_bypassed_by_manual_base_patch(self):
+        hydrometer = Hydrometer(last_reading_date=None, last_reading_value=0)
+
+        with self.assertRaises(HTTPException) as raised:
+            _validate_manual_base_adjustment(hydrometer, {"last_reading_value": 90.6})
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("instalacao", raised.exception.detail)
+
     def test_pending_capture_has_no_official_value_or_consumption(self):
         response = ReadingResponse.model_validate({
             "id": "11111111-1111-1111-1111-111111111111",

@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import async_session_factory, get_db
 from app.models.reading import Reading
+from app.models.reading_cycle import ReadingCycle
 from app.models.hydrometer import Hydrometer
 from app.models.invoice import Invoice
 from app.models.invoice_event import InvoiceEvent
@@ -28,12 +29,15 @@ from app.services.glm_ocr import glm_ocr_service
 from app.services.billing import calculate_billing
 from app.services.billing_policy import (
     payment_due_date_for_provider,
-    resolve_invoice_due_date,
     should_block_overdue_charges_for_late_reading,
 )
 from app.services.efi_api import efi_service
 from app.services.invoice_documents import get_or_create_boleto_pdf
 from app.services.invoice_whatsapp import dispatch_invoice_notification_task, enqueue_invoice_whatsapp
+from app.services.reading_cycles import (
+    advance_after_approval,
+    ensure_actionable_cycle,
+)
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_photo_from_base64
 
@@ -44,8 +48,6 @@ DEFAULT_ALLOWED_RADIUS_METERS = 80.0
 CRITICAL_DISTANCE_MULTIPLIER = 4
 LOW_ACCURACY_THRESHOLD_METERS = 50.0
 ROLLOVER_PREVIOUS_THRESHOLD = 0.90
-BILLING_CYCLE_CHARGE_TYPES = ("water", "installation")
-ACTIVE_INVOICE_STATUSES = ("pending", "sent", "paid", "overdue")
 ACTIVE_READING_STATUSES = ("pending", "approved")
 
 
@@ -192,73 +194,13 @@ async def _get_system_settings(db: AsyncSession) -> SystemSetting:
     return settings
 
 
-def _month_bounds(reference: date) -> tuple[datetime, datetime]:
-    month_start = date(reference.year, reference.month, 1)
-    if reference.month == 12:
-        next_month = date(reference.year + 1, 1, 1)
-    else:
-        next_month = date(reference.year, reference.month + 1, 1)
-    return (
-        datetime.combine(month_start, datetime.min.time(), timezone.utc),
-        datetime.combine(next_month, datetime.min.time(), timezone.utc),
-    )
-
-
-async def _ensure_cycle_accepts_new_reading(db: AsyncSession, hydrometer: Hydrometer, captured_at: datetime) -> None:
-    customer = hydrometer.customer
-    if not customer:
-        return
-
-    reference_date = captured_at.date()
-    due_date = resolve_invoice_due_date(reference_date, customer.due_day)
-    reference_month = f"{due_date.year}-{due_date.month:02d}"
-
-    invoice_result = await db.execute(
-        select(Invoice.id, Invoice.status)
-        .where(
-            Invoice.customer_id == customer.id,
-            Invoice.reference_month == reference_month,
-            Invoice.charge_type.in_(BILLING_CYCLE_CHARGE_TYPES),
-            Invoice.status.in_(ACTIVE_INVOICE_STATUSES),
-        )
-        .limit(1)
-    )
-    existing_invoice = invoice_result.first()
-    if existing_invoice:
-        status = existing_invoice[1]
-        if status == "paid":
-            detail = "Este ciclo ja esta pago. O cliente so volta para leitura no proximo ciclo."
-        else:
-            detail = "Este ciclo ja possui fatura ativa. Nao registre uma nova leitura para o mesmo periodo."
-        raise HTTPException(status_code=409, detail=detail)
-
-    period_start, next_period_start = _month_bounds(reference_date)
-    reading_result = await db.execute(
-        select(Reading.id, Reading.status)
-        .where(
-            Reading.hydrometer_id == hydrometer.id,
-            Reading.status.in_(ACTIVE_READING_STATUSES),
-            Reading.captured_at >= period_start,
-            Reading.captured_at < next_period_start,
-        )
-        .limit(1)
-    )
-    existing_reading = reading_result.first()
-    if existing_reading:
-        status = existing_reading[1]
-        if status == "pending":
-            detail = "Este hidrometro ja tem leitura em revisao neste ciclo."
-        else:
-            detail = "Este hidrometro ja tem leitura aprovada neste ciclo."
-        raise HTTPException(status_code=409, detail=detail)
-
-
 @router.get("", response_model=ReadingListResponse)
 async def list_readings(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     status: str | None = None,
     hydrometer_id: str | None = None,
+    customer_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -274,6 +216,10 @@ async def list_readings(
         query = query.where(Reading.status == status)
     if hydrometer_id:
         query = query.where(Reading.hydrometer_id == uuid.UUID(hydrometer_id))
+    if customer_id:
+        query = query.join(Reading.hydrometer).where(
+            Hydrometer.customer_id == uuid.UUID(customer_id)
+        )
 
     count_q = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar() or 0
@@ -300,14 +246,21 @@ async def list_readings(
             resp.vision_quality = inference.quality or {}
             resp.vision_flags = inference.flags or []
             resp.vision_rectified_url = build_public_upload_url(inference.rectified_object_key) if inference.rectified_object_key else None
+            resp.vision_original_url = build_public_upload_url(inference.original_object_key) if inference.original_object_key else None
+            resp.vision_frame_urls = [
+                build_public_upload_url(key)
+                for key in (inference.frame_object_keys or [])
+                if key
+            ]
+            metadata = inference.capture_metadata or {}
+            selected_index = metadata.get("selected_frame_index", metadata.get("selected_frame"))
+            resp.vision_selected_frame_index = (
+                int(selected_index) if isinstance(selected_index, (int, float)) else None
+            )
         if r.hydrometer and r.hydrometer.customer:
             resp.customer_name = r.hydrometer.customer.name
             resp.customer_id = r.hydrometer.customer.id
-            resp.is_installation = (
-                r.invoice.charge_type == "installation"
-                if r.invoice
-                else r.hydrometer.last_reading_date is None
-            )
+            resp.is_installation = r.reading_kind == "installation"
             resp.charge_type = r.invoice.charge_type if r.invoice else "installation" if resp.is_installation else "water"
         items.append(resp)
 
@@ -345,7 +298,32 @@ async def create_reading(
             raise HTTPException(status_code=400, detail="Inferência visual não pertence a esta leitura")
         vision_inference.hydrometer_id = hydrometer.id
 
-    await _ensure_cycle_accepts_new_reading(db, hydrometer, data.captured_at)
+    cycle = await ensure_actionable_cycle(db, hydrometer, lock=True)
+    if data.cycle_id and cycle.id != data.cycle_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Esta tarefa de leitura foi atualizada. Reabra a rota antes de enviar a captura.",
+        )
+    if cycle.status == "pending_review":
+        raise HTTPException(
+            status_code=409,
+            detail="Este ciclo ja possui uma captura aguardando conferencia.",
+        )
+    active_reading = (
+        await db.execute(
+            select(Reading.id)
+            .where(
+                Reading.cycle_id == cycle.id,
+                Reading.status.in_(ACTIVE_READING_STATUSES),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if active_reading:
+        raise HTTPException(
+            status_code=409,
+            detail="Este ciclo ja possui uma leitura ativa.",
+        )
 
     # Salva foto
     photo_url = save_photo_from_base64(data.photo_base64, prefix="reading")
@@ -397,6 +375,9 @@ async def create_reading(
         photo_extracted_value=ocr_result.get("leitura_m3"),
         ocr_confidence=ocr_result.get("confianca"),
         vision_inference_id=data.vision_inference_id,
+        cycle_id=cycle.id,
+        reference_month=cycle.reference_month,
+        reading_kind=cycle.cycle_type,
         latitude=data.latitude,
         longitude=data.longitude,
         location_accuracy_meters=data.location_accuracy_meters,
@@ -408,6 +389,7 @@ async def create_reading(
         status="pending",
     )
     db.add(reading)
+    cycle.status = "pending_review"
     await db.flush()
     await db.refresh(reading)
 
@@ -480,6 +462,7 @@ async def approve_reading(
         .options(
             selectinload(Reading.hydrometer).selectinload(Hydrometer.customer),
             selectinload(Reading.vision_inference),
+            selectinload(Reading.cycle),
         )
         .where(Reading.id == uuid.UUID(reading_id))
         .with_for_update()
@@ -543,7 +526,13 @@ async def approve_reading(
 
     # Atualiza última leitura do hidrômetro
     hydrometer = reading.hydrometer
-    is_installation_capture = hydrometer.last_reading_date is None
+    cycle = reading.cycle
+    if cycle is None:
+        cycle = await ensure_actionable_cycle(db, hydrometer, lock=True)
+        reading.cycle_id = cycle.id
+        reading.reference_month = cycle.reference_month
+        reading.reading_kind = cycle.cycle_type
+    is_installation_capture = cycle.cycle_type == "installation"
     if hydrometer.latitude is None and hydrometer.longitude is None and reading.latitude is not None and reading.longitude is not None:
         hydrometer.latitude = reading.latitude
         hydrometer.longitude = reading.longitude
@@ -558,15 +547,15 @@ async def approve_reading(
             "info",
         )]
     hydrometer.last_reading_value = reading.current_value
-    hydrometer.last_reading_date = datetime.now(timezone.utc)
+    hydrometer.last_reading_date = reading.captured_at
 
     customer = hydrometer.customer
 
-    # Determina data de vencimento da competencia atual.
+    # A competencia pertence ao ciclo, nao ao dia em que o gestor aprovou.
     now = datetime.now(timezone.utc)
     today = now.date()
-    due_date = resolve_invoice_due_date(today, customer.due_day)
-    ref_month = f"{due_date.year}-{due_date.month:02d}"
+    due_date = cycle.due_date
+    ref_month = cycle.reference_month
 
     system_settings = await _get_system_settings(db)
     if is_installation_capture:
@@ -593,6 +582,7 @@ async def approve_reading(
     invoice = Invoice(
         customer_id=customer.id,
         reading_id=reading.id,
+        cycle_id=cycle.id,
         consumption_m3=consumption_m3,
         tariff_rate=tariff_rate,
         amount=amount,
@@ -615,6 +605,7 @@ async def approve_reading(
     db.add(invoice)
     await db.flush()
     await db.refresh(invoice)
+    await advance_after_approval(db, hydrometer, cycle)
     db.add(InvoiceEvent(
         invoice_id=invoice.id,
         user_id=admin.id,
@@ -743,7 +734,10 @@ async def reject_reading(
 ):
     """Gestor rejeita leitura com motivo."""
     result = await db.execute(
-        select(Reading).where(Reading.id == uuid.UUID(reading_id)).with_for_update()
+        select(Reading)
+        .options(selectinload(Reading.cycle))
+        .where(Reading.id == uuid.UUID(reading_id))
+        .with_for_update()
     )
     reading = result.scalar_one_or_none()
     if not reading:
@@ -755,6 +749,8 @@ async def reject_reading(
     reading.rejection_reason = data.reason
     reading.approved_by = admin.id
     reading.approved_at = datetime.now(timezone.utc)
+    if reading.cycle:
+        reading.cycle.status = "recapture_required"
     await db.flush()
 
     return {"message": "Leitura rejeitada", "reading_id": str(reading.id)}

@@ -4,6 +4,7 @@ from app.models.user import User
 from app.models.customer import Customer
 from app.models.hydrometer import Hydrometer
 from app.models.reading import Reading
+from app.models.reading_cycle import ReadingCycle
 from app.models.invoice import Invoice
 from app.models.invoice_document import InvoiceDocument
 from app.models.invoice_event import InvoiceEvent
@@ -21,6 +22,7 @@ __all__ = [
     "Customer",
     "Hydrometer",
     "Reading",
+    "ReadingCycle",
     "Invoice",
     "InvoiceDocument",
     "InvoiceEvent",
