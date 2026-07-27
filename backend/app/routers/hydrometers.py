@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from io import BytesIO
 
@@ -81,6 +82,18 @@ def _apply_burst_consensus(
         hydrometer_brand=hydrometer_brand,
         hydrometer_model=hydrometer_model,
     )
+
+
+def _has_stable_visual_pair(results: list[VisionResult], *, red_digits: int, black_digits: int) -> bool:
+    total_digits = max(3, min(int(red_digits) + int(black_digits), 10))
+    codes = []
+    for result in results:
+        if result.decision == "recapture" or not result.quality.get("usable", True):
+            continue
+        code = _meter_result_code(result, total_digits, red_digits)
+        if code is not None:
+            codes.append(code)
+    return bool(codes and Counter(codes).most_common(1)[0][1] >= 2)
 
 
 async def _fetch_hydrometer_response(db: AsyncSession, hydrometer_id: uuid.UUID) -> Hydrometer | None:
@@ -398,9 +411,10 @@ async def kimi_vision_verdict(
         if index == 0 and guide_crop is None:
             guide_crop = (data.capture_metadata or {}).get("guide_crop")
         frame_guide_crops.append(guide_crop)
+    # O clique principal recebe OCR completo. Os demais quadros começam pela
+    # análise leve; se dois deles concordarem, repetir RapidOCR só aumentaria a
+    # latência. Sem um par estável, o fallback comprovado sonda todos os demais.
     expensive_probe_indexes = {0}
-    if len(frames) > 1:
-        expensive_probe_indexes.update({len(frames) // 2, len(frames) - 1})
     results = await asyncio.gather(*[
         asyncio.to_thread(
             meter_vision_service.analyze,
@@ -432,7 +446,12 @@ async def kimi_vision_verdict(
         hydrometer_brand=data.hydrometer_brand,
         hydrometer_model=data.hydrometer_model,
     )
-    if len(frames) > 1 and "burst_consensus_median" not in vision_result.flags:
+    stable_visual_pair = _has_stable_visual_pair(
+        list(results),
+        red_digits=data.red_digits or 3,
+        black_digits=data.black_digits or 4,
+    )
+    if len(frames) > 1 and not stable_visual_pair:
         missing_probe_indexes = [index for index in range(len(frames)) if index not in expensive_probe_indexes]
         if missing_probe_indexes:
             refreshed = await asyncio.gather(*[

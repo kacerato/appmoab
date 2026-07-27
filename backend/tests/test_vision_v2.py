@@ -135,6 +135,16 @@ def test_capture_contract_limits_burst_and_accepts_slot_labels():
         HydrometerIdentifyRequest(photo_base64="abc", frames_base64=["frame"] * 8)
 
 
+def test_two_matching_light_frames_are_enough_to_skip_expensive_retry():
+    results = [
+        _result("0090645", 0.88),
+        _result("0090645", 0.84),
+        _result("0090644", 0.70),
+    ]
+
+    assert hydrometers_router._has_stable_visual_pair(results, red_digits=3, black_digits=4)
+
+
 def test_calibration_and_promotion_are_blocked_without_evidence():
     tiny_report = {
         "count": 13,
@@ -198,7 +208,7 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["dataset_status"], "capture_review_required")
         self.assertFalse(inference.quality["localization_valid"])
 
-    async def test_endpoint_retries_every_unprobed_burst_frame_with_full_ocr(self):
+    async def test_endpoint_retries_every_light_frame_when_no_stable_pair_exists(self):
         calls: dict[str, list[bool]] = {}
         db = MagicMock()
         db.flush = AsyncMock()
@@ -221,7 +231,10 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
         ) -> VisionResult:
             del red_digits, black_digits, previous_value, hydrometer_brand, hydrometer_model, guide_crop
             calls.setdefault(image_base64, []).append(expensive_ocr)
-            return _result("0012345", 0.91)
+            if expensive_ocr:
+                return _result("0012345", 0.91)
+            frame_index = int(image_base64.rsplit("-", 1)[-1])
+            return _result(f"00123{frame_index:02d}", 0.72)
 
         def keep_selected(results, *, selected_index: int, **kwargs):
             del kwargs
@@ -243,9 +256,9 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["predicted_code"], "0012345")
         self.assertEqual(calls["frame-0"], [True])
         self.assertEqual(calls["frame-1"], [False, True])
-        self.assertEqual(calls["frame-2"], [True])
+        self.assertEqual(calls["frame-2"], [False, True])
         self.assertEqual(calls["frame-3"], [False, True])
-        self.assertEqual(calls["frame-4"], [True])
+        self.assertEqual(calls["frame-4"], [False, True])
 
     async def test_endpoint_uses_supported_meter_service_arguments(self):
         result = _result("0012345", 0.91)
