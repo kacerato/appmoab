@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { api } from '@/lib/api';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { AlertTriangle, ClipboardCheck, Check, X, Camera, MapPin, Sparkles } from 'lucide-react';
+import { AlertTriangle, ClipboardCheck, Check, X, Camera, MapPin } from 'lucide-react';
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
@@ -131,11 +131,9 @@ export default function ReadingsPage() {
     };
   }, [load]);
 
-  const approve = async (reading: Reading, confirmSuggestion = false) => {
+  const approve = async (reading: Reading) => {
     const suggestion = reading.vision_predicted_value ?? reading.photo_extracted_value;
-    const rawValue = confirmSuggestion && suggestion !== null
-      ? String(suggestion)
-      : draftValues[reading.id] || '';
+    const rawValue = draftValues[reading.id] || '';
     const value = Number(rawValue.replace(',', '.'));
     if (!Number.isFinite(value) || value < 0) {
       notify('Leitura inválida', 'Informe a medição que aparece no visor antes de aprovar.', 'warning');
@@ -157,10 +155,18 @@ export default function ReadingsPage() {
         items: current.items.filter(item => item.id !== reading.id),
       } : current);
       notify(
-        'Leitura confirmada',
+        reading.is_installation ? 'Leitura-base aprovada' : 'Leitura aprovada',
         result.whatsapp_status === 'queued'
-          ? 'Consumo e fatura gerados; o WhatsApp entrou na fila de envio.'
-          : 'Consumo e fatura gerados com o valor confirmado.',
+          ? (
+              reading.is_installation
+                ? 'A base foi salva, a taxa de instalação foi gerada e o WhatsApp entrou na fila.'
+                : 'O consumo e a fatura foram gerados; o WhatsApp entrou na fila.'
+            )
+          : (
+              reading.is_installation
+                ? 'A base foi salva e a cobrança usa somente a taxa de instalação configurada.'
+                : 'O consumo e a fatura foram gerados com o valor aprovado.'
+            ),
         'success',
       );
       void load(true, true);
@@ -244,7 +250,12 @@ export default function ReadingsPage() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginTop: 12 }}>
                   <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Anterior</div><div style={{ fontWeight: 600 }}>{r.previous_value.toFixed(2)}</div></div>
                   <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.status === 'pending' ? 'Sugestão OCR' : 'Confirmada'}</div><div style={{ fontWeight: 600 }}>{(r.status === 'pending' ? (r.vision_predicted_value ?? r.photo_extracted_value) : r.current_value)?.toFixed(3) ?? '—'}</div></div>
-                  <div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Consumo</div><div style={{ fontWeight: 700, color: 'var(--cyan)' }}>{r.consumption !== null ? `${r.consumption.toFixed(3)} m³` : 'Após confirmar'}</div></div>
+                  <div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{r.is_installation ? 'Finalidade' : 'Consumo'}</div>
+                    <div style={{ fontWeight: 700, color: 'var(--cyan)' }}>
+                      {r.is_installation ? 'Leitura-base' : r.consumption !== null ? `${r.consumption.toFixed(3)} m³` : 'Após aprovar'}
+                    </div>
+                  </div>
                 </div>
 
                 {(r.vision_confidence ?? r.ocr_confidence) !== null && (
@@ -344,7 +355,7 @@ export default function ReadingsPage() {
                 <div style={{ padding: '14px 20px', borderTop: '1px solid var(--border)', display: 'grid', gap: 10 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.4fr)', gap: 10 }}>
                     <div>
-                      <label className="form-label">Medição confirmada (m³)</label>
+                      <label className="form-label">{r.is_installation ? 'Leitura-base do visor (m³)' : 'Leitura do visor (m³)'}</label>
                       <input className="form-input" inputMode="decimal" value={draftValues[r.id] || ''} onChange={event => setDraftValues(current => ({ ...current, [r.id]: event.target.value }))} placeholder="Ex: 13,440" />
                     </div>
                     <div>
@@ -357,14 +368,9 @@ export default function ReadingsPage() {
                     <button className="btn btn-danger btn-sm" onClick={() => reject(r.id)} disabled={actionLoading === r.id}>
                       <X size={14} /> Solicitar nova captura
                     </button>
-                    {(r.vision_predicted_value ?? r.photo_extracted_value) !== null && (
-                      <button className="btn btn-secondary btn-sm" onClick={() => approve(r, true)} disabled={actionLoading === r.id}>
-                        <Sparkles size={14} /> Confirmar sugestão
-                      </button>
-                    )}
                     <button className="btn btn-primary btn-sm" onClick={() => approve(r)} disabled={actionLoading === r.id}>
                       {actionLoading === r.id ? <div className="spinner" style={{ width: 14, height: 14 }} /> : <Check size={14} />}
-                      Confirmar valor e faturar
+                      {r.is_installation ? 'Aprovar base e gerar taxa de instalação' : 'Aprovar leitura e gerar boleto'}
                     </button>
                   </div>
                 </div>
@@ -436,13 +442,20 @@ function ReadingPhoto({ url, label }: { url: string | null; label?: string }) {
 function ReadingConfirmationPreview({ reading, rawValue }: { reading: Reading; rawValue: string }) {
   const value = Number(rawValue.replace(',', '.'));
   if (!Number.isFinite(value)) return null;
+  if (reading.is_installation) {
+    return (
+      <div style={{ padding: '8px 10px', borderRadius: 8, background: 'var(--accent-soft)', color: 'var(--accent)', fontSize: 12, fontWeight: 700 }}>
+        Leitura-base: {value.toFixed(3)} m³ • consumo faturável: 0 m³ • a cobrança usará apenas a taxa de instalação configurada.
+      </div>
+    );
+  }
   const suggestion = reading.vision_predicted_value ?? reading.photo_extracted_value;
   const adjusted = suggestion !== null && Math.abs(value - suggestion) > 0.0005;
   const consumption = value >= reading.previous_value ? value - reading.previous_value : null;
 
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '8px 10px', borderRadius: 8, background: adjusted ? 'var(--warning-soft)' : 'var(--success-soft)', color: adjusted ? 'var(--warning)' : 'var(--success)', fontSize: 12, fontWeight: 700 }}>
-      <span>{adjusted ? 'Valor ajustado' : 'Sugestão preservada'}</span>
+      <span>{adjusted ? 'Valor ajustado manualmente' : 'Valor do visor aprovado'}</span>
       <span>•</span>
       <span>{consumption === null ? 'Virada/regressão será validada pelo servidor' : `Consumo previsto: ${consumption.toFixed(3)} m³`}</span>
     </div>

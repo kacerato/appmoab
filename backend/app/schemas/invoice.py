@@ -48,6 +48,9 @@ class InvoiceResponse(BaseModel):
     # Dados agregados
     customer_name: str | None = None
     customer_cpf_cnpj: str | None = None
+    reading_status: str | None = None
+    reading_kind: str | None = None
+    can_reverse_reading: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -85,6 +88,11 @@ class InvoiceStatusUpdate(BaseModel):
 
 class InvoiceReopenRequest(BaseModel):
     reason: str
+
+
+class InvoiceCancelRequest(BaseModel):
+    preserve_reading: bool = True
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class InvoiceSummary(BaseModel):

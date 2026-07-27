@@ -18,6 +18,8 @@ from app.models.invoice import Invoice
 from app.models.invoice_document import InvoiceDocument
 from app.models.invoice_event import InvoiceEvent
 from app.models.notification import Notification
+from app.models.reading import Reading
+from app.models.reading_cycle import ReadingCycle
 from app.models.system_setting import SystemSetting
 from app.models.whatsapp_message import WhatsAppMessage
 from app.models.customer import Customer
@@ -27,7 +29,7 @@ from app.schemas.invoice import (
     InvoiceCreateManual, InvoiceSummary, InvoiceWhatsAppDispatchResponse,
     InvoiceEventResponse,
     InvoiceAmountUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
-    InvoiceReopenRequest,
+    InvoiceCancelRequest, InvoiceReopenRequest,
 )
 from app.schemas.invoice_document import InvoiceDocumentResponse, InvoiceDocumentUpload
 from app.services.billing_policy import calculate_overdue_amount, payment_due_date_for_provider
@@ -50,6 +52,10 @@ from app.services.notification_templates import (
     notification_flow_enabled,
     render_invoice_customer_message,
     render_notification_message,
+)
+from app.services.reading_cycles import (
+    get_latest_approved_reading,
+    promote_cycle_to_installation,
 )
 from app.services.whatsapp_api import whatsapp_service
 from app.utils.security import get_current_user, require_admin
@@ -272,6 +278,9 @@ def _invoice_response(invoice: Invoice) -> InvoiceResponse:
         "documents",
         "customer_name",
         "customer_cpf_cnpj",
+        "reading_status",
+        "reading_kind",
+        "can_reverse_reading",
     }
     # Construa o contrato apenas com colunas escalares. Isso impede que o
     # Pydantic dispare lazy-load assíncrono de relacionamentos em endpoints que
@@ -296,6 +305,13 @@ def _invoice_response(invoice: Invoice) -> InvoiceResponse:
     if invoice.customer:
         resp.customer_name = invoice.customer.name
         resp.customer_cpf_cnpj = invoice.customer.cpf_cnpj
+    if "reading" not in unloaded and invoice.reading:
+        resp.reading_status = invoice.reading.status
+        resp.reading_kind = invoice.reading.reading_kind
+        resp.can_reverse_reading = (
+            invoice.status == "cancelled"
+            and invoice.reading.status == "approved"
+        )
     return resp
 
 
@@ -451,6 +467,7 @@ async def get_invoice(
         select(Invoice).options(
             selectinload(Invoice.customer),
             selectinload(Invoice.documents),
+            selectinload(Invoice.reading),
         )
         .where(Invoice.id == uuid.UUID(invoice_id))
     )
@@ -685,24 +702,189 @@ async def create_manual_invoice(
     return _invoice_response(invoice)
 
 
+async def _reverse_linked_reading(
+    db: AsyncSession,
+    *,
+    invoice: Invoice,
+    admin: User,
+    reason: str | None,
+) -> None:
+    reading = invoice.reading
+    if not reading:
+        raise HTTPException(
+            status_code=409,
+            detail="Esta fatura não possui leitura vinculada para desfazer.",
+        )
+    if reading.status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="A leitura vinculada já não está aprovada.",
+        )
+
+    later_approved = (
+        await db.execute(
+            select(Reading.id)
+            .where(
+                Reading.hydrometer_id == reading.hydrometer_id,
+                Reading.id != reading.id,
+                Reading.status == "approved",
+                Reading.captured_at > reading.captured_at,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if later_approved:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Não é possível desfazer esta leitura porque já existe uma "
+                "leitura posterior aprovada. Cancele somente o boleto."
+            ),
+        )
+
+    prior_approved = await get_latest_approved_reading(
+        db,
+        reading.hydrometer_id,
+        exclude_reading_id=reading.id,
+    )
+    cycle = invoice.cycle or reading.cycle
+    if not cycle:
+        raise HTTPException(
+            status_code=409,
+            detail="A leitura não possui ciclo operacional vinculado.",
+        )
+
+    future_cycles = list(
+        (
+            await db.execute(
+                select(ReadingCycle)
+                .options(
+                    selectinload(ReadingCycle.readings),
+                    selectinload(ReadingCycle.invoices),
+                )
+                .where(
+                    ReadingCycle.hydrometer_id == reading.hydrometer_id,
+                    ReadingCycle.id != cycle.id,
+                    ReadingCycle.reference_month > cycle.reference_month,
+                    ReadingCycle.status.in_(("open", "pending_review", "recapture_required", "invoiced")),
+                )
+            )
+        ).scalars().unique().all()
+    )
+    for future_cycle in future_cycles:
+        has_active_reading = any(
+            item.status in {"pending", "approved"}
+            for item in future_cycle.readings
+        )
+        has_active_invoice = any(
+            item.status != "cancelled"
+            for item in future_cycle.invoices
+        )
+        if has_active_reading or has_active_invoice:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Não é possível desfazer a leitura porque o ciclo seguinte "
+                    "já possui leitura ou cobrança. Cancele somente o boleto."
+                ),
+            )
+        future_cycle.status = "superseded"
+        future_cycle.completed_at = datetime.now(timezone.utc)
+
+    if prior_approved is None:
+        cycle = await promote_cycle_to_installation(db, cycle)
+        reading.cycle_id = cycle.id
+        reading.reading_kind = "installation"
+
+    reading.status = "rejected"
+    reading.rejection_reason = (
+        reason.strip()
+        if reason and reason.strip()
+        else "Leitura desfeita junto com o cancelamento da fatura."
+    )
+    if reading.vision_inference:
+        reading.vision_inference.approved_for_training = False
+
+    cycle.status = "recapture_required"
+    cycle.completed_at = None
+
+    hydrometer = reading.hydrometer
+    if prior_approved:
+        hydrometer.last_reading_value = float(prior_approved.current_value or 0.0)
+        hydrometer.last_reading_date = prior_approved.captured_at
+    else:
+        hydrometer.last_reading_value = float(reading.previous_value or 0.0)
+        hydrometer.last_reading_date = None
+
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="reading_reversed_after_invoice_cancel",
+        previous_status="approved",
+        new_status="rejected",
+        user=admin,
+        reason=reading.rejection_reason,
+        payload={
+            "reading_id": str(reading.id),
+            "cycle_id": str(cycle.id),
+            "reopened_as_installation": prior_approved is None,
+        },
+    )
+
+
+def _mark_invoice_cancelled(invoice: Invoice, *, preserve_reading: bool) -> None:
+    invoice.status = "cancelled"
+    if invoice.cycle and preserve_reading:
+        invoice.cycle.status = "invoice_cancelled"
+
+
 @router.post("/{invoice_id}/cancel", response_model=InvoiceResponse)
 async def cancel_invoice(
     invoice_id: str,
+    data: InvoiceCancelRequest | None = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
     result = await db.execute(
         select(Invoice)
-        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.cycle),
+            selectinload(Invoice.reading).selectinload(Reading.hydrometer),
+            selectinload(Invoice.reading).selectinload(Reading.cycle),
+            selectinload(Invoice.reading).selectinload(Reading.vision_inference),
+        )
         .where(Invoice.id == uuid.UUID(invoice_id))
+        .with_for_update()
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
     if invoice.status == "paid":
         raise HTTPException(status_code=400, detail="Fatura paga não pode ser cancelada.")
+    preserve_reading = data.preserve_reading if data else True
+    reason = data.reason if data else None
     if invoice.status == "cancelled":
+        if not preserve_reading:
+            await _reverse_linked_reading(
+                db,
+                invoice=invoice,
+                admin=admin,
+                reason=reason,
+            )
+            await db.flush()
         return _invoice_response(invoice)
+
+    if not preserve_reading:
+        # Valida e prepara a reversao antes de alterar a cobranca externa. Se
+        # qualquer dependencia posterior impedir o rollback, o boleto permanece
+        # intacto e a transacao local nao fica divergente.
+        await _reverse_linked_reading(
+            db,
+            invoice=invoice,
+            admin=admin,
+            reason=reason,
+        )
 
     cancel_result = None
     if invoice.efi_charge_id and invoice.efi_status not in ("canceled", "cancelled"):
@@ -721,9 +903,7 @@ async def cancel_invoice(
             ) from exc
 
     previous_status = invoice.status
-    invoice.status = "cancelled"
-    if invoice.cycle:
-        invoice.cycle.status = "invoice_cancelled"
+    _mark_invoice_cancelled(invoice, preserve_reading=preserve_reading)
     if invoice.efi_charge_id:
         invoice.efi_status = "canceled"
         invoice.efi_raw_response = _merge_efi_raw(
@@ -738,13 +918,14 @@ async def cancel_invoice(
         previous_status=previous_status,
         new_status=invoice.status,
         user=admin,
+        reason=reason,
         payload={
             "efi_charge_id": invoice.efi_charge_id,
             "efi_cancel_result": cancel_result,
+            "preserve_reading": preserve_reading,
         },
     )
     await db.flush()
-    await db.refresh(invoice)
     return _invoice_response(invoice)
 
 
@@ -800,7 +981,11 @@ async def refresh_invoice_overdue_amount(
 ):
     result = await db.execute(
         select(Invoice)
-        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.cycle),
+            selectinload(Invoice.reading),
+        )
         .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
@@ -869,7 +1054,11 @@ async def mark_invoice_paid(
 ):
     result = await db.execute(
         select(Invoice)
-        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.cycle),
+            selectinload(Invoice.reading),
+        )
         .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
@@ -941,7 +1130,11 @@ async def reopen_invoice(
 ):
     result = await db.execute(
         select(Invoice)
-        .options(selectinload(Invoice.customer), selectinload(Invoice.cycle))
+        .options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.cycle),
+            selectinload(Invoice.reading),
+        )
         .where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
@@ -950,6 +1143,14 @@ async def reopen_invoice(
     reason = (data.reason or "").strip()
     if len(reason) < 5:
         raise HTTPException(status_code=400, detail="Informe um motivo claro para reabrir a fatura.")
+    if invoice.reading and invoice.reading.status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "A leitura vinculada foi desfeita. Conclua e aprove a nova "
+                "captura antes de gerar outra cobrança."
+            ),
+        )
 
     previous_status = invoice.status
     previous_charge_id = invoice.efi_charge_id

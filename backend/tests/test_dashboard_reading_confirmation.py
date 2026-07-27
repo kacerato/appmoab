@@ -7,9 +7,11 @@ from fastapi import HTTPException
 
 from app.models.hydrometer import Hydrometer
 from app.models.notification import Notification
-from app.routers.readings import _evaluate_location
+from app.models.system_setting import SystemSetting
+from app.routers.readings import _evaluate_location, _installation_billing_values
 from app.routers.hydrometers import _validate_manual_base_adjustment
 from app.schemas.reading import ReadingApprove, ReadingResponse
+from app.schemas.invoice import InvoiceCancelRequest
 from app.services.invoice_whatsapp import MAX_ATTEMPTS, _schedule_retry
 from app.services.whatsapp_api import WhatsAppService
 
@@ -54,6 +56,24 @@ class DashboardReadingContractTest(unittest.TestCase):
 
         self.assertEqual(request.current_value, 12.451)
         self.assertEqual(request.adjustment_reason, "Digito em transicao")
+
+    def test_invoice_cancel_preserves_reading_unless_admin_explicitly_reverses_it(self):
+        self.assertTrue(InvoiceCancelRequest().preserve_reading)
+        self.assertFalse(
+            InvoiceCancelRequest(
+                preserve_reading=False,
+                reason="Refazer a captura de instalação",
+            ).preserve_reading
+        )
+
+    def test_installation_charge_uses_only_configured_fee(self):
+        settings = SystemSetting(installation_fee_amount=5.01)
+
+        amount, consumption, tariff_rate = _installation_billing_values(settings)
+
+        self.assertEqual(amount, 5.01)
+        self.assertEqual(consumption, 0.0)
+        self.assertEqual(tariff_rate, 0.0)
 
     def test_far_capture_is_marked_for_blocked_review(self):
         hydrometer = Hydrometer(

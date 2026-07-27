@@ -37,6 +37,8 @@ from app.services.invoice_whatsapp import dispatch_invoice_notification_task, en
 from app.services.reading_cycles import (
     advance_after_approval,
     ensure_actionable_cycle,
+    is_first_official_reading,
+    promote_cycle_to_installation,
 )
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, save_photo_from_base64
@@ -49,6 +51,11 @@ CRITICAL_DISTANCE_MULTIPLIER = 4
 LOW_ACCURACY_THRESHOLD_METERS = 50.0
 ROLLOVER_PREVIOUS_THRESHOLD = 0.90
 ACTIVE_READING_STATUSES = ("pending", "approved")
+
+
+def _installation_billing_values(settings: SystemSetting) -> tuple[float, float, float]:
+    """Taxa fixa: nunca usa leitura-base nem consumo para formar o valor."""
+    return float(settings.installation_fee_amount), 0.0, 0.0
 
 
 def _flag(code: str, label: str, message: str, severity: str = "warning") -> dict:
@@ -473,6 +480,25 @@ async def approve_reading(
     if reading.status != "pending":
         raise HTTPException(status_code=400, detail=f"Leitura já está '{reading.status}'")
 
+    hydrometer = reading.hydrometer
+    cycle = reading.cycle
+    if cycle is None:
+        cycle = await ensure_actionable_cycle(db, hydrometer, lock=True)
+        reading.cycle_id = cycle.id
+        reading.reference_month = cycle.reference_month
+
+    first_official_reading = await is_first_official_reading(
+        db,
+        hydrometer.id,
+        exclude_reading_id=reading.id,
+    )
+    if first_official_reading:
+        cycle = await promote_cycle_to_installation(db, cycle)
+        reading.cycle_id = cycle.id
+        reading.reference_month = cycle.reference_month
+    is_installation_capture = first_official_reading or cycle.cycle_type == "installation"
+    reading.reading_kind = "installation" if is_installation_capture else "water"
+
     inference = reading.vision_inference
     suggested_value = (
         inference.predicted_value
@@ -487,15 +513,34 @@ async def approve_reading(
     if suggested_value is not None and abs(float(chosen_value) - float(suggested_value)) > 0.0005 and not adjustment_reason:
         adjustment_reason = "Valor ajustado manualmente no dashboard"
 
-    consumption, location_status, distance, flags = _evaluate_reading(
-        hydrometer=reading.hydrometer,
-        current_value=float(chosen_value),
-        previous_value=reading.previous_value,
-        latitude=reading.latitude,
-        longitude=reading.longitude,
-        location_accuracy_meters=reading.location_accuracy_meters,
-        anomaly_override_reason=adjustment_reason or reading.anomaly_override_reason,
-    )
+    if is_installation_capture:
+        location_status, distance, flags = _evaluate_location(
+            hydrometer=hydrometer,
+            latitude=reading.latitude,
+            longitude=reading.longitude,
+            location_accuracy_meters=reading.location_accuracy_meters,
+        )
+        consumption = 0.0
+        flags = [
+            flag
+            for flag in flags
+            if flag.get("code") not in {"consumption_spike", "meter_regression"}
+        ] + [_flag(
+            "installation_baseline",
+            "Leitura-base de instalação",
+            "Este valor inicia o hidrômetro e não representa consumo faturável.",
+            "info",
+        )]
+    else:
+        consumption, location_status, distance, flags = _evaluate_reading(
+            hydrometer=hydrometer,
+            current_value=float(chosen_value),
+            previous_value=reading.previous_value,
+            latitude=reading.latitude,
+            longitude=reading.longitude,
+            location_accuracy_meters=reading.location_accuracy_meters,
+            anomaly_override_reason=adjustment_reason or reading.anomaly_override_reason,
+        )
 
     reading.current_value = float(chosen_value)
     reading.consumption = consumption
@@ -525,14 +570,6 @@ async def approve_reading(
         inference.approved_for_training = True
 
     # Atualiza última leitura do hidrômetro
-    hydrometer = reading.hydrometer
-    cycle = reading.cycle
-    if cycle is None:
-        cycle = await ensure_actionable_cycle(db, hydrometer, lock=True)
-        reading.cycle_id = cycle.id
-        reading.reference_month = cycle.reference_month
-        reading.reading_kind = cycle.cycle_type
-    is_installation_capture = cycle.cycle_type == "installation"
     if hydrometer.latitude is None and hydrometer.longitude is None and reading.latitude is not None and reading.longitude is not None:
         hydrometer.latitude = reading.latitude
         hydrometer.longitude = reading.longitude
@@ -559,9 +596,7 @@ async def approve_reading(
 
     system_settings = await _get_system_settings(db)
     if is_installation_capture:
-        amount = system_settings.installation_fee_amount
-        consumption_m3 = 0.0
-        tariff_rate = 0.0
+        amount, consumption_m3, tariff_rate = _installation_billing_values(system_settings)
         charge_type = "installation"
         boleto_message = f"Instalacao do hidrometro {hydrometer.code} - Ref: {ref_month}"
     else:

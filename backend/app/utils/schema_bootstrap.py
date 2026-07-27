@@ -69,6 +69,123 @@ async def _has_rows_matching(conn: AsyncConnection, table_name: str, condition: 
     return bool(result.scalar())
 
 
+async def _repair_cancelled_first_reading_as_installation(conn: AsyncConnection) -> None:
+    required_tables = ("readings", "reading_cycles", "invoices", "invoice_events", "system_settings")
+    if not all([await _table_exists(conn, table_name) for table_name in required_tables]):
+        return
+
+    await conn.execute(text("""
+        WITH first_approved AS (
+            SELECT r.id, r.cycle_id,
+                   row_number() OVER (
+                       PARTITION BY r.hydrometer_id
+                       ORDER BY r.captured_at, r.created_at
+                   ) AS position
+            FROM readings r
+            WHERE r.status = 'approved'
+        ),
+        targets AS (
+            SELECT reading.id AS reading_id, reading.cycle_id
+            FROM first_approved ranked
+            JOIN readings reading ON reading.id = ranked.id
+            JOIN invoices invoice ON invoice.reading_id = reading.id
+            WHERE ranked.position = 1
+              AND reading.reading_kind <> 'installation'
+              AND invoice.charge_type = 'water'
+              AND invoice.status = 'cancelled'
+        )
+        UPDATE reading_cycles cycle
+        SET cycle_type = 'installation',
+            updated_at = now()
+        FROM targets target
+        WHERE cycle.id = target.cycle_id
+          AND NOT EXISTS (
+              SELECT 1
+              FROM reading_cycles existing
+              WHERE existing.hydrometer_id = cycle.hydrometer_id
+                AND existing.reference_month = cycle.reference_month
+                AND existing.cycle_type = 'installation'
+                AND existing.id <> cycle.id
+          )
+    """))
+    await conn.execute(text("""
+        WITH first_approved AS (
+            SELECT r.id,
+                   row_number() OVER (
+                       PARTITION BY r.hydrometer_id
+                       ORDER BY r.captured_at, r.created_at
+                   ) AS position
+            FROM readings r
+            WHERE r.status = 'approved'
+        )
+        UPDATE readings reading
+        SET reading_kind = 'installation',
+            consumption = 0
+        FROM first_approved ranked, invoices invoice
+        WHERE reading.id = ranked.id
+          AND ranked.position = 1
+          AND invoice.reading_id = reading.id
+          AND invoice.charge_type = 'water'
+          AND invoice.status = 'cancelled'
+    """))
+    await conn.execute(text("""
+        WITH first_approved AS (
+            SELECT r.id,
+                   row_number() OVER (
+                       PARTITION BY r.hydrometer_id
+                       ORDER BY r.captured_at, r.created_at
+                   ) AS position
+            FROM readings r
+            WHERE r.status = 'approved'
+        )
+        UPDATE invoices invoice
+        SET charge_type = 'installation',
+            consumption_m3 = 0,
+            tariff_rate = 0,
+            amount = settings.installation_fee_amount,
+            original_amount = settings.installation_fee_amount,
+            custom_adjustment_amount = 0,
+            late_fee_amount = 0,
+            interest_amount = 0,
+            days_overdue_charged = 0,
+            adjustment_reason = 'Primeira leitura reclassificada como base de instalação',
+            updated_at = now()
+        FROM first_approved ranked
+        CROSS JOIN system_settings settings
+        WHERE invoice.reading_id = ranked.id
+          AND ranked.position = 1
+          AND invoice.charge_type = 'water'
+          AND invoice.status = 'cancelled'
+          AND settings.id = 1
+    """))
+    await conn.execute(text("""
+        INSERT INTO invoice_events (
+            id, invoice_id, user_id, event_type, previous_status, new_status,
+            reason, payload, created_at
+        )
+        SELECT gen_random_uuid(), invoice.id, NULL,
+               'installation_baseline_reclassified',
+               invoice.status, invoice.status,
+               'Primeira leitura corrigida para base de instalacao',
+               jsonb_build_object(
+                   'reading_id', invoice.reading_id,
+                   'corrected_charge_type', 'installation',
+                   'corrected_amount', invoice.amount
+               ),
+               now()
+        FROM invoices invoice
+        WHERE invoice.status = 'cancelled'
+          AND invoice.charge_type = 'installation'
+          AND invoice.adjustment_reason = 'Primeira leitura reclassificada como base de instalação'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM invoice_events event
+              WHERE event.invoice_id = invoice.id
+                AND event.event_type = 'installation_baseline_reclassified'
+          )
+    """))
+
+
 async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     """Mantem bancos existentes compatíveis antes de qualquer SELECT ORM."""
     await _add_column_if_missing(conn, "hydrometers", "red_digits INTEGER NOT NULL DEFAULT 3", "red_digits")
@@ -150,6 +267,7 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "system_settings", "default_due_day INTEGER NOT NULL DEFAULT 10", "default_due_day")
     await _add_column_if_missing(conn, "system_settings", "auto_send_invoice_on_approval BOOLEAN NOT NULL DEFAULT true", "auto_send_invoice_on_approval")
     await _add_column_if_missing(conn, "system_settings", "notification_flows JSONB NOT NULL DEFAULT '{}'::jsonb", "notification_flows")
+    await _repair_cancelled_first_reading_as_installation(conn)
 
     await _add_column_if_missing(conn, "notifications", "idempotency_key VARCHAR(255)", "idempotency_key")
     await _add_column_if_missing(conn, "notifications", "attempt_count INTEGER NOT NULL DEFAULT 0", "attempt_count")

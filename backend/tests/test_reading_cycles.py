@@ -1,11 +1,16 @@
 from datetime import date, datetime, timezone
+from unittest import IsolatedAsyncioTestCase
+from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 from app.models.customer import Customer
+from app.models.hydrometer import Hydrometer
 from app.models.reading_cycle import ReadingCycle
 from app.routers.customers import _apply_billing_status
 from app.schemas.customer import CustomerResponse
 from app.services.reading_cycles import (
     cycle_timing,
+    ensure_actionable_cycle,
     next_reference_month,
     reference_due_date,
 )
@@ -80,3 +85,69 @@ def test_customer_status_reports_missing_reading_not_next_month_invoice():
     assert response.next_invoice_reference_month == "2026-07"
     assert response.next_invoice_due_date.date() == date(2026, 7, 18)
     assert "fatura ainda nao gerada" in response.billing_status_label
+
+
+class InstallationCycleContractTest(IsolatedAsyncioTestCase):
+    async def test_first_official_reading_is_installation_even_with_legacy_last_reading_date(self):
+        hydrometer = Hydrometer(
+            id=UUID("22222222-2222-2222-2222-222222222222"),
+            customer_id=UUID("11111111-1111-1111-1111-111111111111"),
+            code="000001",
+            last_reading_value=90.645,
+            last_reading_date=datetime(2026, 7, 20, tzinfo=timezone.utc),
+        )
+        expected = _cycle()
+        expected.cycle_type = "installation"
+
+        with (
+            patch(
+                "app.services.reading_cycles.get_actionable_cycle",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.reading_cycles.get_latest_approved_reading",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.reading_cycles.create_cycle",
+                AsyncMock(return_value=expected),
+            ) as create_cycle,
+        ):
+            result = await ensure_actionable_cycle(
+                AsyncMock(),
+                hydrometer,
+                today=date(2026, 7, 27),
+            )
+
+        assert result.cycle_type == "installation"
+        assert create_cycle.await_args.kwargs["cycle_type"] == "installation"
+
+    async def test_legacy_water_cycle_is_promoted_when_no_reading_was_approved(self):
+        hydrometer = Hydrometer(
+            id=UUID("22222222-2222-2222-2222-222222222222"),
+            customer_id=UUID("11111111-1111-1111-1111-111111111111"),
+            code="000001",
+        )
+        legacy_cycle = _cycle()
+        promoted_cycle = _cycle()
+        promoted_cycle.cycle_type = "installation"
+        db = AsyncMock()
+
+        with (
+            patch(
+                "app.services.reading_cycles.get_actionable_cycle",
+                AsyncMock(return_value=legacy_cycle),
+            ),
+            patch(
+                "app.services.reading_cycles.get_latest_approved_reading",
+                AsyncMock(return_value=None),
+            ),
+            patch(
+                "app.services.reading_cycles.promote_cycle_to_installation",
+                AsyncMock(return_value=promoted_cycle),
+            ) as promote,
+        ):
+            result = await ensure_actionable_cycle(db, hydrometer)
+
+        assert result.cycle_type == "installation"
+        promote.assert_awaited_once_with(db, legacy_cycle)

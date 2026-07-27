@@ -27,6 +27,9 @@ interface Invoice {
   customer_name: string;
   customer_cpf_cnpj: string;
   reading_id: string | null;
+  reading_status: string | null;
+  reading_kind: string | null;
+  can_reverse_reading: boolean;
   consumption_m3: number;
   tariff_rate: number;
   amount: number;
@@ -90,6 +93,8 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const [events, setEvents] = useState<InvoiceEvent[]>([]);
   const [documents, setDocuments] = useState<InvoiceDocument[]>([]);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -132,19 +137,32 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     notify('Copiado', 'O conteúdo foi enviado para sua área de transferência.', 'success');
   };
 
-  const cancelInvoice = async () => {
-    const confirmed = await confirm('Cancelar fatura', 'Deseja realmente cancelar esta fatura?', {
-      confirmLabel: 'Cancelar fatura',
-    });
-    if (!confirmed) return;
-
+  const cancelInvoice = async (preserveReading: boolean) => {
+    setActionLoading('cancel');
     try {
-      const updated = await api.post<Invoice>(`/invoices/${id}/cancel`);
+      const updated = await api.post<Invoice>(`/invoices/${id}/cancel`, {
+        preserve_reading: preserveReading,
+        reason: cancelReason.trim() || null,
+      });
       setInv(updated);
       await reloadEvents();
-      notify('Fatura cancelada', 'A cobrança foi cancelada e a fatura não poderá ser enviada até ser reaberta.', 'success');
+      setCancelOpen(false);
+      setCancelReason('');
+      notify(
+        preserveReading ? 'Boleto cancelado; leitura mantida' : 'Boleto e leitura cancelados',
+        preserveReading
+          ? 'A leitura continua oficial e o próximo ciclo permanece programado.'
+          : (
+              updated.reading_kind === 'installation'
+                ? 'A leitura-base foi desfeita e a instalação voltou para nova captura.'
+                : 'A competência voltou para a rota e exige uma nova leitura.'
+            ),
+        'success',
+      );
     } catch (e: unknown) {
       notify('Falha ao cancelar fatura', e instanceof Error ? e.message : 'Erro ao cancelar a fatura.', 'error');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -391,7 +409,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
               {actionLoading === 'paid' ? <Loader2 size={14} className="spinner" /> : <CheckCircle2 size={14} />} Pago
             </button>
           )}
-          {['cancelled', 'paid'].includes(inv.status) && (
+          {['cancelled', 'paid'].includes(inv.status) && (!inv.reading_id || inv.reading_status === 'approved') && (
             <button className="btn btn-secondary btn-sm" onClick={reopenInvoice} disabled={actionLoading === 'reopen'}>
               {actionLoading === 'reopen' ? <Loader2 size={14} className="spinner" /> : <RotateCcw size={14} />} Reabrir
             </button>
@@ -399,7 +417,16 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           {(inv.has_pdf || inv.efi_pdf_url) && (
             <button className="btn btn-secondary btn-sm" onClick={downloadPdf}><Download size={14} /> PDF</button>
           )}
-          {['pending', 'sent'].includes(inv.status) && <button className="btn btn-danger btn-sm" onClick={cancelInvoice}><Ban size={14} /> Cancelar</button>}
+          {['pending', 'sent', 'overdue'].includes(inv.status) && (
+            <button className="btn btn-danger btn-sm" onClick={() => setCancelOpen(true)}>
+              <Ban size={14} /> Cancelar boleto
+            </button>
+          )}
+          {inv.status === 'cancelled' && inv.can_reverse_reading && (
+            <button className="btn btn-danger btn-sm" onClick={() => setCancelOpen(true)}>
+              <RotateCcw size={14} /> Desfazer leitura vinculada
+            </button>
+          )}
         </div>
       } />
 
@@ -420,8 +447,10 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           <div className="kpi-value" style={{ fontSize: 22, color: 'var(--success)' }}>{fmt(inv.amount)}</div>
         </div>
         <div className="kpi-card cyan">
-          <div className="kpi-label">Consumo</div>
-          <div className="kpi-value" style={{ fontSize: 22 }}>{inv.consumption_m3.toFixed(2)} m³</div>
+          <div className="kpi-label">{inv.charge_type === 'installation' ? 'Leitura faturável' : 'Consumo'}</div>
+          <div className="kpi-value" style={{ fontSize: 22 }}>
+            {inv.charge_type === 'installation' ? '0 m³' : `${inv.consumption_m3.toFixed(2)} m³`}
+          </div>
         </div>
         <div className="kpi-card blue">
           <div className="kpi-label">Vencimento</div>
@@ -573,6 +602,69 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           ))}
         </div>
       </div>
+
+      {cancelOpen && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 620 }}>
+            <div className="modal-header">
+              <div>
+                <h2 className="modal-title">{inv.status === 'cancelled' ? 'Desfazer leitura vinculada' : 'Cancelar boleto'}</h2>
+                <p style={{ margin: '6px 0 0', color: 'var(--text-secondary)', fontSize: 13 }}>
+                  Escolha explicitamente o que deve acontecer com a leitura que originou esta cobrança.
+                </p>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setCancelOpen(false)}>Fechar</button>
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <label className="form-label">
+                Motivo <span style={{ fontWeight: 400 }}>(opcional)</span>
+                <textarea
+                  className="form-input"
+                  value={cancelReason}
+                  onChange={event => setCancelReason(event.target.value)}
+                  placeholder="Ex: boleto emitido com valor incorreto"
+                  rows={3}
+                  style={{ marginTop: 6, resize: 'vertical' }}
+                />
+              </label>
+
+              {inv.status !== 'cancelled' && (
+                <button
+                  className="btn btn-secondary"
+                  disabled={actionLoading === 'cancel'}
+                  onClick={() => cancelInvoice(true)}
+                  style={{ justifyContent: 'flex-start', height: 'auto', padding: 14, textAlign: 'left' }}
+                >
+                  <span>
+                    <strong>Cancelar boleto e manter leitura</strong>
+                    <span style={{ display: 'block', marginTop: 4, fontWeight: 400, color: 'var(--text-secondary)' }}>
+                      A medição continua oficial. O próximo mês permanece programado normalmente.
+                    </span>
+                  </span>
+                </button>
+              )}
+
+              <button
+                className="btn btn-danger"
+                disabled={actionLoading === 'cancel'}
+                onClick={() => cancelInvoice(false)}
+                style={{ justifyContent: 'flex-start', height: 'auto', padding: 14, textAlign: 'left' }}
+              >
+                <span>
+                  <strong>
+                    {inv.status === 'cancelled' ? 'Desfazer leitura' : 'Cancelar boleto e desfazer leitura'}
+                  </strong>
+                  <span style={{ display: 'block', marginTop: 4, fontWeight: 400 }}>
+                    {inv.reading_kind === 'installation'
+                      ? 'A leitura-base será invalidada e a instalação voltará para nova captura.'
+                      : 'A leitura será invalidada e a competência voltará para a rota.'}
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -603,6 +695,8 @@ function eventLabel(s: string) {
     efi_charge_emitted: 'Cobrança Efí emitida',
     efi_charge_failed: 'Falha ao emitir Efí',
     invoice_cancelled: 'Fatura cancelada',
+    installation_baseline_reclassified: 'Primeira leitura corrigida como instalação',
+    reading_reversed_after_invoice_cancel: 'Leitura desfeita após cancelamento',
     invoice_reopened: 'Fatura reaberta',
     invoice_amount_adjusted: 'Valor ajustado',
     invoice_overdue_refreshed: 'Atraso recalculado',

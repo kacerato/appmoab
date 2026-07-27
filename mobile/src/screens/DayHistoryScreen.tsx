@@ -15,6 +15,7 @@ interface ReadingItem {
   collaborator_id: string;
   current_value: number | null;
   consumption: number | null;
+  reading_kind?: string;
   captured_at: string;
   status: string;
   customer_name: string | null;
@@ -105,7 +106,9 @@ export default function DayHistoryScreen() {
                 <Text style={styles.valueLine}>
                   {item.current_value === null || item.consumption === null
                     ? 'Captura aguardando conferência no dashboard'
-                    : `Leitura ${formatMeterReading(item.current_value)} m³ • Consumo ${formatMeterReading(item.consumption)} m³`}
+                    : item.reading_kind === 'installation'
+                      ? `Leitura-base ${formatMeterReading(item.current_value)} m³ • instalação`
+                      : `Leitura ${formatMeterReading(item.current_value)} m³ • Consumo ${formatMeterReading(item.consumption)} m³`}
                 </Text>
               </View>
             )}
