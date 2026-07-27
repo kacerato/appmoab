@@ -114,6 +114,55 @@ def test_sideways_capture_is_rotated_before_display_detection():
     assert _red_roller_strip_candidate(normalized, 3, 4) is not None
 
 
+def test_upright_counter_wins_over_red_circular_dial():
+    image = np.full((924, 922, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (205, 382), (665, 492), (250, 250, 250), -1)
+    for index, digit in enumerate("0090645"):
+        color = (25, 25, 25) if index < 4 else (30, 30, 205)
+        cv2.putText(
+            image,
+            digit,
+            (220 + index * 61, 470),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            2.0,
+            color,
+            6,
+            cv2.LINE_AA,
+        )
+    cv2.circle(image, (650, 575), 48, (30, 30, 205), -1)
+
+    normalized, degrees, source = _normalize_meter_orientation(image, 3, 4)
+
+    assert degrees == 0
+    assert source == "red_roller_anchor"
+    assert normalized.shape == image.shape
+
+
+def test_portrait_counter_above_legacy_vertical_band_is_detected():
+    image = np.full((1800, 1350, 3), 235, dtype=np.uint8)
+    cv2.rectangle(image, (430, 390), (970, 535), (250, 250, 250), -1)
+    for index, digit in enumerate("0090645"):
+        color = (25, 25, 25) if index < 4 else (30, 30, 205)
+        cv2.putText(
+            image,
+            digit,
+            (455 + index * 70, 505),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            2.45,
+            color,
+            7,
+            cv2.LINE_AA,
+        )
+    cv2.circle(image, (840, 635), 55, (30, 30, 205), -1)
+
+    corners = _red_roller_strip_candidate(image, red_digits=3, black_digits=4)
+    normalized, degrees, _ = _normalize_meter_orientation(image, 3, 4)
+
+    assert corners is not None
+    assert degrees == 0
+    assert normalized.shape == image.shape
+
+
 def test_technical_serial_number_is_not_used_as_counter_without_meter_hint():
     image = np.full((500, 800, 3), 230, dtype=np.uint8)
     box = np.array([[100, 190], [550, 190], [550, 250], [100, 250]], dtype="float32")
@@ -298,6 +347,32 @@ def test_transition_decoder_considers_both_visible_digits_and_history():
 
     assert selected == 124
     assert alternatives == [124.0, 125.0]
+    assert "transitional_digit" in flags
+
+
+def test_transition_decoder_without_history_keeps_center_line_digit():
+    observations = [
+        DigitObservation(position=0, value=0, confidence=0.99),
+        DigitObservation(position=1, value=0, confidence=0.99),
+        DigitObservation(position=2, value=9, confidence=0.99),
+        DigitObservation(position=3, value=0, confidence=0.99),
+        DigitObservation(
+            position=4,
+            value=6,
+            confidence=0.82,
+            upper_digit=6,
+            lower_digit=5,
+            transition_phase=0.80,
+            transitional=True,
+        ),
+        DigitObservation(position=5, value=4, confidence=0.99),
+        DigitObservation(position=6, value=5, confidence=0.99),
+    ]
+
+    selected, alternatives, flags = _temporal_candidates(observations, red_digits=3, previous_value=None)
+
+    assert selected == 90.645
+    assert alternatives == [90.545, 90.645]
     assert "transitional_digit" in flags
 
 

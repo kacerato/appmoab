@@ -10,6 +10,7 @@ import pytest
 
 from app.schemas.hydrometer import HydrometerIdentifyRequest, KimiVisionFeedbackRequest
 from app.routers import hydrometers as hydrometers_router
+from app.models.vision_inference import VisionInference
 from app.scripts.calibrate_meter_vision import build_profile
 from app.scripts.promote_meter_vision import DEFAULT_GATES, evaluate
 from app.services.meter_vision import DigitObservation, VisionResult, meter_vision_service
@@ -161,6 +162,42 @@ def test_calibration_and_promotion_are_blocked_without_evidence():
 
 
 class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
+    async def test_training_is_blocked_when_counter_localization_is_not_validated(self):
+        inference_id = uuid.uuid4()
+        inference = VisionInference(
+            id=inference_id,
+            stage="dev_test",
+            model_version="test",
+            predicted_value=90.645,
+            confidence=0.8,
+            auto_fill_allowed=False,
+            decision="confirm",
+            rectified_object_key=None,
+            quality={
+                "display_detection": {
+                    "source": "guide_fallback",
+                    "localization_valid": False,
+                }
+            },
+        )
+        db = MagicMock()
+        db.get = AsyncMock(return_value=inference)
+        db.flush = AsyncMock()
+        user = SimpleNamespace(id=uuid.uuid4())
+        request = KimiVisionFeedbackRequest(
+            inference_id=inference_id,
+            stage="dev_test",
+            predicted_value=90.645,
+            confirmed_value=90.645,
+            approve_for_training=True,
+        )
+
+        response = await hydrometers_router.store_kimi_vision_feedback(request, db, user)
+
+        self.assertFalse(inference.approved_for_training)
+        self.assertEqual(response["dataset_status"], "capture_review_required")
+        self.assertFalse(inference.quality["localization_valid"])
+
     async def test_endpoint_retries_every_unprobed_burst_frame_with_full_ocr(self):
         calls: dict[str, list[bool]] = {}
         db = MagicMock()
@@ -180,8 +217,9 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             expensive_ocr: bool = True,
             hydrometer_brand: str | None = None,
             hydrometer_model: str | None = None,
+            guide_crop: dict | None = None,
         ) -> VisionResult:
-            del red_digits, black_digits, previous_value, hydrometer_brand, hydrometer_model
+            del red_digits, black_digits, previous_value, hydrometer_brand, hydrometer_model, guide_crop
             calls.setdefault(image_base64, []).append(expensive_ocr)
             return _result("0012345", 0.91)
 
@@ -218,6 +256,7 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             photo_base64=_synthetic_meter_data_uri(),
             hydrometer_brand="Aqua",
             hydrometer_model="M1",
+            capture_metadata={"guide_crop": {"x": 0.2, "y": 0.3, "width": 0.6, "height": 0.2}},
         )
 
         def analyze(
@@ -229,12 +268,14 @@ class VisionVerdictEndpointContractTest(unittest.IsolatedAsyncioTestCase):
             expensive_ocr: bool = True,
             hydrometer_brand: str | None = None,
             hydrometer_model: str | None = None,
+            guide_crop: dict | None = None,
         ) -> VisionResult:
             self.assertTrue(image_base64)
             self.assertEqual(red_digits, 3)
             self.assertTrue(expensive_ocr)
             self.assertEqual(hydrometer_brand, "Aqua")
             self.assertEqual(hydrometer_model, "M1")
+            self.assertEqual(guide_crop, {"x": 0.2, "y": 0.3, "width": 0.6, "height": 0.2})
             return result
 
         with (

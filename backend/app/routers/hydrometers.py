@@ -321,6 +321,20 @@ async def store_kimi_vision_feedback(
             hydrometer_model=data.hydrometer_model,
         )
         db.add(inference)
+    capture_quality = inference.quality or {}
+    localization = capture_quality.get("display_detection") or {}
+    localization_valid = bool(
+        inference.rectified_object_key
+        and localization.get("localization_valid")
+    )
+    if training_approved and not localization_valid:
+        training_approved = False
+        inference.approved_for_training = False
+        dataset_status = "capture_review_required"
+        divergence_reason = divergence_reason or (
+            "Amostra sem localizacao validada do visor; revisar o vinculo entre foto, recorte e valor confirmado."
+        )
+        lesson = "Confirmacao preservada para diagnostico, mas bloqueada no treinamento ate revisar o recorte."
     inference.confirmed_code = confirmed_code
     inference.confirmed_value = data.confirmed_value
     inference.was_correct = was_correct
@@ -338,6 +352,7 @@ async def store_kimi_vision_feedback(
         "dataset_status": dataset_status,
         "training_requested": bool(training_requested),
         "has_confirmed_label": has_confirmed_label,
+        "localization_valid": localization_valid,
     }
     await db.flush()
     return {
@@ -361,6 +376,10 @@ async def inspect_vision_capture(
         data.photo_base64,
         red_digits=data.red_digits,
         black_digits=data.black_digits,
+        guide_crop=(
+            (data.frame_metadata[0].get("guide_crop") if data.frame_metadata else None)
+            or (data.capture_metadata or {}).get("guide_crop")
+        ),
     )
 
 
@@ -372,6 +391,13 @@ async def kimi_vision_verdict(
 ):
     """Executa o motor local especializado; GLM, quando habilitado, fica apenas em sombra."""
     frames = [data.photo_base64, *data.frames_base64[:7]]
+    frame_guide_crops = []
+    for index in range(len(frames)):
+        frame_metadata = data.frame_metadata[index] if index < len(data.frame_metadata) else {}
+        guide_crop = frame_metadata.get("guide_crop") if isinstance(frame_metadata, dict) else None
+        if index == 0 and guide_crop is None:
+            guide_crop = (data.capture_metadata or {}).get("guide_crop")
+        frame_guide_crops.append(guide_crop)
     expensive_probe_indexes = {0}
     if len(frames) > 1:
         expensive_probe_indexes.update({len(frames) // 2, len(frames) - 1})
@@ -385,6 +411,7 @@ async def kimi_vision_verdict(
             expensive_ocr=index in expensive_probe_indexes,
             hydrometer_brand=data.hydrometer_brand,
             hydrometer_model=data.hydrometer_model,
+            guide_crop=frame_guide_crops[index],
         )
         for index, frame in enumerate(frames)
     ])
@@ -418,6 +445,7 @@ async def kimi_vision_verdict(
                     expensive_ocr=True,
                     hydrometer_brand=data.hydrometer_brand,
                     hydrometer_model=data.hydrometer_model,
+                    guide_crop=frame_guide_crops[index],
                 )
                 for index in missing_probe_indexes
             ])

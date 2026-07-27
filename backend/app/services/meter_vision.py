@@ -63,6 +63,16 @@ class DisplayDetection:
     source: str = "detector-onnx"
 
 
+@dataclass(frozen=True)
+class CounterWindowGeometry:
+    corners: object
+    aspect: float
+    area_ratio: float
+    angle_degrees: float
+    score: float
+    valid: bool
+
+
 @dataclass
 class DigitObservation:
     position: int
@@ -172,6 +182,100 @@ def _order_corners(points):
     return ordered
 
 
+def _counter_window_geometry(corners, image) -> CounterWindowGeometry:
+    """Valida se um quadrilátero tem geometria plausível de janela numérica.
+
+    Um grupo vermelho isolado pode pertencer ao ponteiro circular. A janela
+    mecânica, depois da orientação candidata, precisa ser horizontal, alongada
+    e ocupar uma área coerente da foto. Essa validação é compartilhada pelo
+    detector treinado e pelas âncoras determinísticas.
+    """
+
+    ordered = _order_corners(corners)
+    tl, tr, br, bl = ordered
+    horizontal_vector = ((tr - tl) + (br - bl)) / 2
+    vertical_vector = ((bl - tl) + (br - tr)) / 2
+    horizontal = float(np.linalg.norm(horizontal_vector))
+    vertical = float(np.linalg.norm(vertical_vector))
+    area_ratio = horizontal * vertical / max(float(image.shape[0] * image.shape[1]), 1.0)
+    aspect = horizontal / max(vertical, 1.0)
+    angle = abs(math.degrees(math.atan2(float(horizontal_vector[1]), float(horizontal_vector[0]))))
+    if angle > 90:
+        angle = 180 - angle
+
+    valid = (
+        2.6 <= aspect <= 8.0
+        and 0.0015 <= area_ratio <= 0.35
+        and angle <= 10.0
+    )
+    score = (
+        min(aspect, 7.0) * 0.08
+        + min(area_ratio, 0.25) * 2.0
+        - max(angle - 4.0, 0.0) * 0.012
+    )
+    return CounterWindowGeometry(
+        corners=ordered,
+        aspect=round(aspect, 4),
+        area_ratio=round(area_ratio, 6),
+        angle_degrees=round(angle, 3),
+        score=round(score, 6),
+        valid=valid,
+    )
+
+
+def _normalized_guide_rect(guide_crop: dict | None, degrees: int = 0) -> tuple[float, float, float, float] | None:
+    if not isinstance(guide_crop, dict):
+        return None
+    try:
+        x = float(guide_crop.get("x"))
+        y = float(guide_crop.get("y"))
+        width = float(guide_crop.get("width"))
+        height = float(guide_crop.get("height"))
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    x = max(0.0, min(1.0, x))
+    y = max(0.0, min(1.0, y))
+    width = max(0.0, min(1.0 - x, width))
+    height = max(0.0, min(1.0 - y, height))
+    if width < 0.03 or height < 0.02:
+        return None
+    if degrees == 90:
+        return 1.0 - (y + height), x, height, width
+    if degrees == -90:
+        return y, 1.0 - (x + width), height, width
+    return x, y, width, height
+
+
+def _guide_counter_window_candidate(image, guide_crop: dict | None):
+    """Procura geometria real dentro do guia sem transformar o guia no visor."""
+
+    normalized = _normalized_guide_rect(guide_crop)
+    if normalized is None:
+        return None
+    x, y, width, height = normalized
+    image_height, image_width = image.shape[:2]
+    x1 = max(0, min(image_width - 1, int(x * image_width)))
+    y1 = max(0, min(image_height - 1, int(y * image_height)))
+    x2 = max(x1 + 1, min(image_width, int(math.ceil((x + width) * image_width))))
+    y2 = max(y1 + 1, min(image_height, int(math.ceil((y + height) * image_height))))
+    roi = image[y1:y2, x1:x2]
+    if roi.size == 0:
+        return None
+
+    detector = _trained_display_detector()
+    learned = detector.detect(roi) if detector is not None else None
+    local_corners = learned.corners if learned is not None else None
+    if local_corners is None:
+        local_corners, used_fallback = _display_candidate(roi)
+        if used_fallback:
+            return None
+    corners = _order_corners(local_corners) + np.array([x1, y1], dtype="float32")
+    geometry = _counter_window_geometry(corners, image)
+    return geometry.corners if geometry.valid else None
+
+
 def _display_candidate(image):
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -230,10 +334,11 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
     ).astype("uint8") * 255
     red &= red_dominance
 
-    # Exclui o ponteiro inferior e elementos das bordas antes de agrupar os
-    # tres algarismos coloridos da janela.
+    # A janela pode ficar na metade superior de uma foto vertical. A faixa
+    # antiga (28%-62%) perdia esses casos. Mantemos apenas uma exclusão suave
+    # das bordas; a geometria e a regularidade do grupo eliminam o ponteiro.
     region = np.zeros_like(red)
-    region[int(height * 0.28):int(height * 0.62), int(width * 0.18):int(width * 0.96)] = 255
+    region[int(height * 0.06):int(height * 0.84), int(width * 0.10):int(width * 0.98)] = 255
     red &= region
     cleaned = cv2.morphologyEx(
         red,
@@ -246,15 +351,21 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
     for contour in contours:
         x, y, component_width, component_height = cv2.boundingRect(contour)
         area = cv2.contourArea(contour)
-        if component_height < height * 0.022 or component_height > height * 0.13:
+        if component_height < height * 0.012 or component_height > height * 0.13:
             continue
-        if component_width < width * 0.006 or component_width > width * 0.13:
+        if component_width < width * 0.003 or component_width > width * 0.13:
             continue
         if area < image.shape[0] * image.shape[1] * 0.000018:
             continue
+        # O ponteiro circular é vermelho, grande e quase preenchido. Os glifos
+        # dos roletes são mais altos que largos e têm bastante fundo claro
+        # dentro da caixa. Sem este filtro, o dial passa a ser o "último slot".
+        fill_ratio = area / max(float(component_width * component_height), 1.0)
+        if fill_ratio > 0.68:
+            continue
         center_x = x + component_width / 2
         center_y = y + component_height / 2
-        if not (0.34 * width <= center_x <= 0.94 * width):
+        if not (0.15 * width <= center_x <= 0.97 * width):
             continue
         components.append({
             "contour": contour,
@@ -273,7 +384,7 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
     for seed in components:
         aligned = [
             item for item in components
-            if abs(item["cy"] - seed["cy"]) <= max(item["h"], seed["h"]) * 1.30
+            if abs(item["cy"] - seed["cy"]) <= max(item["h"], seed["h"]) * 0.60
             and 0.45 <= item["h"] / max(seed["h"], 1) <= 2.20
         ]
         if len(aligned) < 2:
@@ -327,6 +438,11 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
         for left, right in zip(ordered_components, ordered_components[1:])
         if right["cx"] - left["cx"] > width * 0.025
     ]
+    if len(center_distances) >= 2:
+        spacing_mean = float(np.mean(center_distances))
+        spacing_cv = float(np.std(center_distances) / max(spacing_mean, 1.0))
+        if spacing_cv > 0.55:
+            return None
     estimated_slot = float(np.median(center_distances)) if center_distances else 0.0
     if not (red_height * 0.55 <= estimated_slot <= red_height * 3.2):
         estimated_slot = red_width / max(min(len(selected), red_digits) * 0.84, 1)
@@ -343,7 +459,16 @@ def _red_roller_strip_candidate(image, red_digits: int, black_digits: int):
     ], dtype="float32")
     corners[:, 0] = np.clip(corners[:, 0], 0, width - 1)
     corners[:, 1] = np.clip(corners[:, 1], 0, height - 1)
-    return corners
+    geometry = _counter_window_geometry(corners, image)
+    if not geometry.valid:
+        return None
+    semantic_valid, _ = _counter_strip_semantics(
+        image,
+        geometry.corners,
+        red_digits=red_digits,
+        black_digits=black_digits,
+    )
+    return geometry.corners if semantic_valid else None
 
 
 def _rectify(image, corners):
@@ -364,6 +489,72 @@ def _rectify(image, corners):
     right = np.linalg.norm(br - tr)
     perspective = _clamp(abs(top - bottom) / max(top, bottom, 1) + abs(left - right) / max(left, right, 1))
     return rectified, perspective
+
+
+def _counter_strip_semantics(
+    image,
+    corners,
+    *,
+    red_digits: int,
+    black_digits: int,
+) -> tuple[bool, float]:
+    """Confirma ocupação dos slots e ordem preto→vermelho da janela."""
+
+    total_digits = max(int(red_digits) + int(black_digits), 1)
+    rectified, _ = _rectify(image, corners)
+    height, width = rectified.shape[:2]
+    margin_x = max(int(width * 0.025), 1)
+    margin_y = max(int(height * 0.08), 1)
+    usable = rectified[margin_y:height - margin_y, margin_x:width - margin_x]
+    if usable.size == 0 or usable.shape[1] < total_digits:
+        return False, 0.0
+
+    metrics = []
+    for index in range(total_digits):
+        start = int(index / total_digits * usable.shape[1])
+        end = max(start + 1, int((index + 1) / total_digits * usable.shape[1]))
+        slot = usable[:, start:end]
+        gray = cv2.cvtColor(slot, cv2.COLOR_BGR2GRAY)
+        red_strength = (
+            slot[:, :, 2].astype("int16")
+            - np.maximum(slot[:, :, 1], slot[:, :, 0]).astype("int16")
+        )
+        metrics.append({
+            "contrast": float(gray.std()),
+            "dark_ratio": float((gray < 150).mean()),
+            "red_ratio": float((red_strength > 18).mean()),
+        })
+
+    legible = [
+        item for item in metrics
+        if item["contrast"] >= 15.0 and 0.012 <= item["dark_ratio"] <= 0.80
+    ]
+    black_metrics = metrics[:black_digits] if black_digits > 0 else []
+    black_legible = [
+        item for item in black_metrics
+        if item["contrast"] >= 15.0 and 0.012 <= item["dark_ratio"] <= 0.80
+    ]
+    red_metrics = metrics[black_digits:]
+    red_visible = [item for item in red_metrics if item["red_ratio"] >= 0.035]
+    head_red = float(np.mean([item["red_ratio"] for item in black_metrics])) if black_metrics else 0.0
+    tail_red = float(np.mean([item["red_ratio"] for item in red_metrics])) if red_metrics else 0.0
+
+    required_legible = max(total_digits - 1, 2)
+    required_black = max(black_digits - 1, 1) if black_digits else 0
+    required_red = max(min(red_digits, 2), 1) if red_digits else 0
+    valid = (
+        len(legible) >= required_legible
+        and len(black_legible) >= required_black
+        and len(red_visible) >= required_red
+        and tail_red >= max(0.035, head_red * 1.45)
+    )
+    score = (
+        len(legible) / total_digits * 0.30
+        + (len(black_legible) / max(black_digits, 1)) * 0.25
+        + (len(red_visible) / max(red_digits, 1)) * 0.20
+        + min(max(tail_red - head_red, 0.0), 0.40) * 0.625
+    )
+    return valid, round(score, 6)
 
 
 def _font(size: int):
@@ -603,26 +794,24 @@ def _normalize_meter_orientation(image, red_digits: int, black_digits: int):
         learned = detector.detect(candidate) if detector is not None else None
         corners = learned.corners if learned is not None else None
         source = "detector_onnx" if corners is not None else "red_roller_anchor"
+        geometry = _counter_window_geometry(corners, candidate) if corners is not None else None
+        if geometry is not None and not geometry.valid:
+            corners = None
+            learned = None
         if corners is None:
             corners = _red_roller_strip_candidate(candidate, red_digits, black_digits)
         if corners is None:
             continue
-        ordered = _order_corners(corners)
-        horizontal = max(
-            float(np.linalg.norm(ordered[1] - ordered[0])),
-            float(np.linalg.norm(ordered[2] - ordered[3])),
-        )
-        vertical = max(
-            float(np.linalg.norm(ordered[3] - ordered[0])),
-            float(np.linalg.norm(ordered[2] - ordered[1])),
-        )
-        area_ratio = horizontal * vertical / max(float(candidate.shape[0] * candidate.shape[1]), 1.0)
-        aspect = horizontal / max(vertical, 1.0)
-        score = min(aspect, 8.0) * 0.08 + min(area_ratio, 0.25) * 2.0
+        geometry = _counter_window_geometry(corners, candidate)
+        if not geometry.valid:
+            continue
+        score = geometry.score
         if learned is not None:
             score += float(learned.confidence) * 1.5
         if degrees == 0:
-            score += 0.015
+            # Evita girar uma foto já correta por diferenças residuais como
+            # 0,0025, observadas em campo entre o visor e o ponteiro vermelho.
+            score += 0.06
         if best is None or score > best[0]:
             best = (score, candidate, degrees, source)
     if best is None:
@@ -958,7 +1147,7 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
         if any(token in lowered for token in ("pma", "dn", "q", "classe", "inmetro", "ml", "t50", "r80", "uj")):
             continue
         digits = re.findall(r"\d", text)
-        if not (total_digits - 1 <= len(digits) <= total_digits + 8):
+        if not (total_digits - 2 <= len(digits) <= total_digits + 8):
             continue
         has_meter_hint = any(token in lowered for token in ("m", "b", "h", "）", ")"))
         ordered = _order_corners(box)
@@ -985,7 +1174,11 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
             for hint_box in meter_hints:
                 hint_center_y = float(hint_box[:, 1].mean())
                 hint_left_x = float(hint_box[:, 0].min())
-                if abs(hint_center_y - center_y) <= box_height * 1.8 and 0 <= hint_left_x - right_x <= box_width * 0.28:
+                hint_gap = hint_left_x - right_x
+                if (
+                    abs(hint_center_y - center_y) <= box_height * 1.8
+                    and -box_width * 0.06 <= hint_gap <= box_width * 0.28
+                ):
                     has_meter_hint = True
                     break
         if not has_meter_hint:
@@ -1000,8 +1193,9 @@ def _ocr_counter_window_candidate(image, total_digits: int, ocr_items=None):
         # Quando o OCR reconhece a unidade `m3`, a caixa ja inclui o texto
         # depois dos roletes. Se ainda expandirmos, a unidade vira um slot.
         right_extension = slot_width * (
-            0.12 if len(digits) == total_digits
-            else 0.72 + missing
+            0.32
+            if has_meter_hint or len(digits) >= total_digits
+            else 0.72 + max(missing - 1, 0) * 0.35
         )
         vertical_padding = max(box_height * 0.38, slot_width * 0.14)
         corners = np.array([
@@ -1386,8 +1580,8 @@ def _slot_observation(slot, position: int) -> DigitObservation:
     height = slot.shape[0]
     upper, upper_conf, upper_probabilities = _classify(slot[: max(int(height * 0.62), 1)])
     lower, lower_conf, lower_probabilities = _classify(slot[min(int(height * 0.38), height - 1):])
-    center_start = max(int(height * 0.27), 0)
-    center_end = max(center_start + 1, min(int(height * 0.73), height))
+    center_start = max(int(height * 0.25), 0)
+    center_end = max(center_start + 1, min(int(height * 0.75), height))
     center, center_conf, center_probabilities = _classify(slot[center_start:center_end])
     normalized_probabilities = list(probabilities[:10])
     normalized_probabilities.extend([0.0] * (10 - len(normalized_probabilities)))
@@ -1441,6 +1635,18 @@ def _slot_observation(slot, position: int) -> DigitObservation:
             visibility=visibility,
             probabilities=[round(item / probability_total, 6) for item in normalized_probabilities],
         )
+    # A linha central é a referência física de leitura. Em roletes parcialmente
+    # deslocados, bordas, separadores e o dígito vizinho degradam a classificação
+    # do slot inteiro, embora o centro continue inequívoco.
+    if (
+        center is not None
+        and center_conf >= 0.94
+        and confidence < 0.82
+    ):
+        value = center
+        confidence = center_conf
+        normalized_probabilities = list(center_probabilities[:10])
+        normalized_probabilities.extend([0.0] * (10 - len(normalized_probabilities)))
     return DigitObservation(
         position=position,
         value=value,
@@ -1477,7 +1683,9 @@ def _temporal_candidates(
         return None, [], flags
 
     if previous_value is None:
-        selected = values[0]
+        # Sem histórico, respeita o dígito escolhido na linha central. Usar o
+        # menor valor dentre as alternativas transformava um 6 visível em 5.
+        selected = int("".join(map(str, base_digits))) / (10 ** max(red_digits, 0))
     else:
         non_decreasing = [value for value in values if value >= previous_value]
         selected = min(non_decreasing, key=lambda value: value - previous_value) if non_decreasing else values[-1]
@@ -1508,6 +1716,7 @@ class MeterVisionService:
         *,
         red_digits: int | None = 3,
         black_digits: int | None = None,
+        guide_crop: dict | None = None,
     ) -> dict:
         """Quality gate rápido, sem OCR, usado antes de enviar o burst."""
 
@@ -1545,11 +1754,27 @@ class MeterVisionService:
         detector = _trained_display_detector()
         learned_detection = detector.detect(inspection_image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
+        display_source = "detector_onnx" if corners is not None else None
         if corners is None:
             corners = _red_roller_strip_candidate(inspection_image, resolved_red, resolved_black)
+            if corners is not None:
+                display_source = "red_roller_anchor"
+        if corners is None:
+            rotated_guide = _normalized_guide_rect(guide_crop, orientation_degrees)
+            corners = _guide_counter_window_candidate(
+                inspection_image,
+                (
+                    {"x": rotated_guide[0], "y": rotated_guide[1], "width": rotated_guide[2], "height": rotated_guide[3]}
+                    if rotated_guide is not None
+                    else None
+                ),
+            )
+            if corners is not None:
+                display_source = "guide_geometry"
         used_fallback = corners is None
         if corners is None:
             corners, _ = _display_candidate(inspection_image)
+            display_source = "guide_fallback"
         rectified, perspective = _rectify(inspection_image, corners)
         quality = _quality(rectified)
         quality.perspective = perspective
@@ -1608,6 +1833,7 @@ class MeterVisionService:
             "inspection_height": height,
             "orientation_correction_degrees": orientation_degrees,
             "orientation_source": orientation_source,
+            "display_source": display_source,
         }
 
     def analyze(
@@ -1620,6 +1846,7 @@ class MeterVisionService:
         expensive_ocr: bool = True,
         hydrometer_brand: str | None = None,
         hydrometer_model: str | None = None,
+        guide_crop: dict | None = None,
     ) -> VisionResult:
         """Executa a leitura sem permitir que uma falha interna derrube a API.
 
@@ -1637,6 +1864,7 @@ class MeterVisionService:
                 expensive_ocr=expensive_ocr,
                 hydrometer_brand=hydrometer_brand,
                 hydrometer_model=hydrometer_model,
+                guide_crop=guide_crop,
             )
         except Exception:
             logger.exception("Falha interna contida no pipeline de visão de hidrômetros")
@@ -1675,6 +1903,7 @@ class MeterVisionService:
         expensive_ocr: bool = True,
         hydrometer_brand: str | None = None,
         hydrometer_model: str | None = None,
+        guide_crop: dict | None = None,
     ) -> VisionResult:
         red_digits = red_digits if red_digits is not None and red_digits >= 0 else 3
         try:
@@ -1698,23 +1927,34 @@ class MeterVisionService:
         detector = _trained_display_detector()
         learned_detection = detector.detect(image) if detector is not None else None
         corners = learned_detection.corners if learned_detection is not None else None
-        display_source = "detector_onnx" if learned_detection is not None else "red_roller_anchor"
+        display_source = "detector_onnx" if learned_detection is not None else None
+        ocr_items = _ocr_detect_items(image) if corners is None and expensive_ocr else None
+        if corners is None and ocr_items is not None:
+            corners = _ocr_counter_window_candidate(image, total_digits, ocr_items)
+            if corners is not None:
+                display_source = "ocr_window"
+        if corners is None and ocr_items is not None:
+            corners = _meter_unit_window_candidate(image, total_digits, ocr_items)
+            if corners is not None:
+                display_source = "meter_unit_anchor"
+        if corners is None:
+            rotated_guide = _normalized_guide_rect(guide_crop, orientation_degrees)
+            corners = _guide_counter_window_candidate(
+                image,
+                (
+                    {"x": rotated_guide[0], "y": rotated_guide[1], "width": rotated_guide[2], "height": rotated_guide[3]}
+                    if rotated_guide is not None
+                    else None
+                ),
+            )
+            if corners is not None:
+                display_source = "guide_geometry"
         if corners is None:
             corners = _red_roller_strip_candidate(image, red_digits, resolved_black_digits)
+            if corners is not None:
+                display_source = "red_roller_anchor"
         used_fallback_roi = corners is None
-        used_ocr_window = False
-        ocr_items = None
-        if corners is None and expensive_ocr:
-            ocr_items = _ocr_detect_items(image)
-            corners = _ocr_counter_window_candidate(image, total_digits, ocr_items)
-            unit_anchored = False
-            if corners is None:
-                corners = _meter_unit_window_candidate(image, total_digits, ocr_items)
-                unit_anchored = corners is not None
-            used_ocr_window = corners is not None
-            if used_ocr_window:
-                display_source = "meter_unit_anchor" if unit_anchored else "ocr_window"
-            used_fallback_roi = corners is None
+        used_ocr_window = display_source in {"ocr_window", "meter_unit_anchor"}
         if corners is None:
             corners, used_fallback_roi = _display_candidate(image)
             display_source = "geometric_fallback" if not used_fallback_roi else "guide_fallback"
@@ -1773,6 +2013,12 @@ class MeterVisionService:
         slot_digits = [int(item.value) for item in observations if item.value is not None]
         original_slot_values = [item.value for item in observations]
         original_slot_confidences = [item.confidence for item in observations]
+        strong_slot_evidence = (
+            len(slot_digits) == total_digits
+            and len(original_slot_confidences) == total_digits
+            and min(original_slot_confidences) >= 0.80
+            and sum(original_slot_confidences) / total_digits >= 0.92
+        )
         ocr_digits, ocr_confidence = _sequence_ocr(rectified) if expensive_ocr else ([], 0.0)
         fused_digits, fusion_mode = _fuse_digit_sequences(slot_digits, ocr_digits, ocr_confidence)
         if fusion_mode == "sequence_exact" and len(fused_digits) == total_digits and len(slot_digits) == total_digits:
@@ -1968,6 +2214,7 @@ class MeterVisionService:
             and not transition_applied
             and not unit_tail_applied
             and (used_fallback_roi or used_ocr_window)
+            and not (used_ocr_window and strong_slot_evidence)
             and (
                 used_fallback_roi
                 or ocr_confidence < 0.72
@@ -2078,6 +2325,13 @@ class MeterVisionService:
             "source": display_source,
             "confidence": learned_detection.confidence if learned_detection is not None else None,
             "learned_slot_boundaries": learned_boundaries if len(learned_boundaries) == total_digits + 1 else None,
+            "localization_valid": display_source in {
+                "detector_onnx",
+                "red_roller_anchor",
+                "guide_geometry",
+                "ocr_window",
+                "meter_unit_anchor",
+            },
         }
         quality_payload["source_frame"] = asdict(frame_quality)
         quality_payload["sequence_ocr"] = {
