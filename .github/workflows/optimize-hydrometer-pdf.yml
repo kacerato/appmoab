@@ -1,0 +1,258 @@
+name: Optimize hydrometer PDF rendering
+
+on:
+  push:
+    branches:
+      - fix/pdf-tainted-canvas
+    paths:
+      - .github/workflows/optimize-hydrometer-pdf.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-build-and-cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/pdf-tainted-canvas
+          fetch-depth: 0
+
+      - name: Patch PDF renderer
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('frontend/src/app/(dashboard)/hydrometers/page.tsx')
+          source = path.read_text(encoding='utf-8')
+
+          source = source.replace(
+              'const STICKER_RENDER_SIZE_PX = 900;',
+              'const STICKER_RENDER_SIZE_PX = 600;',
+              1,
+          )
+
+          start = source.index('const renderStickerSlot =')
+          end = source.index('\nexport default function HydrometersPage()', start)
+
+          replacement = r'''type Html2CanvasRenderer = typeof import('html2canvas')['default'];
+
+const waitForElementImages = async (root: ParentNode) => {
+  await Promise.all(Array.from(root.querySelectorAll('img')).map(image => {
+    if (image.complete && image.naturalWidth > 0) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('Falha ao carregar uma imagem da etiqueta.'));
+    });
+  }));
+};
+
+const renderStickerBatch = async (
+  slots: HTMLElement[],
+  html2canvas: Html2CanvasRenderer,
+) => {
+  if (!slots.length) return [];
+
+  const documentRef = slots[0].ownerDocument;
+  const renderRoot = documentRef.createElement('div');
+  renderRoot.setAttribute('aria-hidden', 'true');
+  Object.assign(renderRoot.style, {
+    position: 'fixed',
+    left: '0',
+    top: '0',
+    zIndex: '2147483647',
+    display: 'grid',
+    gridTemplateColumns: `repeat(${STICKERS_PER_ROW}, ${STICKER_DESIGN_DIAMETER_MM}mm)`,
+    gridAutoRows: `${STICKER_DESIGN_DIAMETER_MM}mm`,
+    gap: '4mm',
+    width: 'max-content',
+    padding: '0',
+    margin: '0',
+    overflow: 'visible',
+    background: '#ffffff',
+  });
+
+  const stages = slots.map(slot => {
+    const sticker = slot.querySelector<HTMLElement>('.meter-sticker');
+    if (!sticker) throw new Error('Não foi possível localizar o conteúdo da etiqueta.');
+
+    const stage = documentRef.createElement('div');
+    Object.assign(stage.style, {
+      position: 'relative',
+      width: `${STICKER_DESIGN_DIAMETER_MM}mm`,
+      height: `${STICKER_DESIGN_DIAMETER_MM}mm`,
+      overflow: 'hidden',
+      background: '#ffffff',
+    });
+
+    const clone = sticker.cloneNode(true) as HTMLElement;
+    clone.style.transform = 'none';
+    clone.style.transformOrigin = 'top left';
+    clone.style.boxShadow = 'none';
+    stage.appendChild(clone);
+    renderRoot.appendChild(stage);
+    return stage;
+  });
+
+  documentRef.body.appendChild(renderRoot);
+
+  try {
+    await waitForElementImages(renderRoot);
+    const rootBounds = renderRoot.getBoundingClientRect();
+    const firstStageBounds = stages[0].getBoundingClientRect();
+    if (!rootBounds.width || !rootBounds.height || !firstStageBounds.width) {
+      throw new Error('As etiquetas não possuem dimensões válidas para gerar o PDF.');
+    }
+
+    const renderedBatch = await html2canvas(renderRoot, {
+      backgroundColor: '#ffffff',
+      scale: STICKER_RENDER_SIZE_PX / firstStageBounds.width,
+      useCORS: true,
+      allowTaint: false,
+      logging: false,
+      imageTimeout: 0,
+      width: rootBounds.width,
+      height: rootBounds.height,
+      windowWidth: Math.ceil(rootBounds.width),
+      windowHeight: Math.ceil(rootBounds.height),
+      scrollX: 0,
+      scrollY: 0,
+    });
+
+    const scaleX = renderedBatch.width / rootBounds.width;
+    const scaleY = renderedBatch.height / rootBounds.height;
+
+    return stages.map(stage => {
+      const bounds = stage.getBoundingClientRect();
+      const sourceX = Math.round((bounds.left - rootBounds.left) * scaleX);
+      const sourceY = Math.round((bounds.top - rootBounds.top) * scaleY);
+      const sourceWidth = Math.round(bounds.width * scaleX);
+      const sourceHeight = Math.round(bounds.height * scaleY);
+
+      const stickerCanvas = document.createElement('canvas');
+      stickerCanvas.width = STICKER_RENDER_SIZE_PX;
+      stickerCanvas.height = STICKER_RENDER_SIZE_PX;
+      const context = stickerCanvas.getContext('2d');
+      if (!context) throw new Error('Canvas indisponível para recortar a etiqueta.');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, stickerCanvas.width, stickerCanvas.height);
+      context.drawImage(
+        renderedBatch,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        stickerCanvas.width,
+        stickerCanvas.height,
+      );
+      return stickerCanvas;
+    });
+  } finally {
+    renderRoot.remove();
+  }
+};
+
+const createStickerPdf = async (cards: string[], title: string) => {
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.position = 'fixed';
+  frame.style.left = '-10000px';
+  frame.style.top = '0';
+  frame.style.width = '220mm';
+  frame.style.height = '297mm';
+  frame.style.border = '0';
+  frame.style.opacity = '0';
+  frame.style.pointerEvents = 'none';
+  document.body.appendChild(frame);
+
+  try {
+    const frameDocument = frame.contentDocument;
+    if (!frameDocument) throw new Error('Não foi possível preparar as etiquetas para o PDF.');
+
+    frameDocument.open();
+    frameDocument.write(buildStickerDocument(cards, title, false, false));
+    frameDocument.close();
+
+    await new Promise(resolve => window.setTimeout(resolve, 120));
+    await waitForDocumentImages(frameDocument);
+    if (frameDocument.fonts) await frameDocument.fonts.ready;
+
+    const slots = Array.from(frameDocument.querySelectorAll<HTMLElement>('.sticker-slot'));
+    if (!slots.length) throw new Error('Nenhuma etiqueta foi encontrada para gerar o PDF.');
+
+    const sheet = frameDocument.querySelector<HTMLElement>('.sheet');
+    if (sheet) sheet.style.display = 'none';
+
+    const { default: html2canvas } = await import('html2canvas');
+    const mmToPixels = (millimeters: number) => Math.round((millimeters / 25.4) * PDF_DPI);
+    const pageWidthPixels = mmToPixels(210);
+    const pageHeightPixels = mmToPixels(297);
+    const stickerPixels = mmToPixels(STICKER_DIAMETER_MM);
+    const gapPixels = mmToPixels(STICKER_GAP_MM);
+    const totalGridWidth = STICKERS_PER_ROW * stickerPixels + (STICKERS_PER_ROW - 1) * gapPixels;
+    const totalGridHeight = STICKER_ROWS_PER_PAGE * stickerPixels + (STICKER_ROWS_PER_PAGE - 1) * gapPixels;
+    const startX = Math.round((pageWidthPixels - totalGridWidth) / 2);
+    const startY = Math.round((pageHeightPixels - totalGridHeight) / 2);
+    const stickersPerPage = STICKERS_PER_ROW * STICKER_ROWS_PER_PAGE;
+    const pdfPages: PdfJpegPage[] = [];
+
+    for (let pageStart = 0; pageStart < slots.length; pageStart += stickersPerPage) {
+      const pageSlots = slots.slice(pageStart, pageStart + stickersPerPage);
+      const renderedStickers = await renderStickerBatch(pageSlots, html2canvas);
+
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = pageWidthPixels;
+      pageCanvas.height = pageHeightPixels;
+      const pageContext = pageCanvas.getContext('2d');
+      if (!pageContext) throw new Error('Canvas indisponível para montar a página do PDF.');
+      pageContext.fillStyle = '#ffffff';
+      pageContext.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+
+      renderedStickers.forEach((sticker, localIndex) => {
+        const column = localIndex % STICKERS_PER_ROW;
+        const row = Math.floor(localIndex / STICKERS_PER_ROW);
+        const x = startX + column * (stickerPixels + gapPixels);
+        const y = startY + row * (stickerPixels + gapPixels);
+        pageContext.drawImage(sticker, x, y, stickerPixels, stickerPixels);
+      });
+
+      const jpegDataUrl = pageCanvas.toDataURL('image/jpeg', 0.95);
+      pdfPages.push({
+        bytes: dataUrlToBytes(jpegDataUrl),
+        width: pageCanvas.width,
+        height: pageCanvas.height,
+      });
+
+      await new Promise(resolve => window.setTimeout(resolve, 0));
+    }
+
+    return buildPdfBlob(pdfPages);
+  } finally {
+    frame.remove();
+  }
+};
+'''
+
+          source = source[:start] + replacement + source[end:]
+          path.write_text(source, encoding='utf-8')
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Remove one-time workflow and commit
+        run: |
+          rm .github/workflows/optimize-hydrometer-pdf.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "frontend/src/app/(dashboard)/hydrometers/page.tsx" .github/workflows/optimize-hydrometer-pdf.yml
+          git commit -m "fix: preservar layout e acelerar PDF de etiquetas"
+          git push origin HEAD:fix/pdf-tainted-canvas
