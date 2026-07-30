@@ -34,7 +34,8 @@ interface Hydrometer {
   customer?: Customer;
 }
 
-const STICKER_DIAMETER_MM = 90;
+const STICKER_DIAMETER_MM = 45;
+const STICKER_DESIGN_DIAMETER_MM = 90;
 
 const escapeHtml = (value: string) => value
   .replace(/&/g, '&amp;')
@@ -44,90 +45,96 @@ const escapeHtml = (value: string) => value
   .replace(/'/g, '&#039;');
 
 const buildStickerMarkup = (hydrometer: Hydrometer, qrDataUrl: string) => {
-  const rawCustomerName = hydrometer.customer?.name?.trim() || 'Cliente não identificado';
+  const rawCustomerName = (hydrometer.customer?.name?.trim() || 'Cliente não identificado')
+    .replace(/\s+/g, ' ');
   const customerName = escapeHtml(rawCustomerName);
-  const customerNameClass = rawCustomerName.length > 34
-    ? 'is-long'
-    : rawCustomerName.length > 22
-      ? 'is-medium'
-      : '';
+  const longestNamePart = Math.max(...rawCustomerName.split(' ').map(part => part.length));
+  const customerNameClass = rawCustomerName.length > 42 || longestNamePart > 18
+    ? 'is-xlong'
+    : rawCustomerName.length > 30 || longestNamePart > 14
+      ? 'is-long'
+      : rawCustomerName.length > 20
+        ? 'is-medium'
+        : '';
 
   return `
-    <article class="meter-sticker">
-      <header class="sticker-brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 64 76" role="img">
-            <path d="M32 2C25 16 12 28 12 43c0 12 9 22 20 22s20-10 20-22C52 28 39 16 32 2Z" fill="#2e9fd0" />
-            <path d="M21 46c2 6 6 10 13 11" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" opacity=".9" />
-            <path d="M8 68c7-4 13-4 20 0s13 4 28-1" fill="none" stroke="#0f4f86" stroke-width="4" stroke-linecap="round" />
-            <path d="M12 74c7-3 13-3 19 0s12 3 21 0" fill="none" stroke="#2e9fd0" stroke-width="3" stroke-linecap="round" />
-          </svg>
-        </div>
-        <div class="brand-copy">
-          <strong>AQUAMOAB</strong>
-          <span>SANEAMENTO</span>
-        </div>
-      </header>
-
-      <div class="sticker-divider"></div>
-
-      <section class="sticker-body">
-        <div class="sticker-info">
-          <div class="info-title">ACESSE SUAS<br />INFORMAÇÕES</div>
-
-          <div class="info-row">
-            <span class="info-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M5 19V11M10 19V7M15 19v-5M20 19V4" />
-                <path d="M3 19h18" />
-              </svg>
-            </span>
-            <span>Consumo<br />de água</span>
-          </div>
-
-          <div class="info-row">
-            <span class="info-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M6 3h9l3 3v15H6z" />
-                <path d="M15 3v4h4M9 11h6M9 15h6" />
-              </svg>
-            </span>
-            <span>2ª via<br />de fatura</span>
-          </div>
-
-          <div class="info-row">
-            <span class="info-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M20 11a8 8 0 0 1-8 8 9 9 0 0 1-3-.5L4 21l1.5-4A8 8 0 1 1 20 11Z" />
-              </svg>
-            </span>
-            <span>Avisos e<br />comunicados</span>
-          </div>
-        </div>
-
-        <div class="qr-panel">
-          <img src="${qrDataUrl}" alt="QR do hidrômetro ${escapeHtml(hydrometer.code)}" />
-          <div class="qr-caption">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="6" y="2.5" width="12" height="19" rx="2" />
-              <path d="M10 5h4M11 18.5h2" />
+    <div class="sticker-slot">
+      <article class="meter-sticker">
+        <header class="sticker-brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 64 76" role="img">
+              <path d="M32 2C25 16 12 28 12 43c0 12 9 22 20 22s20-10 20-22C52 28 39 16 32 2Z" fill="#2e9fd0" />
+              <path d="M21 46c2 6 6 10 13 11" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" opacity=".9" />
+              <path d="M8 68c7-4 13-4 20 0s13 4 28-1" fill="none" stroke="#0f4f86" stroke-width="4" stroke-linecap="round" />
+              <path d="M12 74c7-3 13-3 19 0s12 3 21 0" fill="none" stroke="#2e9fd0" stroke-width="3" stroke-linecap="round" />
             </svg>
-            <span>APONTE A CÂMERA<br />DO SEU CELULAR</span>
           </div>
-        </div>
-      </section>
+          <div class="brand-copy">
+            <strong>AQUAMOAB</strong>
+            <span>SANEAMENTO</span>
+          </div>
+        </header>
 
-      <footer class="sticker-footer">
-        <div class="customer-label">NOME DO CLIENTE</div>
-        <div class="customer-name ${customerNameClass}">${customerName}</div>
-        <div class="tagline">
-          <svg viewBox="0 0 32 40" aria-hidden="true">
-            <path d="M16 2C12 11 5 17 5 26a11 11 0 0 0 22 0c0-9-7-15-11-24Z" />
-          </svg>
-          <span>CADA GOTA IMPORTA</span>
-        </div>
-      </footer>
-    </article>
+        <div class="sticker-divider"></div>
+
+        <section class="sticker-body">
+          <div class="sticker-info">
+            <div class="info-title">ACESSE SUAS<br />INFORMAÇÕES</div>
+
+            <div class="info-row">
+              <span class="info-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M5 19V11M10 19V7M15 19v-5M20 19V4" />
+                  <path d="M3 19h18" />
+                </svg>
+              </span>
+              <span>Consumo<br />de água</span>
+            </div>
+
+            <div class="info-row">
+              <span class="info-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M6 3h9l3 3v15H6z" />
+                  <path d="M15 3v4h4M9 11h6M9 15h6" />
+                </svg>
+              </span>
+              <span>2ª via<br />de fatura</span>
+            </div>
+
+            <div class="info-row">
+              <span class="info-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <path d="M20 11a8 8 0 0 1-8 8 9 9 0 0 1-3-.5L4 21l1.5-4A8 8 0 1 1 20 11Z" />
+                </svg>
+              </span>
+              <span>Avisos e<br />comunicados</span>
+            </div>
+          </div>
+
+          <div class="qr-panel">
+            <img src="${qrDataUrl}" alt="QR do hidrômetro ${escapeHtml(hydrometer.code)}" />
+            <div class="qr-caption">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="6" y="2.5" width="12" height="19" rx="2" />
+                <path d="M10 5h4M11 18.5h2" />
+              </svg>
+              <span>APONTE A CÂMERA<br />DO SEU CELULAR</span>
+            </div>
+          </div>
+        </section>
+
+        <footer class="sticker-footer">
+          <div class="customer-label">NOME DO CLIENTE</div>
+          <div class="customer-name ${customerNameClass}">${customerName}</div>
+          <div class="tagline">
+            <svg viewBox="0 0 32 40" aria-hidden="true">
+              <path d="M16 2C12 11 5 17 5 26a11 11 0 0 0 22 0c0-9-7-15-11-24Z" />
+            </svg>
+            <span>CADA GOTA IMPORTA</span>
+          </div>
+        </footer>
+      </article>
+    </div>
   `;
 };
 
@@ -145,6 +152,8 @@ const buildStickerPrintDocument = (cards: string[], title: string, singleSticker
           --accent: #2e9fd0;
           --soft-blue: #dcecf6;
           --sticker-size: ${STICKER_DIAMETER_MM}mm;
+          --sticker-design-size: ${STICKER_DESIGN_DIAMETER_MM}mm;
+          --sticker-scale: ${STICKER_DIAMETER_MM / STICKER_DESIGN_DIAMETER_MM};
         }
 
         @page { size: A4; margin: 5mm; }
@@ -159,31 +168,40 @@ const buildStickerPrintDocument = (cards: string[], title: string, singleSticker
 
         .sheet {
           display: grid;
-          grid-template-columns: repeat(2, var(--sticker-size));
+          grid-template-columns: repeat(4, var(--sticker-size));
           grid-auto-rows: var(--sticker-size);
           justify-content: center;
           align-content: start;
-          gap: 5mm 8mm;
+          gap: 3mm;
         }
 
         .sheet.single {
           grid-template-columns: var(--sticker-size);
         }
 
+        .sticker-slot {
+          position: relative;
+          width: var(--sticker-size);
+          height: var(--sticker-size);
+          overflow: visible;
+          break-inside: avoid;
+          page-break-inside: avoid;
+        }
+
         .meter-sticker {
           position: relative;
           isolation: isolate;
-          width: var(--sticker-size);
-          height: var(--sticker-size);
+          width: var(--sticker-design-size);
+          height: var(--sticker-design-size);
           padding: 6.5mm 7mm 5.5mm;
           overflow: hidden;
           display: flex;
           flex-direction: column;
-          break-inside: avoid;
-          page-break-inside: avoid;
           border: .65mm solid var(--brand);
           border-radius: 50%;
           background: #ffffff;
+          transform: scale(var(--sticker-scale));
+          transform-origin: top left;
         }
 
         .meter-sticker::after {
@@ -362,12 +380,17 @@ const buildStickerPrintDocument = (cards: string[], title: string, singleSticker
         }
 
         .customer-name {
+          width: 100%;
           min-height: 8mm;
+          max-height: 10mm;
           margin: .7mm auto 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          padding: 0 1mm;
+          display: grid;
+          place-items: center;
           overflow: hidden;
+          overflow-wrap: anywhere;
+          word-break: normal;
+          hyphens: auto;
           color: var(--brand-dark);
           font-size: 4.15mm;
           font-weight: 800;
@@ -376,8 +399,9 @@ const buildStickerPrintDocument = (cards: string[], title: string, singleSticker
           text-transform: uppercase;
         }
 
-        .customer-name.is-medium { font-size: 3.55mm; }
-        .customer-name.is-long { font-size: 3mm; line-height: 1.05; }
+        .customer-name.is-medium { font-size: 3.5mm; line-height: 1.04; }
+        .customer-name.is-long { font-size: 2.9mm; line-height: 1.08; }
+        .customer-name.is-xlong { font-size: 2.45mm; line-height: 1.08; letter-spacing: -.04mm; }
 
         .tagline {
           display: flex;
