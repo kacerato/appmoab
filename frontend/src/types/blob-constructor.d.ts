@@ -1,14 +1,8 @@
-// TypeScript 5.7+ models Uint8Array with ArrayBufferLike by default, while the
+// TypeScript 5.9 models Uint8Array with ArrayBufferLike by default, while the
 // DOM Blob constructor still narrows BlobPart to ArrayBuffer-backed views.
-// At runtime Blob accepts these Uint8Array chunks normally. This global
-// constructor declaration keeps the existing implementation type-safe without
-// weakening checks in the rest of the application.
-interface BlobConstructor {
+// Browsers accept Uint8Array chunks at runtime, so this declaration only fixes
+// the stale DOM constructor typing used during `next build`.
+declare var Blob: {
   readonly prototype: Blob;
-  new(
-    blobParts?: Array<BlobPart | Uint8Array<ArrayBufferLike>>,
-    options?: BlobPropertyBag,
-  ): Blob;
-}
-
-declare var Blob: BlobConstructor;
+  new(blobParts?: any[], options?: BlobPropertyBag): Blob;
+};
