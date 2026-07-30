@@ -1,8 +1,4 @@
-// TypeScript 5.9 models Uint8Array with ArrayBufferLike by default, while the
-// DOM Blob constructor still narrows BlobPart to ArrayBuffer-backed views.
-// Browsers accept Uint8Array chunks at runtime, so this declaration only fixes
-// the stale DOM constructor typing used during `next build`.
-declare var Blob: {
-  readonly prototype: Blob;
-  new(blobParts?: any[], options?: BlobPropertyBag): Blob;
-};
+// TypeScript 5.9 defaults Uint8Array to ArrayBufferLike, but the DOM BlobPart
+// declaration still requires an ArrayBuffer-backed view. This structural bridge
+// keeps Blob construction type-safe without replacing the global Blob type.
+interface SharedArrayBuffer extends ArrayBuffer {}
