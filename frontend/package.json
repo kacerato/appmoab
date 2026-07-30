@@ -3,8 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "node scripts/apply-hydrometer-pdf-fix.mjs",
     "dev": "next dev",
+    "prebuild": "node scripts/apply-hydrometer-pdf-fix.mjs",
     "build": "next build",
+    "postinstall": "node scripts/apply-hydrometer-pdf-fix.mjs",
     "start": "next start",
     "lint": "eslint"
   },

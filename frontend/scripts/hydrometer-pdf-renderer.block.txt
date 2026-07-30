@@ -1,46 +1,4 @@
-name: Apply final PDF layout fix
-
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/apply-pdf-layout-fix.yml
-
-permissions:
-  contents: write
-
-jobs:
-  create-validated-fix-branch:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Create final fix branch
-        run: git checkout -b fix/pdf-layout-performance-final
-
-      - name: Patch PDF renderer
-        shell: python
-        run: |
-          from pathlib import Path
-
-          path = Path('frontend/src/app/(dashboard)/hydrometers/page.tsx')
-          source = path.read_text(encoding='utf-8')
-
-          source = source.replace(
-              'const STICKER_RENDER_SIZE_PX = 900;',
-              'const STICKER_RENDER_SIZE_PX = 600;',
-              1,
-          )
-
-          start = source.index('const renderStickerSlot =')
-          end = source.index('\nexport default function HydrometersPage()', start)
-
-          replacement = r'''type Html2CanvasRenderer = typeof import('html2canvas')['default'];
+type Html2CanvasRenderer = typeof import('html2canvas')['default'];
 
 const waitForElementImages = async (root: ParentNode) => {
   await Promise.all(Array.from(root.querySelectorAll('img')).map(image => {
@@ -238,29 +196,3 @@ const createStickerPdf = async (cards: string[], title: string) => {
     frame.remove();
   }
 };
-'''
-
-          source = source[:start] + replacement + source[end:]
-          path.write_text(source, encoding='utf-8')
-
-      - name: Install dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
-
-      - name: Remove temporary files
-        run: |
-          rm -f .github/workflows/apply-pdf-layout-fix.yml
-          rm -f .github/workflows/fix-pdf-layout-performance.yml
-          rm -f README_FIX_TRIGGER.txt README_FIX_TRIGGER_2.txt
-
-      - name: Commit validated fix branch
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "fix: preservar layout e acelerar PDF de etiquetas"
-          git push origin HEAD:fix/pdf-layout-performance-final
