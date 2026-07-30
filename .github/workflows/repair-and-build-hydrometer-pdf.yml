@@ -1,0 +1,79 @@
+name: Repair and build hydrometer PDF
+
+on:
+  push:
+    branches:
+      - feat/hydrometer-qr-sticker
+    paths:
+      - .github/workflows/repair-and-build-hydrometer-pdf.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-build:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/hydrometer-qr-sticker
+          fetch-depth: 0
+
+      - name: Replace invalid Blob construction
+        shell: python
+        run: |
+          from pathlib import Path
+
+          page = Path("frontend/src/app/(dashboard)/hydrometers/page.tsx")
+          source = page.read_text(encoding="utf-8")
+
+          old = "  return new Blob(chunks, { type: 'application/pdf' });"
+          new = """  const pdfBytes = new Uint8Array(byteOffset);
+          let outputOffset = 0;
+          chunks.forEach(chunk => {
+            pdfBytes.set(chunk, outputOffset);
+            outputOffset += chunk.byteLength;
+          });
+
+          return new Blob([pdfBytes.buffer], { type: 'application/pdf' });"""
+
+          if old not in source:
+            raise SystemExit("Expected Blob construction was not found")
+
+          page.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+          compatibility_file = Path("frontend/src/types/blob-compat.d.ts")
+          if compatibility_file.exists():
+            compatibility_file.unlink()
+
+      - name: Commit practical source fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "frontend/src/app/(dashboard)/hydrometers/page.tsx" frontend/src/types/blob-compat.d.ts
+          git commit -m "fix: assemble PDF bytes before creating Blob"
+          git push origin HEAD:feat/hydrometer-qr-sticker
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Remove one-time workflow after successful build
+        run: |
+          rm .github/workflows/repair-and-build-hydrometer-pdf.yml
+          git add .github/workflows/repair-and-build-hydrometer-pdf.yml
+          git commit -m "chore: remove one-time PDF repair workflow"
+          git push origin HEAD:feat/hydrometer-qr-sticker
