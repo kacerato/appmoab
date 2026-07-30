@@ -553,43 +553,24 @@ const waitForDocumentImages = async (documentRef: Document) => {
   }));
 };
 
-const renderStickerSlot = async (slot: HTMLElement, stylesheet: string) => {
+const renderStickerSlot = async (slot: HTMLElement) => {
   const bounds = slot.getBoundingClientRect();
-  const clone = slot.cloneNode(true) as HTMLElement;
-  const serialized = new XMLSerializer().serializeToString(clone);
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="${bounds.width}" height="${bounds.height}" viewBox="0 0 ${bounds.width} ${bounds.height}">
-      <foreignObject x="0" y="0" width="100%" height="100%">
-        <div xmlns="http://www.w3.org/1999/xhtml" style="width:${bounds.width}px;height:${bounds.height}px;overflow:hidden;background:#fff;">
-          <style>${stylesheet}\n.meter-sticker{box-shadow:none!important;}</style>
-          ${serialized}
-        </div>
-      </foreignObject>
-    </svg>
-  `;
-
-  const objectUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
-  try {
-    const image = new Image();
-    image.decoding = 'async';
-    await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve();
-      image.onerror = () => reject(new Error('O navegador não conseguiu renderizar a etiqueta.'));
-      image.src = objectUrl;
-    });
-
-    const canvas = document.createElement('canvas');
-    canvas.width = STICKER_RENDER_SIZE_PX;
-    canvas.height = STICKER_RENDER_SIZE_PX;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Canvas indisponível para gerar o PDF.');
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas;
-  } finally {
-    URL.revokeObjectURL(objectUrl);
+  if (!bounds.width || !bounds.height) {
+    throw new Error('A etiqueta não possui dimensões válidas para gerar o PDF.');
   }
+
+  const { default: html2canvas } = await import('html2canvas');
+  return html2canvas(slot, {
+    backgroundColor: '#ffffff',
+    scale: STICKER_RENDER_SIZE_PX / bounds.width,
+    useCORS: true,
+    allowTaint: false,
+    logging: false,
+    width: bounds.width,
+    height: bounds.height,
+    windowWidth: slot.ownerDocument.documentElement.scrollWidth,
+    windowHeight: slot.ownerDocument.documentElement.scrollHeight,
+  });
 };
 
 const createStickerPdf = async (cards: string[], title: string) => {
@@ -617,15 +598,12 @@ const createStickerPdf = async (cards: string[], title: string) => {
     await waitForDocumentImages(frameDocument);
     if (frameDocument.fonts) await frameDocument.fonts.ready;
 
-    const stylesheet = Array.from(frameDocument.querySelectorAll('style'))
-      .map(style => style.textContent || '')
-      .join('\n');
     const slots = Array.from(frameDocument.querySelectorAll<HTMLElement>('.sticker-slot'));
     if (!slots.length) throw new Error('Nenhuma etiqueta foi encontrada para gerar o PDF.');
 
     const renderedStickers: HTMLCanvasElement[] = [];
     for (const slot of slots) {
-      renderedStickers.push(await renderStickerSlot(slot, stylesheet));
+      renderedStickers.push(await renderStickerSlot(slot));
     }
 
     const mmToPixels = (millimeters: number) => Math.round((millimeters / 25.4) * PDF_DPI);
