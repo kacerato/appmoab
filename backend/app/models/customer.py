@@ -64,7 +64,12 @@ class Customer(Base):
     )
 
     # ── Relationships ──────────────────────────────────────────
-    hydrometers = relationship("Hydrometer", back_populates="customer", cascade="all, delete-orphan")
+    hydrometers = relationship(
+        "Hydrometer",
+        back_populates="customer",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
     invoices = relationship("Invoice", back_populates="customer", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="customer", cascade="all, delete-orphan")
     attachments = relationship("CustomerAttachment", back_populates="customer", cascade="all, delete-orphan")
