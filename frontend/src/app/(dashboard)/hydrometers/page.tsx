@@ -659,6 +659,7 @@ export default function HydrometersPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<Hydrometer | null>(null);
   const [saving, setSaving] = useState(false);
+  const [statusUpdatingIds, setStatusUpdatingIds] = useState<Set<string>>(() => new Set());
   const [pdfBusy, setPdfBusy] = useState(false);
   const [search, setSearch] = useState('');
 
@@ -838,28 +839,50 @@ export default function HydrometersPage() {
   };
 
   const disconnectHydrometer = async (hydrometer: Hydrometer) => {
-    setSaving(true);
+    if (statusUpdatingIds.has(hydrometer.id)) return;
+    setItems(current => current.map(item => (
+      item.id === hydrometer.id
+        ? { ...item, is_active: false, disconnected_at: new Date().toISOString() }
+        : item
+    )));
+    setStatusUpdatingIds(current => new Set(current).add(hydrometer.id));
     try {
-      await api.post(`/hydrometers/${hydrometer.id}/disconnect`, { reason: 'Falta de pagamento' });
-      load();
+      const updated = await api.post<Hydrometer>(`/hydrometers/${hydrometer.id}/disconnect`, { reason: 'Falta de pagamento' });
+      setItems(current => current.map(item => item.id === updated.id ? updated : item));
       notify('Hidrômetro desligado', 'O cliente foi marcado como desligado.', 'warning');
     } catch (error: unknown) {
+      setItems(current => current.map(item => item.id === hydrometer.id ? hydrometer : item));
       notify('Falha ao desligar', error instanceof Error ? error.message : 'Erro ao desligar hidrômetro.', 'error');
     } finally {
-      setSaving(false);
+      setStatusUpdatingIds(current => {
+        const next = new Set(current);
+        next.delete(hydrometer.id);
+        return next;
+      });
     }
   };
 
   const reconnectHydrometer = async (hydrometer: Hydrometer) => {
-    setSaving(true);
+    if (statusUpdatingIds.has(hydrometer.id)) return;
+    setItems(current => current.map(item => (
+      item.id === hydrometer.id
+        ? { ...item, is_active: true, reconnected_at: new Date().toISOString() }
+        : item
+    )));
+    setStatusUpdatingIds(current => new Set(current).add(hydrometer.id));
     try {
-      await api.post(`/hydrometers/${hydrometer.id}/reconnect`);
-      load();
+      const updated = await api.post<Hydrometer>(`/hydrometers/${hydrometer.id}/reconnect`);
+      setItems(current => current.map(item => item.id === updated.id ? updated : item));
       notify('Religamento registrado', 'O hidrômetro foi ativado e a taxa de religamento foi gerada.', 'success');
     } catch (error: unknown) {
+      setItems(current => current.map(item => item.id === hydrometer.id ? hydrometer : item));
       notify('Falha ao religar', error instanceof Error ? error.message : 'Erro ao religar hidrômetro.', 'error');
     } finally {
-      setSaving(false);
+      setStatusUpdatingIds(current => {
+        const next = new Set(current);
+        next.delete(hydrometer.id);
+        return next;
+      });
     }
   };
 
@@ -939,12 +962,12 @@ export default function HydrometersPage() {
                       <FileDown size={14} />
                     </button>
                     {hydrometer.is_active ? (
-                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => disconnectHydrometer(hydrometer)} title="Desligar hidrômetro" disabled={saving}>
-                        <Power size={14} />
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => disconnectHydrometer(hydrometer)} title="Desligar hidrômetro" disabled={statusUpdatingIds.has(hydrometer.id)}>
+                        {statusUpdatingIds.has(hydrometer.id) ? <Loader2 size={14} className="spinner" /> : <Power size={14} />}
                       </button>
                     ) : (
-                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => reconnectHydrometer(hydrometer)} title="Religar hidrômetro" disabled={saving}>
-                        <RotateCcw size={14} />
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => reconnectHydrometer(hydrometer)} title="Religar hidrômetro" disabled={statusUpdatingIds.has(hydrometer.id)}>
+                        {statusUpdatingIds.has(hydrometer.id) ? <Loader2 size={14} className="spinner" /> : <RotateCcw size={14} />}
                       </button>
                     )}
                     <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEditing(hydrometer)} title="Editar hidrômetro">
