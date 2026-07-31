@@ -34,7 +34,7 @@ from app.schemas.hydrometer import (
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.services.meter_vision import VisionResult, meter_vision_service
-from app.services.reading_cycles import ensure_actionable_cycle
+from app.services.reading_cycles import ensure_actionable_cycle, hydrometer_available_for_field
 from app.services.vision_decision import fuse_burst_results
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
@@ -154,6 +154,8 @@ async def identify_hydrometer_from_photo(
             confidence=ocr_result.get("confianca"),
             matched=False,
         )
+    if not hydrometer_available_for_field(hydrometer):
+        raise HTTPException(status_code=409, detail="Hidrometro desligado ou cliente inativo")
 
     return HydrometerIdentifyResponse(
         extracted_code=extracted_code,
@@ -193,6 +195,8 @@ async def resolve_hydrometer_code(
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
         return HydrometerIdentifyResponse(extracted_code=code, confidence=None, matched=False)
+    if not hydrometer_available_for_field(hydrometer):
+        raise HTTPException(status_code=409, detail="Hidrometro desligado ou cliente inativo")
 
     return HydrometerIdentifyResponse(
         extracted_code=code,
@@ -229,6 +233,8 @@ async def resolve_hydrometer_qr(
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
         return HydrometerIdentifyResponse(extracted_code=None, confidence=None, matched=False)
+    if not hydrometer_available_for_field(hydrometer):
+        raise HTTPException(status_code=409, detail="Hidrometro desligado ou cliente inativo")
 
     return HydrometerIdentifyResponse(
         extracted_code=hydrometer.code,

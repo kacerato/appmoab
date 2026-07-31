@@ -37,6 +37,7 @@ from app.services.invoice_whatsapp import dispatch_invoice_notification_task, en
 from app.services.reading_cycles import (
     advance_after_approval,
     ensure_actionable_cycle,
+    hydrometer_available_for_field,
     is_first_official_reading,
     promote_cycle_to_installation,
 )
@@ -315,6 +316,11 @@ async def create_reading(
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
         raise HTTPException(status_code=404, detail="Hidrômetro não encontrado")
+    if not hydrometer_available_for_field(hydrometer):
+        raise HTTPException(
+            status_code=409,
+            detail="Este hidrômetro foi desligado e não aceita novas leituras.",
+        )
 
     vision_inference = None
     if data.vision_inference_id:

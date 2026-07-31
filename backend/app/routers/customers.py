@@ -50,6 +50,25 @@ class BulkDueDayUpdate(BaseModel):
         return value
 
 
+def _active_route_cycles_query():
+    return (
+        select(ReadingCycle)
+        .join(ReadingCycle.hydrometer)
+        .join(ReadingCycle.customer)
+        .options(
+            selectinload(ReadingCycle.customer).selectinload(Customer.hydrometers),
+            selectinload(ReadingCycle.hydrometer),
+            selectinload(ReadingCycle.readings).selectinload(Reading.collaborator),
+        )
+        .where(
+            ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES),
+            Hydrometer.is_active.is_(True),
+            Customer.status == "active",
+        )
+        .order_by(ReadingCycle.due_date, ReadingCycle.created_at)
+    )
+
+
 def _resolve_month_date(base_day: int, reference: date) -> date:
     return date(reference.year, reference.month, base_day)
 
@@ -473,16 +492,7 @@ async def list_route_tasks(
 
     settings = await _get_system_settings(db)
     today = date.today()
-    result = await db.execute(
-        select(ReadingCycle)
-        .options(
-            selectinload(ReadingCycle.customer).selectinload(Customer.hydrometers),
-            selectinload(ReadingCycle.hydrometer),
-            selectinload(ReadingCycle.readings).selectinload(Reading.collaborator),
-        )
-        .where(ReadingCycle.status.in_(ACTIONABLE_CYCLE_STATUSES))
-        .order_by(ReadingCycle.due_date, ReadingCycle.created_at)
-    )
+    result = await db.execute(_active_route_cycles_query())
 
     items = []
     for cycle in result.scalars().unique().all():

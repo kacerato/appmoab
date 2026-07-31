@@ -8,7 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useIsFocused, useNavigation, useRoute } from '@react-navigation/native';
 import { useFeedback } from '../lib/feedback';
 import { api } from '../lib/api';
-import { findCachedHydrometerByQr, matchesHydrometerQr, normalizeScannedQrValue } from '../lib/route-cache';
+import { matchesHydrometerQr, normalizeScannedQrValue } from '../lib/route-cache';
 import { CameraRect, CameraSize, mapPreviewRectToPhotoCrop } from '../lib/camera-geometry';
 import { colors } from '../styles/theme';
 
@@ -557,44 +557,8 @@ export default function CameraScreen() {
         ? { code: expectedHydrometerCode || '', qr_code_token: expectedQrCodeToken || null }
         : null;
 
-      if (expectedHydrometer && matchesHydrometerQr(scannedValue, expectedHydrometer)) {
-        navigateToReading({
-          hydrometerId: expectedHydrometerId,
-          hydrometerCode: expectedHydrometerCode,
-          customerName: expectedCustomerName,
-          lastReading,
-          redDigits,
-          blackDigits,
-          hydrometerBrand,
-          hydrometerModel,
-          locationDescription,
-          isInstallation,
-          cycleId,
-          cycleReferenceMonth,
-        });
-        return;
-      }
-
-      if (expectedHydrometer && expectedQrCodeToken) {
+      if (expectedHydrometer && !matchesHydrometerQr(scannedValue, expectedHydrometer)) {
         showToast('QR fora da rota', 'Este QR pertence a outro hidrometro. Confira o cliente aberto antes de seguir.', 'error');
-        return;
-      }
-
-      const cachedMatch = await findCachedHydrometerByQr(scannedValue);
-      if (cachedMatch) {
-        const { customer, hydrometer } = cachedMatch;
-        navigateToReading({
-          hydrometerId: hydrometer.id,
-          hydrometerCode: hydrometer.code,
-          customerName: customer.name,
-          lastReading: hydrometer.last_reading_value ?? 0,
-          redDigits: hydrometer.red_digits || 3,
-          blackDigits: hydrometer.black_digits || null,
-          hydrometerBrand: hydrometer.brand || '',
-          hydrometerModel: hydrometer.model || '',
-          locationDescription: hydrometer.location_description || '',
-          isInstallation: !hydrometer.last_reading_date,
-        });
         return;
       }
 
@@ -621,6 +585,8 @@ export default function CameraScreen() {
         hydrometerModel: result.model || '',
         locationDescription: result.location_description || '',
         isInstallation: !result.last_reading_date,
+        cycleId: result.hydrometer_id === expectedHydrometerId ? cycleId : null,
+        cycleReferenceMonth: result.hydrometer_id === expectedHydrometerId ? cycleReferenceMonth : null,
       });
     } catch (error) {
       showToast('Falha ao ler QR Code', error instanceof Error ? error.message : 'Nao foi possivel validar o QR.', 'error');
