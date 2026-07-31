@@ -105,9 +105,8 @@ export default function RouteScreen() {
     navigation.navigate('Camera', { stage: 'code' });
   }, [navigation]);
 
-  const saveRouteCache = useCallback(async (nextCustomers: Customer[], nextReadings: ReadingItem[]) => {
+  const saveRouteCache = useCallback(async (nextReadings: ReadingItem[]) => {
     await SecureStore.setItemAsync(ROUTE_CACHE_KEY, JSON.stringify({
-      customers: nextCustomers,
       todayReadings: nextReadings,
       savedAt: Date.now(),
     })).catch(() => undefined);
@@ -162,7 +161,7 @@ export default function RouteScreen() {
       }
 
       if (nextCustomers && nextReadings) {
-        void saveRouteCache(nextCustomers, nextReadings);
+        void saveRouteCache(nextReadings);
       }
       if (nextCustomers) {
         const loadedAt = Date.now();
@@ -187,13 +186,8 @@ export default function RouteScreen() {
       const cached = await SecureStore.getItemAsync(ROUTE_CACHE_KEY).catch(() => null);
       if (cached && mounted) {
         try {
-          const parsed = JSON.parse(cached) as { customers?: Customer[]; todayReadings?: ReadingItem[]; savedAt?: number };
-          setCustomers(parsed.customers || []);
+          const parsed = JSON.parse(cached) as { todayReadings?: ReadingItem[] };
           setTodayReadings(parsed.todayReadings || []);
-          const savedAt = parsed.savedAt || Date.now();
-          lastLoadedAtRef.current = savedAt;
-          setLastLoadedAt(savedAt);
-          setLoading(false);
         } catch {
           // Ignore invalid cache and load from the API.
         }

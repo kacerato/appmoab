@@ -1,5 +1,3 @@
-import * as SecureStore from 'expo-secure-store';
-
 export const ROUTE_CACHE_KEY = 'route_screen_cache_v1';
 
 export interface CachedHydrometer {
@@ -19,15 +17,6 @@ export interface CachedCustomer {
   id: string;
   name: string;
   hydrometers: CachedHydrometer[];
-}
-
-interface RouteCachePayload {
-  customers?: CachedCustomer[];
-}
-
-export interface CachedHydrometerMatch {
-  customer: CachedCustomer;
-  hydrometer: CachedHydrometer;
 }
 
 export function normalizeScannedQrValue(value: string | null | undefined): string {
@@ -69,26 +58,4 @@ export function matchesHydrometerQr(scannedValue: string, hydrometer: Pick<Cache
   const scannedNumeric = normalizeNumericCode(scanned);
   const codeNumeric = normalizeNumericCode(code);
   return Boolean(scannedNumeric && codeNumeric && scannedNumeric === codeNumeric);
-}
-
-export async function findCachedHydrometerByQr(scannedValue: string): Promise<CachedHydrometerMatch | null> {
-  const cached = await SecureStore.getItemAsync(ROUTE_CACHE_KEY).catch(() => null);
-  if (!cached) return null;
-
-  let parsed: RouteCachePayload;
-  try {
-    parsed = JSON.parse(cached) as RouteCachePayload;
-  } catch {
-    return null;
-  }
-
-  for (const customer of parsed.customers || []) {
-    for (const hydrometer of customer.hydrometers || []) {
-      if (matchesHydrometerQr(scannedValue, hydrometer)) {
-        return { customer, hydrometer };
-      }
-    }
-  }
-
-  return null;
 }

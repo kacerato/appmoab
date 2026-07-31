@@ -14,6 +14,15 @@ from app.models.reading_cycle import ReadingCycle
 ACTIONABLE_CYCLE_STATUSES = ("open", "pending_review", "recapture_required")
 
 
+def hydrometer_available_for_field(hydrometer: Hydrometer) -> bool:
+    """A field capture is valid only while both meter and customer are active."""
+    return bool(
+        hydrometer.is_active
+        and hydrometer.customer
+        and hydrometer.customer.status == "active"
+    )
+
+
 def reference_month(value: date) -> str:
     return f"{value.year}-{value.month:02d}"
 
