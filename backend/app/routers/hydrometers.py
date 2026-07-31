@@ -767,6 +767,7 @@ async def disconnect_hydrometer(
     if hydrometer.customer:
         hydrometer.customer.status = "disconnected"
     await db.flush()
+    await db.commit()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
     return updated or hydrometer
 
@@ -804,6 +805,7 @@ async def reconnect_hydrometer(
         )
         db.add(invoice)
     await db.flush()
+    await db.commit()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
     return updated or hydrometer
 
