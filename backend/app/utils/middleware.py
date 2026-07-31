@@ -70,6 +70,7 @@ def _cache_control(request: Request, response: Response) -> str:
             return "no-store"
         if (
             path.startswith("/api/readings")
+            or path.startswith("/api/hydrometers")
             or path.startswith("/api/customers/route-tasks")
             or path.startswith("/api/customers/")
         ):

@@ -11,7 +11,11 @@ function clearGetCache() {
 }
 
 function cacheTtl(path: string): number {
-  if (path.startsWith('/readings') || path.startsWith('/customers/route-tasks')) return 0;
+  if (
+    path.startsWith('/readings')
+    || path.startsWith('/hydrometers')
+    || path.startsWith('/customers/route-tasks')
+  ) return 0;
   if (path.startsWith('/whatsapp/')) return 10_000;
   if (path.startsWith('/dashboard')) return 30_000;
   if (path.startsWith('/tariffs') || path.startsWith('/system-settings')) return 5 * 60_000;
@@ -49,7 +53,12 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  const fetchPromise = fetch(`${API_URL}${path}`, { ...fetchOptions, headers, signal: controller.signal })
+  const fetchPromise = fetch(`${API_URL}${path}`, {
+    ...fetchOptions,
+    cache: method === 'GET' ? 'no-store' : fetchOptions.cache,
+    headers,
+    signal: controller.signal,
+  })
     .then(async (res) => {
       reportTiming(path, startedAt, res);
       if (res.status === 401) {
