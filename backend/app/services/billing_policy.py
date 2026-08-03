@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date
+from calendar import monthrange
 
 
 @dataclass(frozen=True)
@@ -22,8 +23,22 @@ def resolve_invoice_due_date(reference: date, due_day: int) -> date:
 
 
 def payment_due_date_for_provider(invoice_due_date: date, today: date) -> date:
-    """A API de cobranca nao deve receber vencimento anterior ao dia da emissao."""
-    return max(invoice_due_date, today)
+    """Preserva o dia de vencimento no próximo mês válido para a cobrança."""
+    if invoice_due_date >= today:
+        return invoice_due_date
+
+    due_day = invoice_due_date.day
+    current_month_due = date(
+        today.year,
+        today.month,
+        min(due_day, monthrange(today.year, today.month)[1]),
+    )
+    if current_month_due >= today:
+        return current_month_due
+
+    next_year = today.year + (1 if today.month == 12 else 0)
+    next_month = 1 if today.month == 12 else today.month + 1
+    return date(next_year, next_month, min(due_day, monthrange(next_year, next_month)[1]))
 
 
 def should_block_overdue_charges_for_late_reading(

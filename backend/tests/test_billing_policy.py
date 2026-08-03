@@ -16,8 +16,12 @@ class BillingPolicyTest(unittest.TestCase):
     def test_due_date_stays_in_current_reference_month_after_due_day(self):
         self.assertEqual(resolve_invoice_due_date(date(2026, 6, 11), 10), date(2026, 6, 10))
 
-    def test_provider_due_date_never_goes_to_the_past(self):
-        self.assertEqual(payment_due_date_for_provider(date(2026, 6, 10), date(2026, 6, 11)), date(2026, 6, 11))
+    def test_provider_due_date_keeps_customer_day_in_next_valid_month(self):
+        self.assertEqual(payment_due_date_for_provider(date(2026, 6, 10), date(2026, 6, 11)), date(2026, 7, 10))
+        self.assertEqual(payment_due_date_for_provider(date(2026, 7, 10), date(2026, 8, 3)), date(2026, 8, 10))
+
+    def test_provider_due_date_keeps_future_original_date(self):
+        self.assertEqual(payment_due_date_for_provider(date(2026, 8, 10), date(2026, 8, 3)), date(2026, 8, 10))
 
     def test_late_reading_blocks_overdue_charges(self):
         self.assertTrue(
