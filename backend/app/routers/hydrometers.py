@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from io import BytesIO
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,7 @@ from app.database import get_db
 from app.models.customer import Customer
 from app.models.hydrometer import Hydrometer
 from app.models.invoice import Invoice
+from app.models.invoice_event import InvoiceEvent
 from app.models.vision_inference import VisionInference
 from app.models.system_setting import SystemSetting
 from app.models.user import User
@@ -32,7 +33,10 @@ from app.schemas.hydrometer import (
     HydrometerUpdate,
 )
 from app.services.hydrometer_codes import assign_numeric_code_if_needed, normalize_hydrometer_code
+from app.services.billing_policy import payment_due_date_for_provider
+from app.services.efi_api import EfiAPIError, efi_service
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
+from app.services.invoice_whatsapp import enqueue_invoice_whatsapp, dispatch_invoice_notification_task
 from app.services.meter_vision import VisionResult, meter_vision_service
 from app.services.reading_cycles import ensure_actionable_cycle, hydrometer_available_for_field
 from app.services.vision_decision import fuse_burst_results
@@ -781,6 +785,7 @@ async def disconnect_hydrometer(
 @router.post("/{hydrometer_id}/reconnect", response_model=HydrometerResponse)
 async def reconnect_hydrometer(
     hydrometer_id: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -788,10 +793,29 @@ async def reconnect_hydrometer(
         select(Hydrometer)
         .options(selectinload(Hydrometer.customer))
         .where(Hydrometer.id == uuid.UUID(hydrometer_id))
+        .with_for_update()
     )
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
         raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
+
+    if hydrometer.is_active:
+        raise HTTPException(status_code=409, detail="Este hidrometro ja esta ativo e nao pode ser religado novamente.")
+
+    existing_charge = (
+        await db.execute(
+            select(Invoice).where(
+                Invoice.customer_id == hydrometer.customer_id,
+                Invoice.charge_type == "reconnection",
+                Invoice.status.in_(("pending", "sent", "overdue")),
+            ).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if existing_charge:
+        raise HTTPException(
+            status_code=409,
+            detail="Ja existe uma taxa de religamento em aberto para este cliente.",
+        )
 
     settings = await _get_system_settings(db)
     hydrometer.is_active = True
@@ -810,8 +834,63 @@ async def reconnect_hydrometer(
             status="pending",
         )
         db.add(invoice)
+        await db.flush()
+
+        payment_due_date = payment_due_date_for_provider(invoice.due_date, datetime.now(timezone.utc).date())
+        try:
+            charge = await efi_service.emitir_cobranca(
+                valor=invoice.amount,
+                cpf_cnpj=hydrometer.customer.cpf_cnpj,
+                nome=hydrometer.customer.name,
+                email=hydrometer.customer.email or "",
+                telefone=hydrometer.customer.phone,
+                endereco=hydrometer.customer.address,
+                numero=hydrometer.customer.number or "S/N",
+                bairro=hydrometer.customer.neighborhood,
+                cidade=hydrometer.customer.city,
+                uf=hydrometer.customer.state,
+                cep=hydrometer.customer.zip_code,
+                data_vencimento=payment_due_date,
+                seu_numero=f"AQ-{str(invoice.id)[:8].upper()}",
+                mensagem=f"Cobranca de religacao - Ref: {invoice.reference_month}",
+                multa_percentual=settings.late_fee_percent,
+                juros_diario_percentual=settings.daily_interest_percent,
+            )
+        except EfiAPIError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="A Efí nao confirmou a cobranca. O religamento nao foi realizado.",
+            ) from exc
+
+        invoice.payment_provider = "efi"
+        invoice.payment_due_date = payment_due_date
+        invoice.efi_charge_id = charge.get("charge_id")
+        invoice.efi_status = charge.get("status")
+        invoice.efi_barcode = charge.get("barcode")
+        invoice.efi_payment_url = charge.get("payment_url")
+        invoice.efi_pdf_url = charge.get("pdf_url")
+        invoice.efi_pix_qrcode = charge.get("pix_qrcode")
+        invoice.efi_raw_response = charge.get("raw") or charge
+        if not invoice.efi_charge_id and not invoice.efi_payment_url:
+            raise HTTPException(
+                status_code=502,
+                detail="A Efí respondeu sem identificar a cobranca. O religamento nao foi realizado.",
+            )
+        invoice.status = "sent"
+        db.add(InvoiceEvent(
+            invoice_id=invoice.id,
+            user_id=admin.id,
+            event_type="reconnection_charge_emitted",
+            previous_status=None,
+            new_status=invoice.status,
+            reason="Taxa emitida atomicamente durante o religamento",
+            payload={"hydrometer_id": str(hydrometer.id), "efi_charge_id": invoice.efi_charge_id},
+        ))
+        notification = await enqueue_invoice_whatsapp(db, invoice, source="hydrometer_reconnection")
+        if notification:
+            background_tasks.add_task(dispatch_invoice_notification_task, str(notification.id))
+
     await db.flush()
-    await db.commit()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
     return updated or hydrometer
 

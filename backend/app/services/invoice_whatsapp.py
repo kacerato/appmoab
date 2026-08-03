@@ -5,7 +5,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -132,6 +132,36 @@ async def _reserve_dispatch_slot(db: AsyncSession) -> tuple[bool, str | None]:
     return True, None
 
 
+async def _customer_interval_available(db: AsyncSession, customer_id: uuid.UUID) -> tuple[bool, datetime | None]:
+    """Evita mensagens automaticas repetidas para o mesmo cliente em curto intervalo."""
+    interval = max(int(runtime_settings.whatsapp_customer_min_interval_minutes), 1)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=interval)
+    last_sent = (
+        await db.execute(
+            select(func.max(WhatsAppMessage.created_at)).where(
+                WhatsAppMessage.customer_id == customer_id,
+                WhatsAppMessage.direction == "outbound",
+                WhatsAppMessage.created_at >= cutoff,
+            )
+        )
+    ).scalar()
+    if not last_sent:
+        return True, None
+    return False, last_sent + timedelta(minutes=interval)
+
+
+async def _pause_whatsapp_queue(db: AsyncSession, *, until: datetime, detail: str) -> None:
+    """Pausa toda a fila quando o provedor sinaliza restricao da conta."""
+    await db.execute(
+        update(Notification)
+        .where(
+            Notification.channel == "whatsapp",
+            Notification.status.in_(("queued", "failed")),
+        )
+        .values(status="queued", error_message=detail[:500], next_attempt_at=until)
+    )
+
+
 def _event(db: AsyncSession, invoice: Invoice, sent: bool, notification: Notification, *, mode: str, source: str) -> None:
     db.add(InvoiceEvent(
         invoice_id=invoice.id,
@@ -222,6 +252,14 @@ async def dispatch_invoice_notification(
         _schedule_operational_wait(notification, detail, delay_seconds=75)
         return {"status": "queued", "reason": "local_rate_limit", "detail": detail}
 
+    customer_available, customer_next_at = await _customer_interval_available(db, invoice.customer_id)
+    if not customer_available:
+        detail = "Envio adiado para evitar mensagens repetidas ao mesmo cliente."
+        notification.status = "queued"
+        notification.error_message = detail
+        notification.next_attempt_at = customer_next_at
+        return {"status": "queued", "reason": "customer_frequency_limit", "detail": detail}
+
     notification.attempt_count += 1
     notification.last_attempt_at = datetime.now(timezone.utc)
 
@@ -273,6 +311,12 @@ async def dispatch_invoice_notification(
             else:
                 delay_seconds = 5 * 60
             _schedule_operational_wait(notification, detail, delay_seconds=delay_seconds)
+            if error_code == "account_restricted":
+                await _pause_whatsapp_queue(
+                    db,
+                    until=datetime.now(timezone.utc) + timedelta(seconds=delay_seconds),
+                    detail=detail,
+                )
             notification.payload = {**(notification.payload or {}), "mode": mode, "message": message}
             return {"status": "queued", "reason": error_code, "detail": detail}
         _schedule_retry(notification, detail)
