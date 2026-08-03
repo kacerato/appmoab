@@ -1,6 +1,7 @@
 """Schemas de Hidrômetro."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -130,3 +131,7 @@ class HydrometerQrResolveRequest(BaseModel):
 
 class HydrometerDisconnectRequest(BaseModel):
     reason: str | None = None
+
+
+class HydrometerReconnectRequest(BaseModel):
+    mode: Literal["reading_only", "with_fee"] = "with_fee"

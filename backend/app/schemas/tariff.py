@@ -11,7 +11,7 @@ class TariffTierBase(BaseModel):
     min_m3: float
     max_m3: float
     rate_per_m3: float
-    minimum_charge: float = 100.0
+    minimum_charge: float = 110.0
     fixed_rate: float = 100.0
     sort_order: int = 0
 
@@ -57,6 +57,22 @@ class TariffTierResponse(TariffTierBase):
 class TariffListResponse(BaseModel):
     items: list[TariffTierResponse]
     total: int
+
+
+class MinimumChargeUpdate(BaseModel):
+    amount: float
+
+    @field_validator("amount")
+    @classmethod
+    def validate_amount(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("Taxa mínima deve ser positiva")
+        return round(value, 2)
+
+
+class MinimumChargeResponse(BaseModel):
+    amount: float
+    updated_tiers: int
 
 
 class BillingCalculation(BaseModel):

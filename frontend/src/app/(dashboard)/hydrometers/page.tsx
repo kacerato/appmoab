@@ -51,6 +51,8 @@ interface PdfJpegPage {
   height: number;
 }
 
+type ReconnectMode = 'reading_only' | 'with_fee';
+
 const STICKER_DIAMETER_MM = 45;
 const STICKER_DESIGN_DIAMETER_MM = 90;
 const STICKERS_PER_ROW = 4;
@@ -862,8 +864,11 @@ export default function HydrometersPage() {
     }
   };
 
-  const reconnectHydrometer = async (hydrometer: Hydrometer) => {
+  const [reconnecting, setReconnecting] = useState<Hydrometer | null>(null);
+
+  const reconnectHydrometer = async (hydrometer: Hydrometer, mode: ReconnectMode) => {
     if (statusUpdatingIds.has(hydrometer.id)) return;
+    setReconnecting(null);
     setItems(current => current.map(item => (
       item.id === hydrometer.id
         ? { ...item, is_active: true, reconnected_at: new Date().toISOString() }
@@ -871,9 +876,15 @@ export default function HydrometersPage() {
     )));
     setStatusUpdatingIds(current => new Set(current).add(hydrometer.id));
     try {
-      const updated = await api.post<Hydrometer>(`/hydrometers/${hydrometer.id}/reconnect`);
+      const updated = await api.post<Hydrometer>(`/hydrometers/${hydrometer.id}/reconnect`, { mode });
       setItems(current => current.map(item => item.id === updated.id ? updated : item));
-      notify('Religamento registrado', 'O hidrômetro foi ativado e a taxa de religamento foi gerada.', 'success');
+      notify(
+        'Religamento registrado',
+        mode === 'with_fee'
+          ? 'O hidrômetro voltou para leitura e a taxa de religamento foi gerada.'
+          : 'O hidrômetro voltou para leitura sem gerar taxa de religamento.',
+        'success',
+      );
     } catch (error: unknown) {
       setItems(current => current.map(item => item.id === hydrometer.id ? hydrometer : item));
       notify('Falha ao religar', error instanceof Error ? error.message : 'Erro ao religar hidrômetro.', 'error');
@@ -966,7 +977,7 @@ export default function HydrometersPage() {
                         {statusUpdatingIds.has(hydrometer.id) ? <Loader2 size={14} className="spinner" /> : <Power size={14} />}
                       </button>
                     ) : (
-                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => reconnectHydrometer(hydrometer)} title="Religar hidrômetro" disabled={statusUpdatingIds.has(hydrometer.id)}>
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setReconnecting(hydrometer)} title="Religar hidrômetro" disabled={statusUpdatingIds.has(hydrometer.id)}>
                         {statusUpdatingIds.has(hydrometer.id) ? <Loader2 size={14} className="spinner" /> : <RotateCcw size={14} />}
                       </button>
                     )}
@@ -980,6 +991,33 @@ export default function HydrometersPage() {
           </tbody>
         </table>
       </div>
+
+      {reconnecting && (
+        <div className="modal-overlay">
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="reconnect-title">
+            <div className="modal-header">
+              <div>
+                <h2 className="modal-title" id="reconnect-title">Como deseja religar?</h2>
+                <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: 13 }}>
+                  {reconnecting.customer?.name || 'Cliente'} · hidrômetro {reconnecting.code}
+                </p>
+              </div>
+              <button className="btn btn-ghost btn-icon" onClick={() => setReconnecting(null)} aria-label="Fechar"><X size={20} /></button>
+            </div>
+            <div style={{ display: 'grid', gap: 12 }}>
+              <button className="btn btn-ghost" style={{ height: 'auto', padding: 16, textAlign: 'left', justifyContent: 'flex-start' }} onClick={() => reconnectHydrometer(reconnecting, 'reading_only')}>
+                <span><strong>Voltar apenas para leitura</strong><br /><small style={{ color: 'var(--text-muted)' }}>Reativa cliente e hidrômetro sem criar cobrança.</small></span>
+              </button>
+              <button className="btn btn-primary" style={{ height: 'auto', padding: 16, textAlign: 'left', justifyContent: 'flex-start' }} onClick={() => reconnectHydrometer(reconnecting, 'with_fee')}>
+                <span><strong>Religar com taxa</strong><br /><small>Reativa e emite a taxa de religamento configurada.</small></span>
+              </button>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-ghost" onClick={() => setReconnecting(null)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAdd && (
         <div className="modal-overlay">

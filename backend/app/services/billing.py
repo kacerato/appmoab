@@ -3,7 +3,7 @@ AquaMoab — Serviço de Cálculo de Faturamento.
 
 Implementa a fórmula de tarifa por faixas de consumo:
 - A tarifa é aplicada sobre TODO o consumo (não apenas excedente)
-- Taxa mínima: R$100
+- Taxa mínima padrão: R$110
 - Clientes sem hidrômetro: taxa fixa R$100/mês
 """
 
@@ -43,7 +43,7 @@ async def seed_default_tariffs(db: AsyncSession) -> None:
             min_m3=tier_data["min_m3"],
             max_m3=tier_data["max_m3"],
             rate_per_m3=tier_data["rate"],
-            minimum_charge=100.0,
+            minimum_charge=110.0,
             fixed_rate=100.0,
             sort_order=tier_data["order"],
             is_active=True,

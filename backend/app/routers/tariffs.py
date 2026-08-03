@@ -2,7 +2,7 @@
 
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -11,6 +11,7 @@ from app.models.user import User
 from app.schemas.tariff import (
     TariffTierCreate, TariffTierUpdate, TariffTierResponse,
     TariffListResponse, BillingCalculation,
+    MinimumChargeUpdate, MinimumChargeResponse,
 )
 from app.services.billing import calculate_billing
 from app.utils.security import get_current_user, require_admin
@@ -41,6 +42,25 @@ async def create_tariff(
     await db.flush()
     await db.refresh(tier)
     return tier
+
+
+@router.patch("/minimum-charge", response_model=MinimumChargeResponse)
+async def update_minimum_charge(
+    data: MinimumChargeUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Mantém uma única taxa mínima coerente em todas as faixas."""
+    result = await db.execute(
+        update(TariffTier)
+        .values(minimum_charge=data.amount)
+        .returning(TariffTier.id)
+    )
+    updated_tiers = len(result.all())
+    if updated_tiers == 0:
+        raise HTTPException(status_code=409, detail="Nenhuma faixa de tarifa configurada")
+    await db.flush()
+    return MinimumChargeResponse(amount=data.amount, updated_tiers=updated_tiers)
 
 
 @router.patch("/{tier_id}", response_model=TariffTierResponse)

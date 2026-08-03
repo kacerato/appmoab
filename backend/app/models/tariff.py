@@ -3,7 +3,7 @@ Modelo de Faixa de Tarifa — Tabela de preços por faixa de consumo.
 
 Totalmente configurável pelo painel admin.
 A tarifa é aplicada sobre TODO o consumo (não apenas excedente).
-Taxa mínima padrão: R$100.
+Taxa mínima padrão: R$110.
 """
 
 import uuid
@@ -30,7 +30,7 @@ class TariffTier(Base):
     rate_per_m3: Mapped[float] = mapped_column(Float, nullable=False)
 
     # ── Taxa Mínima ────────────────────────────────────────────
-    minimum_charge: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)
+    minimum_charge: Mapped[float] = mapped_column(Float, nullable=False, default=110.0)
 
     # ── Taxa Fixa (clientes sem hidrômetro) ────────────────────
     fixed_rate: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)

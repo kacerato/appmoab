@@ -26,6 +26,7 @@ from app.schemas.hydrometer import (
     HydrometerIdentifyResponse,
     HydrometerListResponse,
     HydrometerDisconnectRequest,
+    HydrometerReconnectRequest,
     HydrometerQrResolveRequest,
     HydrometerResponse,
     HydrometerResolveCodeRequest,
@@ -775,7 +776,17 @@ async def disconnect_hydrometer(
     hydrometer.disconnected_at = datetime.now(timezone.utc)
     hydrometer.disconnection_reason = data.reason or "Desligado por falta de pagamento"
     if hydrometer.customer:
-        hydrometer.customer.status = "disconnected"
+        active_sibling = (
+            await db.execute(
+                select(Hydrometer.id).where(
+                    Hydrometer.customer_id == hydrometer.customer_id,
+                    Hydrometer.id != hydrometer.id,
+                    Hydrometer.is_active.is_(True),
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if active_sibling is None:
+            hydrometer.customer.status = "disconnected"
     await db.flush()
     await db.commit()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
@@ -786,6 +797,7 @@ async def disconnect_hydrometer(
 async def reconnect_hydrometer(
     hydrometer_id: str,
     background_tasks: BackgroundTasks,
+    data: HydrometerReconnectRequest | None = None,
     db: AsyncSession = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
@@ -802,6 +814,7 @@ async def reconnect_hydrometer(
     if hydrometer.is_active:
         raise HTTPException(status_code=409, detail="Este hidrometro ja esta ativo e nao pode ser religado novamente.")
 
+    reconnect_mode = data.mode if data else "with_fee"
     existing_charge = (
         await db.execute(
             select(Invoice).where(
@@ -812,16 +825,17 @@ async def reconnect_hydrometer(
         )
     ).scalar_one_or_none()
     if existing_charge:
-        raise HTTPException(
-            status_code=409,
-            detail="Ja existe uma taxa de religamento em aberto para este cliente.",
-        )
+        detail = "Ja existe uma taxa de religamento em aberto para este cliente."
+        if reconnect_mode == "reading_only":
+            detail = "Existe uma taxa de religamento em aberto. Cancele essa fatura antes de religar sem taxa."
+        raise HTTPException(status_code=409, detail=detail)
 
-    settings = await _get_system_settings(db)
     hydrometer.is_active = True
     hydrometer.reconnected_at = datetime.now(timezone.utc)
     if hydrometer.customer:
         hydrometer.customer.status = "active"
+    if hydrometer.customer and reconnect_mode == "with_fee":
+        settings = await _get_system_settings(db)
         invoice = Invoice(
             customer_id=hydrometer.customer_id,
             amount=settings.reconnection_fee_amount,
@@ -891,6 +905,7 @@ async def reconnect_hydrometer(
             background_tasks.add_task(dispatch_invoice_notification_task, str(notification.id))
 
     await db.flush()
+    await db.commit()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
     return updated or hydrometer
 
