@@ -29,7 +29,7 @@ from app.schemas.invoice import (
     InvoiceResponse, InvoiceListResponse,
     InvoiceCreateManual, InvoiceSummary, InvoiceWhatsAppDispatchResponse,
     InvoiceEventResponse,
-    InvoiceAmountUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
+    InvoiceAmountUpdate, InvoiceDueDateUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
     InvoiceCancelRequest, InvoiceReopenRequest,
 )
 from app.schemas.invoice_document import InvoiceDocumentResponse, InvoiceDocumentUpload
@@ -39,6 +39,7 @@ from app.services.invoice_documents import (
     BOLETO_PDF,
     DocumentPayload,
     get_or_create_boleto_pdf,
+    persist_boleto_pdf,
     read_invoice_document,
     store_invoice_document,
     validate_receipt_upload,
@@ -71,6 +72,19 @@ def _validate_new_invoice_due_date(due_date: date, *, today: date | None = None)
             status_code=422,
             detail="A data de vencimento da nova cobrança não pode estar no passado.",
         )
+
+
+def _validate_invoice_due_date_change(invoice: Invoice, due_date: date, *, today: date | None = None) -> None:
+    current_day = today or date.today()
+    if invoice.status in {"paid", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Fatura paga ou cancelada não pode ter o vencimento alterado")
+    if invoice.efi_status in {"identified", "approved", "paid", "settled"}:
+        raise HTTPException(status_code=409, detail="O pagamento já foi identificado pela Efí e o vencimento não pode mais ser alterado")
+    if due_date < current_day or (invoice.efi_charge_id and due_date <= current_day):
+        detail = "A nova data não pode estar no passado."
+        if invoice.efi_charge_id:
+            detail = "A Efí exige que o novo vencimento seja posterior à data de hoje."
+        raise HTTPException(status_code=422, detail=detail)
 
 
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
@@ -1023,6 +1037,93 @@ async def update_invoice_amount(
     await db.flush()
     await db.refresh(invoice)
 
+    return _invoice_response(invoice)
+
+
+@router.patch("/{invoice_id}/due-date", response_model=InvoiceResponse)
+async def update_invoice_due_date(
+    invoice_id: str,
+    data: InvoiceDueDateUpdate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice)
+        .options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.documents),
+            selectinload(Invoice.reading),
+        )
+        .where(Invoice.id == uuid.UUID(invoice_id))
+        .with_for_update()
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    today = date.today()
+    _validate_invoice_due_date_change(invoice, data.due_date, today=today)
+    if data.due_date == invoice.due_date:
+        return _invoice_response(invoice)
+
+    previous_due_date = invoice.due_date
+    previous_status = invoice.status
+    provider_result = None
+    if invoice.efi_charge_id:
+        try:
+            provider_result = await efi_service.alterar_vencimento(invoice.efi_charge_id, data.due_date)
+        except EfiAPIError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"A Efí não confirmou a alteração do vencimento: {exc.detail or exc.message}",
+            ) from exc
+
+    invoice.due_date = data.due_date
+    if invoice.efi_charge_id:
+        invoice.payment_due_date = data.due_date
+        invoice.efi_raw_response = _merge_efi_raw(
+            invoice,
+            due_date_update=provider_result,
+            due_date_updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+    if invoice.status == "overdue" and data.due_date >= today:
+        invoice.status = "sent" if invoice.efi_charge_id else "pending"
+    settings = await _get_system_settings(db)
+    _recalculate_overdue_amount(invoice, settings)
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="invoice_due_date_updated",
+        previous_status=previous_status,
+        new_status=invoice.status,
+        user=admin,
+        reason="Vencimento alterado manualmente",
+        payload={
+            "previous_due_date": previous_due_date.isoformat(),
+            "new_due_date": data.due_date.isoformat(),
+            "efi_charge_id": invoice.efi_charge_id,
+            "efi_result": provider_result,
+        },
+    )
+
+    if invoice.efi_charge_id and invoice.efi_pdf_url:
+        try:
+            pdf = await efi_service.baixar_pdf(invoice.efi_pdf_url)
+            if pdf:
+                await persist_boleto_pdf(db, invoice, pdf, source="due_date_update")
+        except Exception as exc:
+            _record_invoice_event(
+                db,
+                invoice=invoice,
+                event_type="boleto_document_pending",
+                previous_status=invoice.status,
+                new_status=invoice.status,
+                user=admin,
+                reason="Vencimento alterado, mas o PDF atualizado ainda não foi persistido",
+                payload={"error": str(exc), "new_due_date": data.due_date.isoformat()},
+            )
+
+    await db.flush()
+    await db.refresh(invoice)
     return _invoice_response(invoice)
 
 

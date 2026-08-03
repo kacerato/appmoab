@@ -9,6 +9,7 @@ from app.routers.invoices import (
     _clear_efi_payment_data,
     _merge_efi_raw,
     _record_invoice_event,
+    _validate_invoice_due_date_change,
     _validate_new_invoice_due_date,
 )
 
@@ -35,6 +36,19 @@ class InvoiceFlowHelperTest(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             _validate_new_invoice_due_date(date(2026, 8, 2), today=date(2026, 8, 3))
         self.assertEqual(raised.exception.status_code, 422)
+
+    def test_existing_efi_invoice_requires_due_date_after_today(self):
+        invoice = Invoice(status="sent", efi_charge_id="123456")
+        with self.assertRaises(HTTPException) as raised:
+            _validate_invoice_due_date_change(invoice, date(2026, 8, 3), today=date(2026, 8, 3))
+        self.assertEqual(raised.exception.status_code, 422)
+        _validate_invoice_due_date_change(invoice, date(2026, 8, 4), today=date(2026, 8, 3))
+
+    def test_existing_invoice_blocks_due_date_after_payment_identification(self):
+        invoice = Invoice(status="sent", efi_charge_id="123456", efi_status="identified")
+        with self.assertRaises(HTTPException) as raised:
+            _validate_invoice_due_date_change(invoice, date(2026, 8, 4), today=date(2026, 8, 3))
+        self.assertEqual(raised.exception.status_code, 409)
 
     def test_reopen_helper_clears_old_efi_payment_data(self):
         invoice = Invoice(

@@ -79,6 +79,10 @@ class InvoiceAmountUpdate(BaseModel):
     reason: str | None = None
 
 
+class InvoiceDueDateUpdate(BaseModel):
+    due_date: date
+
+
 class InvoiceOverdueUpdate(BaseModel):
     days_overdue: int | None = None
 

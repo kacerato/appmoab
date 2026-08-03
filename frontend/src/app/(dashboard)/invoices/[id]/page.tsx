@@ -7,7 +7,7 @@ import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { useAuth } from '@/lib/auth';
 import { fileToDataUrl } from '@/lib/file-base64';
-import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore, CheckCircle2, RotateCcw, Calculator, BellRing, Pencil, Upload, FileCheck2 } from 'lucide-react';
+import { ArrowLeft, Download, Copy, Ban, Loader2, MessageCircleMore, CheckCircle2, RotateCcw, Calculator, BellRing, Pencil, Upload, FileCheck2, CalendarDays, X } from 'lucide-react';
 
 interface InvoiceDocument {
   id: string;
@@ -95,6 +95,8 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [dueDateOpen, setDueDateOpen] = useState(false);
+  const [dueDateDraft, setDueDateDraft] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -242,6 +244,35 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       notify('Valor atualizado', 'A fatura foi ajustada com sucesso.', 'success');
     } catch (e: unknown) {
       notify('Falha ao ajustar valor', e instanceof Error ? e.message : 'Erro ao editar a fatura.', 'error');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const openDueDateEditor = () => {
+    if (!inv) return;
+    setDueDateDraft(inv.due_date);
+    setDueDateOpen(true);
+  };
+
+  const saveDueDate = async () => {
+    if (!dueDateDraft) return;
+    setActionLoading('due-date');
+    try {
+      const updated = await api.patch<Invoice>(`/invoices/${id}/due-date`, { due_date: dueDateDraft });
+      setInv(updated);
+      setDocuments(updated.documents || []);
+      setDueDateOpen(false);
+      await reloadEvents();
+      notify(
+        'Vencimento atualizado',
+        inv?.efi_charge_id
+          ? 'A nova data foi salva no sistema e na cobrança Efí.'
+          : 'A nova data foi salva na fatura.',
+        'success',
+      );
+    } catch (e: unknown) {
+      notify('Falha ao alterar vencimento', e instanceof Error ? e.message : 'Erro ao editar a data de vencimento.', 'error');
     } finally {
       setActionLoading(null);
     }
@@ -420,6 +451,11 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           {['pending', 'sent', 'overdue'].includes(inv.status) && (
             <button className="btn btn-danger btn-sm" onClick={() => setCancelOpen(true)}>
               <Ban size={14} /> Cancelar boleto
+            </button>
+          )}
+          {['pending', 'sent', 'overdue'].includes(inv.status) && (
+            <button className="btn btn-secondary btn-sm" onClick={openDueDateEditor} disabled={actionLoading === 'due-date'}>
+              {actionLoading === 'due-date' ? <Loader2 size={14} className="spinner" /> : <CalendarDays size={14} />} Vencimento
             </button>
           )}
           {inv.status === 'cancelled' && inv.can_reverse_reading && (
@@ -660,6 +696,44 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                       : 'A leitura será invalidada e a competência voltará para a rota.'}
                   </span>
                 </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dueDateOpen && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 420 }} role="dialog" aria-modal="true" aria-labelledby="due-date-title">
+            <div className="modal-header">
+              <div>
+                <h2 className="modal-title" id="due-date-title">Editar vencimento</h2>
+                <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: 13 }}>
+                  A alteração também será enviada à cobrança Efí já emitida.
+                </p>
+              </div>
+              <button className="btn btn-ghost btn-icon" onClick={() => setDueDateOpen(false)} aria-label="Fechar"><X size={20} /></button>
+            </div>
+            <div className="form-group">
+              <label className="form-label" htmlFor="invoice-due-date">Nova data de vencimento</label>
+              <input
+                id="invoice-due-date"
+                className="form-input"
+                type="date"
+                value={dueDateDraft}
+                onChange={event => setDueDateDraft(event.target.value)}
+                required
+              />
+              {inv.efi_charge_id && (
+                <div style={{ marginTop: 7, color: 'var(--text-muted)', fontSize: 12 }}>
+                  Em boletos Efí, a nova data precisa ser posterior ao dia de hoje.
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setDueDateOpen(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={saveDueDate} disabled={!dueDateDraft || actionLoading === 'due-date'}>
+                {actionLoading === 'due-date' ? <Loader2 size={15} className="spinner" /> : <CalendarDays size={15} />} Salvar vencimento
               </button>
             </div>
           </div>

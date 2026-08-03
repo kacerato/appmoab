@@ -262,6 +262,13 @@ class EfiAPIService:
         result = await self._request("PUT", f"/v1/charge/{charge_id}/cancel")
         return result
 
+    async def alterar_vencimento(self, charge_id: str, due_date: date) -> dict:
+        return await self._request(
+            "PUT",
+            f"/v1/charge/{charge_id}/billet",
+            json={"expire_at": due_date.isoformat()},
+        )
+
     async def consultar_por_notificacao(self, token: str) -> dict:
         return await self._request("GET", f"/v1/notification/{token}")
 

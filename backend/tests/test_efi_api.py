@@ -141,6 +141,17 @@ class EfiAPIServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.last_request["method"], "PUT")
         self.assertEqual(service.last_request["path"], "/v1/charge/123456/cancel")
 
+    async def test_alterar_vencimento_updates_existing_billet(self):
+        service = CapturingEfiService({"code": 200})
+
+        result = await service.alterar_vencimento("123456", date(2026, 8, 20))
+
+        self.assertEqual(result["code"], 200)
+        assert service.last_request is not None
+        self.assertEqual(service.last_request["method"], "PUT")
+        self.assertEqual(service.last_request["path"], "/v1/charge/123456/billet")
+        self.assertEqual(service.last_request["json"], {"expire_at": "2026-08-20"})
+
     def test_billet_message_is_limited_to_four_lines_of_one_hundred_chars(self):
         message = _format_billet_message("x" * 450)
         lines = message.splitlines()
