@@ -1,0 +1,80 @@
+name: Build Mobile APK
+
+on:
+  push:
+    branches:
+      - build/mobile-apk
+    paths:
+      - "mobile/**"
+      - ".github/workflows/build-mobile-apk.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "mobile/**"
+      - ".github/workflows/build-mobile-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install mobile dependencies
+        working-directory: mobile
+        run: npm ci
+
+      - name: Align Expo SDK dependencies
+        working-directory: mobile
+        env:
+          CI: "1"
+        run: npx expo install expo@~54.0.36 react-native-svg@15.12.1
+
+      - name: Validate Expo project
+        working-directory: mobile
+        run: npx expo-doctor
+
+      - name: Generate Android native project
+        working-directory: mobile
+        env:
+          CI: "1"
+        run: npx expo prebuild --platform android --clean --non-interactive
+
+      - name: Build installable debug APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare APK
+        run: |
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk MarAzul-Mobile.apk
+          ls -lh MarAzul-Mobile.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarAzul-Mobile-APK
+          path: MarAzul-Mobile.apk
+          if-no-files-found: error
+          retention-days: 14
