@@ -65,6 +65,7 @@ class InvoiceListResponse(BaseModel):
 class InvoiceCreateManual(BaseModel):
     """Criação manual de fatura (para ajustes)."""
     customer_id: UUID
+    reading_id: UUID | None = None
     amount: float
     reference_month: str
     due_date: date

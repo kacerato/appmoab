@@ -97,6 +97,8 @@ class ReadingResponse(BaseModel):
     customer_id: UUID | None = None
     is_installation: bool = False
     charge_type: str | None = None
+    invoice_id: UUID | None = None
+    invoice_status: str | None = None
     vision_predicted_code: str | None = None
     vision_predicted_value: float | None = None
     vision_confidence: float | None = None

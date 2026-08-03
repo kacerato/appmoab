@@ -23,6 +23,7 @@ from app.models.reading_cycle import ReadingCycle
 from app.models.system_setting import SystemSetting
 from app.models.whatsapp_message import WhatsAppMessage
 from app.models.customer import Customer
+from app.models.hydrometer import Hydrometer
 from app.models.user import User
 from app.schemas.invoice import (
     InvoiceResponse, InvoiceListResponse,
@@ -62,6 +63,14 @@ from app.utils.security import get_current_user, require_admin
 from app.utils.storage import decode_base64_upload, delete_photo
 
 router = APIRouter(prefix="/invoices", tags=["Faturas"])
+
+
+def _validate_new_invoice_due_date(due_date: date, *, today: date | None = None) -> None:
+    if due_date < (today or date.today()):
+        raise HTTPException(
+            status_code=422,
+            detail="A data de vencimento da nova cobrança não pode estar no passado.",
+        )
 
 
 async def _get_system_settings(db: AsyncSession) -> SystemSetting:
@@ -644,15 +653,53 @@ async def create_manual_invoice(
     if not customer:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
 
+    _validate_new_invoice_due_date(data.due_date)
+
+    reading = None
+    if data.reading_id:
+        reading = (
+            await db.execute(
+                select(Reading)
+                .options(selectinload(Reading.cycle))
+                .join(Hydrometer, Hydrometer.id == Reading.hydrometer_id)
+                .where(
+                    Reading.id == data.reading_id,
+                    Hydrometer.customer_id == data.customer_id,
+                    Reading.status == "approved",
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if not reading:
+            raise HTTPException(status_code=404, detail="Leitura aprovada não encontrada para este cliente")
+        existing_invoice = (
+            await db.execute(select(Invoice).where(Invoice.reading_id == reading.id).limit(1))
+        ).scalar_one_or_none()
+        if existing_invoice:
+            action = "Reabra a fatura existente" if existing_invoice.status == "cancelled" else "Use a fatura existente"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Esta leitura já está vinculada a uma fatura. {action} em vez de gerar outra.",
+            )
+        if reading.reference_month and reading.reference_month != data.reference_month:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A leitura pertence à competência {reading.reference_month}.",
+            )
+        if reading.consumption is None:
+            raise HTTPException(status_code=409, detail="A leitura ainda não possui consumo calculado")
+
     invoice = Invoice(
         customer_id=data.customer_id,
+        reading_id=reading.id if reading else None,
+        cycle_id=reading.cycle_id if reading else None,
         amount=data.amount,
         original_amount=data.amount,
         reference_month=data.reference_month,
         due_date=data.due_date,
-        consumption_m3=data.consumption_m3,
+        consumption_m3=reading.consumption if reading else data.consumption_m3,
         tariff_rate=data.tariff_rate,
-        charge_type=data.charge_type,
+        charge_type=("installation" if reading and reading.reading_kind == "installation" else "water") if reading else data.charge_type,
         status="pending"
     )
     db.add(invoice)
@@ -665,8 +712,15 @@ async def create_manual_invoice(
         new_status=invoice.status,
         user=admin,
         reason="Criação manual de fatura",
-        payload={"charge_type": invoice.charge_type, "reference_month": invoice.reference_month},
+        payload={
+            "charge_type": invoice.charge_type,
+            "reference_month": invoice.reference_month,
+            "reading_id": str(reading.id) if reading else None,
+        },
     )
+    if reading and reading.cycle:
+        reading.cycle.status = "invoiced"
+        reading.cycle.completed_at = datetime.now(timezone.utc)
 
     settings = await _get_system_settings(db)
     # Opcional: ja emitir a cobranca na Efí

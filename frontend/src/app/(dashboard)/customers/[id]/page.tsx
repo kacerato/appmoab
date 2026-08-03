@@ -83,6 +83,8 @@ interface ApprovedReading {
   reading_kind: string;
   photo_url: string;
   collaborator_name: string | null;
+  invoice_id: string | null;
+  invoice_status: string | null;
 }
 
 function fmt(value: number) {
@@ -119,6 +121,14 @@ function currentReferenceMonth() {
   return new Date().toISOString().slice(0, 7);
 }
 
+function todayInputDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function CustomerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
@@ -136,9 +146,10 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const [savingHydrometer, setSavingHydrometer] = useState(false);
 
   const [invoiceForm, setInvoiceForm] = useState({
+    reading_id: '',
     amount: '',
     reference_month: new Date().toISOString().slice(0, 7),
-    due_date: new Date().toISOString().slice(0, 10),
+    due_date: todayInputDate(),
     consumption_m3: '',
     auto_amount: false,
   });
@@ -207,6 +218,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     try {
       await api.post('/invoices/manual', {
         customer_id: id,
+        reading_id: invoiceForm.reading_id || null,
         amount: parseFloat(invoiceForm.amount),
         reference_month: invoiceForm.reference_month,
         due_date: invoiceForm.due_date,
@@ -220,6 +232,17 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
     } finally {
       setSavingInvoice(false);
     }
+  };
+
+  const selectInvoiceReading = (readingId: string) => {
+    const reading = approvedReadings.find(item => item.id === readingId);
+    setInvoiceForm(current => ({
+      ...current,
+      reading_id: readingId,
+      reference_month: reading?.reference_month || current.reference_month,
+      consumption_m3: reading?.consumption?.toString() || '',
+      auto_amount: reading ? true : current.auto_amount,
+    }));
   };
 
   const handleLegacyInvoiceUpload = async (e: FormEvent) => {
@@ -565,6 +588,21 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             </div>
             <form onSubmit={handleCreateInvoice}>
               <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Leitura do mês (opcional)</label>
+                <select className="form-select" value={invoiceForm.reading_id} onChange={event => selectInvoiceReading(event.target.value)}>
+                  <option value="">Não vincular a uma leitura</option>
+                  {approvedReadings.map(reading => (
+                    <option key={reading.id} value={reading.id} disabled={Boolean(reading.invoice_id)}>
+                      {reading.reference_month || new Date(reading.captured_at).toISOString().slice(0, 7)} · {formatM3(reading.consumption)} m³
+                      {reading.invoice_id ? ` · já faturada (${reading.invoice_status})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                  Ao selecionar, competência e consumo são preenchidos pela leitura oficial.
+                </div>
+              </div>
+              <div className="form-group" style={{ marginBottom: 16 }}>
                 <label className="form-label">Valor (R$)</label>
                 <input className="form-input" type="number" step="0.01" min="0.01" value={invoiceForm.amount} onChange={e => setInvoiceForm({ ...invoiceForm, amount: e.target.value })} required />
               </div>
@@ -582,7 +620,10 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
               </div>
               <div className="form-group" style={{ marginBottom: 24 }}>
                 <label className="form-label">Data de vencimento</label>
-                <input className="form-input" type="date" value={invoiceForm.due_date} onChange={e => setInvoiceForm({ ...invoiceForm, due_date: e.target.value })} required />
+                <input className="form-input" type="date" min={todayInputDate()} value={invoiceForm.due_date} onChange={e => setInvoiceForm({ ...invoiceForm, due_date: e.target.value })} required />
+                <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                  Esta mesma data será enviada à instituição financeira. Datas passadas não são permitidas.
+                </div>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-ghost" onClick={() => setShowInvoiceModal(false)}>Cancelar</button>

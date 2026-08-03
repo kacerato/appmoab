@@ -2,8 +2,15 @@ import unittest
 import uuid
 from datetime import date
 
+from fastapi import HTTPException
+
 from app.models.invoice import Invoice
-from app.routers.invoices import _clear_efi_payment_data, _merge_efi_raw, _record_invoice_event
+from app.routers.invoices import (
+    _clear_efi_payment_data,
+    _merge_efi_raw,
+    _record_invoice_event,
+    _validate_new_invoice_due_date,
+)
 
 
 class FakeDb:
@@ -20,6 +27,15 @@ class FakeUser:
 
 
 class InvoiceFlowHelperTest(unittest.TestCase):
+    def test_new_manual_invoice_preserves_today_or_future_due_date(self):
+        _validate_new_invoice_due_date(date(2026, 8, 3), today=date(2026, 8, 3))
+        _validate_new_invoice_due_date(date(2026, 8, 20), today=date(2026, 8, 3))
+
+    def test_new_manual_invoice_rejects_past_due_date_instead_of_replacing_it(self):
+        with self.assertRaises(HTTPException) as raised:
+            _validate_new_invoice_due_date(date(2026, 8, 2), today=date(2026, 8, 3))
+        self.assertEqual(raised.exception.status_code, 422)
+
     def test_reopen_helper_clears_old_efi_payment_data(self):
         invoice = Invoice(
             id=uuid.uuid4(),

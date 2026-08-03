@@ -265,6 +265,8 @@ async def list_readings(
         resp.collaborator_name = r.collaborator.name if r.collaborator else None
         resp.hydrometer_code = r.hydrometer.code if r.hydrometer else None
         resp.photo_url = build_public_upload_url(r.photo_url)
+        resp.invoice_id = r.invoice.id if r.invoice else None
+        resp.invoice_status = r.invoice.status if r.invoice else None
         if r.vision_inference:
             inference = r.vision_inference
             resp.vision_predicted_code = inference.predicted_code
