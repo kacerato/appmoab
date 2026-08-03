@@ -17,7 +17,7 @@ from app.models.invoice import Invoice
 from app.models.reading_cycle import ReadingCycle
 from app.models.invoice_event import InvoiceEvent
 from app.models.whatsapp_message import WhatsAppMessage
-from app.services.efi_api import efi_service
+from app.services.efi_api import EfiAPIError, efi_service
 from app.services.payment_receipts import store_efi_payment_receipt
 from app.services.whatsapp_api import whatsapp_service
 
@@ -239,6 +239,14 @@ async def efi_webhook(
     previous_status = invoice.status
     invoice.efi_status = current_status
     invoice.efi_raw_response = detail
+    try:
+        charge = await efi_service.consultar_cobranca(charge_id)
+        expire_at = str(charge.get("expire_at") or "")[:10]
+        if expire_at:
+            from datetime import date
+            invoice.payment_due_date = date.fromisoformat(expire_at)
+    except (EfiAPIError, ValueError):
+        logger.warning("Nao foi possivel sincronizar o vencimento Efí da fatura %s", invoice.id)
     mapped_status = _map_efi_status(current_status, invoice)
     invoice.status = mapped_status
     if invoice.cycle_id and mapped_status in {"paid", "cancelled"}:

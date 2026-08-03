@@ -1127,6 +1127,64 @@ async def update_invoice_due_date(
     return _invoice_response(invoice)
 
 
+@router.post("/{invoice_id}/sync-efi", response_model=InvoiceResponse)
+async def sync_invoice_with_efi(
+    invoice_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Invoice)
+        .options(
+            selectinload(Invoice.customer),
+            selectinload(Invoice.documents),
+            selectinload(Invoice.reading),
+        )
+        .where(Invoice.id == uuid.UUID(invoice_id))
+        .with_for_update()
+    )
+    invoice = result.scalar_one_or_none()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Fatura não encontrada")
+    if not invoice.efi_charge_id:
+        raise HTTPException(status_code=409, detail="Fatura sem cobrança Efí para sincronizar")
+
+    try:
+        provider = await efi_service.consultar_cobranca(invoice.efi_charge_id)
+    except EfiAPIError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"A Efí não respondeu à sincronização: {exc.detail or exc.message}",
+        ) from exc
+
+    previous_provider_due_date = invoice.payment_due_date
+    expire_at = str(provider.get("expire_at") or "")[:10]
+    if expire_at:
+        try:
+            invoice.payment_due_date = date.fromisoformat(expire_at)
+        except ValueError:
+            pass
+    _apply_efi_result(invoice, provider, invoice.payment_due_date)
+    _record_invoice_event(
+        db,
+        invoice=invoice,
+        event_type="efi_charge_synchronized",
+        previous_status=invoice.status,
+        new_status=invoice.status,
+        user=admin,
+        reason="Dados da cobrança consultados diretamente na Efí",
+        payload={
+            "efi_charge_id": invoice.efi_charge_id,
+            "efi_status": invoice.efi_status,
+            "previous_payment_due_date": previous_provider_due_date.isoformat() if previous_provider_due_date else None,
+            "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,
+        },
+    )
+    await db.flush()
+    await db.refresh(invoice)
+    return _invoice_response(invoice)
+
+
 @router.post("/{invoice_id}/refresh-overdue", response_model=InvoiceResponse)
 async def refresh_invoice_overdue_amount(
     invoice_id: str,
