@@ -17,6 +17,7 @@ import {
   FileDown,
   Power,
   RotateCcw,
+  Trash2,
 } from 'lucide-react';
 
 interface Customer {
@@ -661,6 +662,7 @@ export default function HydrometersPage() {
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState<Hydrometer | null>(null);
+  const [editingBaselineDate, setEditingBaselineDate] = useState(new Date().toISOString().slice(0, 10));
   const [saving, setSaving] = useState(false);
   const [statusUpdatingIds, setStatusUpdatingIds] = useState<Set<string>>(() => new Set());
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -742,7 +744,7 @@ export default function HydrometersPage() {
         red_digits: editing.red_digits,
         black_digits: editing.black_digits || null,
         location_description: editing.location_description || null,
-        last_reading_value: editing.last_reading_value,
+        ...(editing.last_reading_date ? { last_reading_value: editing.last_reading_value } : {}),
         is_active: editing.is_active,
       });
       setEditing(null);
@@ -750,6 +752,54 @@ export default function HydrometersPage() {
       notify('Hidrômetro atualizado', 'As informações do medidor foram salvas.', 'success');
     } catch (error: unknown) {
       notify('Falha ao editar hidrômetro', error instanceof Error ? error.message : 'Erro ao salvar hidrômetro.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAdministrativeBaseline = async () => {
+    if (!editing || editing.last_reading_date) return;
+    setSaving(true);
+    try {
+      await api.patch(`/hydrometers/${editing.id}`, {
+        code: editing.code || null,
+        brand: editing.brand || null,
+        model: editing.model || null,
+        red_digits: editing.red_digits,
+        black_digits: editing.black_digits || null,
+        location_description: editing.location_description || null,
+        is_active: editing.is_active,
+      });
+      await api.post(`/hydrometers/${editing.id}/administrative-baseline`, {
+        value: editing.last_reading_value,
+        baseline_date: editingBaselineDate,
+      });
+      setEditing(null);
+      load();
+      loadCustomers();
+      notify('Leitura-base registrada', 'O hidrômetro já está liberado para os próximos ciclos de leitura.', 'success');
+    } catch (error: unknown) {
+      notify('Falha ao registrar leitura-base', error instanceof Error ? error.message : 'Não foi possível concluir a instalação.', 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!editing) return;
+    const confirmed = window.confirm(
+      `Excluir o hidrômetro ${editing.code}? Esta ação só será permitida se não houver leituras ou faturas vinculadas.`
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    try {
+      await api.delete(`/hydrometers/${editing.id}`);
+      setEditing(null);
+      load();
+      loadCustomers();
+      notify('Hidrômetro excluído', 'O cadastro foi removido e o perfil do cliente foi atualizado.', 'success');
+    } catch (error: unknown) {
+      notify('Não foi possível excluir', error instanceof Error ? error.message : 'Erro ao excluir hidrômetro.', 'error');
     } finally {
       setSaving(false);
     }
@@ -991,7 +1041,7 @@ export default function HydrometersPage() {
                         {statusUpdatingIds.has(hydrometer.id) ? <Loader2 size={14} className="spinner" /> : <RotateCcw size={14} />}
                       </button>
                     )}
-                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => setEditing(hydrometer)} title="Editar hidrômetro">
+                    <button className="btn btn-ghost btn-icon btn-sm" onClick={() => { setEditingBaselineDate(new Date().toISOString().slice(0, 10)); setEditing(hydrometer); }} title="Editar hidrômetro">
                       <Pencil size={14} />
                     </button>
                   </div>
@@ -1152,10 +1202,22 @@ export default function HydrometersPage() {
                   <input className="form-input" value={editing.code} onChange={event => setEditing({ ...editing, code: event.target.value.replace(/\D/g, '') })} inputMode="numeric" />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Última leitura base</label>
+                  <label className="form-label">{editing.last_reading_date ? 'Última leitura base' : 'Leitura-base a registrar'}</label>
                   <input className="form-input" type="number" step="0.001" min="0" value={editing.last_reading_value} onChange={event => setEditing({ ...editing, last_reading_value: parseFloat(event.target.value) || 0 })} />
                 </div>
               </div>
+              {!editing.last_reading_date && (
+                <div style={{ marginBottom: 16, padding: 14, borderRadius: 8, background: 'var(--accent-soft)', border: '1px solid rgba(0, 119, 200, 0.18)' }}>
+                  <div style={{ fontWeight: 700, color: 'var(--accent)', marginBottom: 8 }}>Instalação pendente</div>
+                  <div className="form-group">
+                    <label className="form-label">Data da leitura-base</label>
+                    <input className="form-input" type="date" value={editingBaselineDate} max={new Date().toISOString().slice(0, 10)} onChange={event => setEditingBaselineDate(event.target.value)} />
+                  </div>
+                  <div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.5 }}>
+                    Registrar pelo dashboard conclui a instalação sem foto, sem consumo e sem taxa de instalação.
+                  </div>
+                </div>
+              )}
               <div className="form-grid" style={{ marginBottom: 16 }}>
                 <div className="form-group">
                   <label className="form-label">Marca</label>
@@ -1191,7 +1253,15 @@ export default function HydrometersPage() {
                 </select>
               </div>
               <div className="modal-footer">
+                <button type="button" className="btn btn-danger" onClick={handleDelete} disabled={saving} style={{ marginRight: 'auto' }}>
+                  <Trash2 size={15} /> Excluir
+                </button>
                 <button type="button" className="btn btn-ghost" onClick={() => setEditing(null)}>Cancelar</button>
+                {!editing.last_reading_date && (
+                  <button type="button" className="btn btn-secondary" onClick={handleAdministrativeBaseline} disabled={saving || !editingBaselineDate}>
+                    {saving ? <Loader2 size={16} className="spinner" /> : 'Registrar leitura-base'}
+                  </button>
+                )}
                 <button type="submit" className="btn btn-primary" disabled={saving}>
                   {saving ? <Loader2 size={16} className="spinner" /> : 'Salvar'}
                 </button>

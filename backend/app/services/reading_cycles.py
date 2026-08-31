@@ -194,6 +194,7 @@ async def register_administrative_baseline(
         cycle_type="installation",
         status="completed",
     )
+    installation_cycle.status = "completed"
     installation_cycle.completed_at = datetime.now(timezone.utc)
 
     reading = Reading(

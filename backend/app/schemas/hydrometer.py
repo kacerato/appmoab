@@ -49,6 +49,17 @@ class HydrometerUpdate(BaseModel):
     last_reading_value: float | None = None
 
 
+class HydrometerAdministrativeBaselineRequest(BaseModel):
+    value: float = Field(ge=0)
+    baseline_date: date
+
+    @model_validator(mode="after")
+    def validate_baseline_date(self):
+        if self.baseline_date > date.today():
+            raise ValueError("A data da leitura-base nao pode estar no futuro")
+        return self
+
+
 class HydrometerCustomer(BaseModel):
     name: str
     cpf_cnpj: str

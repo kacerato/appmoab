@@ -8,7 +8,7 @@ from io import BytesIO
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,10 +17,13 @@ from app.models.customer import Customer
 from app.models.hydrometer import Hydrometer
 from app.models.invoice import Invoice
 from app.models.invoice_event import InvoiceEvent
+from app.models.reading import Reading
+from app.models.reading_cycle import ReadingCycle
 from app.models.vision_inference import VisionInference
 from app.models.system_setting import SystemSetting
 from app.models.user import User
 from app.schemas.hydrometer import (
+    HydrometerAdministrativeBaselineRequest,
     HydrometerCreate,
     HydrometerIdentifyRequest,
     HydrometerIdentifyResponse,
@@ -1040,3 +1043,104 @@ async def update_hydrometer(
     await db.flush()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
     return updated or hydrometer
+
+
+@router.post("/{hydrometer_id}/administrative-baseline", response_model=HydrometerResponse)
+async def register_existing_hydrometer_baseline(
+    hydrometer_id: str,
+    data: HydrometerAdministrativeBaselineRequest,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == uuid.UUID(hydrometer_id))
+        .with_for_update()
+    )
+    hydrometer = result.scalar_one_or_none()
+    if not hydrometer:
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
+    if hydrometer.last_reading_date is not None:
+        raise HTTPException(status_code=409, detail="Este hidrometro ja possui leitura-base oficial")
+
+    pending_capture = (
+        await db.execute(
+            select(Reading.id).where(
+                Reading.hydrometer_id == hydrometer.id,
+                Reading.status == "pending",
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if pending_capture is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Existe uma captura pendente. Aprove ou rejeite a captura antes de informar a leitura-base no dashboard.",
+        )
+
+    baseline_at = datetime.combine(data.baseline_date, time.min, tzinfo=timezone.utc)
+    if hydrometer.customer:
+        hydrometer.customer.has_hydrometer = True
+    await register_administrative_baseline(
+        db,
+        hydrometer,
+        value=data.value,
+        captured_at=baseline_at,
+        admin_id=admin.id,
+    )
+    updated = await _fetch_hydrometer_response(db, hydrometer.id)
+    return updated or hydrometer
+
+
+@router.delete("/{hydrometer_id}", status_code=204)
+async def delete_hydrometer(
+    hydrometer_id: str,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    result = await db.execute(
+        select(Hydrometer)
+        .options(selectinload(Hydrometer.customer))
+        .where(Hydrometer.id == uuid.UUID(hydrometer_id))
+        .with_for_update()
+    )
+    hydrometer = result.scalar_one_or_none()
+    if not hydrometer:
+        raise HTTPException(status_code=404, detail="Hidrometro nao encontrado")
+
+    reading_ids = select(Reading.id).where(Reading.hydrometer_id == hydrometer.id)
+    cycle_ids = select(ReadingCycle.id).where(ReadingCycle.hydrometer_id == hydrometer.id)
+    has_reading = (
+        await db.execute(select(Reading.id).where(Reading.hydrometer_id == hydrometer.id).limit(1))
+    ).scalar_one_or_none()
+    has_invoice = (
+        await db.execute(
+            select(Invoice.id).where(
+                or_(
+                    Invoice.reading_id.in_(reading_ids),
+                    Invoice.cycle_id.in_(cycle_ids),
+                )
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if has_reading is not None or has_invoice is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Este hidrometro possui leituras ou faturas vinculadas e nao pode ser excluido. Use a opcao de desligar para preservar o historico.",
+        )
+
+    customer = hydrometer.customer
+    await db.delete(hydrometer)
+    await db.flush()
+    if customer:
+        remaining_meter = (
+            await db.execute(
+                select(Hydrometer.id).where(
+                    Hydrometer.customer_id == customer.id,
+                    Hydrometer.id != hydrometer.id,
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if remaining_meter is None:
+            customer.has_hydrometer = False
+    return Response(status_code=204)

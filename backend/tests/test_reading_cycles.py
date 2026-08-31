@@ -126,6 +126,7 @@ class InstallationCycleContractTest(IsolatedAsyncioTestCase):
         assert reading.reading_kind == "installation"
         assert reading.consumption == 0
         assert reading.photo_url == ""
+        assert installation_cycle.status == "completed"
         assert hydrometer.last_reading_value == 90.645
         assert hydrometer.last_reading_date == captured_at
         assert create_cycle.await_args_list[0].kwargs["cycle_type"] == "installation"
