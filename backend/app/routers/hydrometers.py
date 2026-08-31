@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from io import BytesIO
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -39,7 +39,11 @@ from app.services.efi_api import EfiAPIError, efi_service
 from app.services.glm_ocr import GlmOcrError, glm_ocr_service
 from app.services.invoice_whatsapp import enqueue_invoice_whatsapp, dispatch_invoice_notification_task
 from app.services.meter_vision import VisionResult, meter_vision_service
-from app.services.reading_cycles import ensure_actionable_cycle, hydrometer_available_for_field
+from app.services.reading_cycles import (
+    ensure_actionable_cycle,
+    hydrometer_available_for_field,
+    register_administrative_baseline,
+)
 from app.services.vision_decision import fuse_burst_results
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
@@ -947,6 +951,11 @@ async def create_hydrometer(
     if data.black_digits is not None and data.black_digits < 1:
         raise HTTPException(status_code=400, detail="Digitos pretos deve ser maior que zero")
 
+    baseline_at = (
+        datetime.combine(data.baseline_date, time.min, tzinfo=timezone.utc)
+        if data.installation_mode == "dashboard_baseline" and data.baseline_date
+        else datetime.now(timezone.utc)
+    )
     hydrometer = Hydrometer(
         customer_id=data.customer_id,
         code=target_code,
@@ -960,12 +969,27 @@ async def create_hydrometer(
         allowed_radius_meters=data.allowed_radius_meters,
         location_required=data.location_required,
         location_source="manual" if data.latitude is not None and data.longitude is not None else None,
-        last_reading_value=data.initial_reading,
+        last_reading_value=(
+            data.initial_reading
+            if data.installation_mode == "dashboard_baseline"
+            else 0.0
+        ),
+        installed_at=baseline_at,
     )
     db.add(hydrometer)
     await db.flush()
     hydrometer.customer = customer
-    await ensure_actionable_cycle(db, hydrometer)
+    customer.has_hydrometer = True
+    if data.installation_mode == "dashboard_baseline":
+        await register_administrative_baseline(
+            db,
+            hydrometer,
+            value=data.initial_reading,
+            captured_at=baseline_at,
+            admin_id=admin.id,
+        )
+    else:
+        await ensure_actionable_cycle(db, hydrometer)
     created = await _fetch_hydrometer_response(db, hydrometer.id)
     return created or hydrometer
 

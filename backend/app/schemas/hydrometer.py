@@ -1,10 +1,10 @@
 """Schemas de Hidrômetro."""
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HydrometerBase(BaseModel):
@@ -23,7 +23,15 @@ class HydrometerBase(BaseModel):
 
 class HydrometerCreate(HydrometerBase):
     customer_id: UUID
-    initial_reading: float = 0.0
+    initial_reading: float = Field(default=0.0, ge=0)
+    installation_mode: Literal["field_capture", "dashboard_baseline"] = "field_capture"
+    baseline_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_baseline_date(self):
+        if self.baseline_date and self.baseline_date > date.today():
+            raise ValueError("A data da leitura-base nao pode estar no futuro")
+        return self
 
 
 class HydrometerUpdate(BaseModel):

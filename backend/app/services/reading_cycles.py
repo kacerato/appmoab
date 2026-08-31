@@ -172,6 +172,67 @@ async def create_cycle(
     return cycle
 
 
+async def register_administrative_baseline(
+    db: AsyncSession,
+    hydrometer: Hydrometer,
+    *,
+    value: float,
+    captured_at: datetime,
+    admin_id,
+) -> Reading:
+    """Registra uma leitura-base oficial informada pelo gestor, sem gerar cobranca.
+
+    O registro aprovado preserva o historico e evita que a fila de campo trate o
+    medidor como uma instalacao pendente. A cobranca de consumo comeca no ciclo
+    seguinte ao da leitura-base.
+    """
+    reference = reference_month(captured_at.date())
+    installation_cycle = await create_cycle(
+        db,
+        hydrometer,
+        reference=reference,
+        cycle_type="installation",
+        status="completed",
+    )
+    installation_cycle.completed_at = datetime.now(timezone.utc)
+
+    reading = Reading(
+        hydrometer_id=hydrometer.id,
+        collaborator_id=admin_id,
+        cycle_id=installation_cycle.id,
+        current_value=float(value),
+        previous_value=float(value),
+        consumption=0.0,
+        photo_url="",
+        reference_month=reference,
+        reading_kind="installation",
+        location_status="manual_dashboard",
+        captured_at=captured_at,
+        validation_flags=[{
+            "code": "administrative_baseline",
+            "label": "Leitura-base administrativa",
+            "message": "Valor informado pelo gestor no dashboard, sem foto de campo.",
+            "severity": "info",
+        }],
+        status="approved",
+        approved_by=admin_id,
+        approved_at=datetime.now(timezone.utc),
+        review_adjustment_reason="Leitura-base informada na associacao pelo dashboard",
+    )
+    db.add(reading)
+    hydrometer.last_reading_value = float(value)
+    hydrometer.last_reading_date = captured_at
+    await db.flush()
+
+    await create_cycle(
+        db,
+        hydrometer,
+        reference=next_reference_month(reference),
+        cycle_type="water",
+    )
+    return reading
+
+
 async def ensure_actionable_cycle(
     db: AsyncSession,
     hydrometer: Hydrometer,

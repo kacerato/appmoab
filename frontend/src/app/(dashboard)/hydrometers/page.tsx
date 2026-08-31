@@ -23,6 +23,7 @@ interface Customer {
   id: string;
   name: string;
   cpf_cnpj: string;
+  has_hydrometer: boolean;
 }
 
 interface Hydrometer {
@@ -674,6 +675,8 @@ export default function HydrometersPage() {
     black_digits: '',
     location_description: '',
     initial_reading: 0,
+    installation_mode: 'dashboard_baseline' as 'dashboard_baseline' | 'field_capture',
+    baseline_date: new Date().toISOString().slice(0, 10),
   });
 
   const load = () => {
@@ -685,8 +688,13 @@ export default function HydrometersPage() {
   };
 
   const loadCustomers = () => {
-    api.get<{ items: Customer[] }>('/customers/options?has_hydrometer=true&limit=1000')
-      .then(response => setCustomers(response.items))
+    api.get<{ items: Customer[] }>('/customers/options?status=active&limit=1000')
+      .then(response => setCustomers(
+        [...response.items].sort((left, right) =>
+          Number(left.has_hydrometer) - Number(right.has_hydrometer)
+          || left.name.localeCompare(right.name, 'pt-BR')
+        )
+      ))
       .catch(console.error);
   };
 
@@ -708,9 +716,11 @@ export default function HydrometersPage() {
         black_digits: form.black_digits === '' ? null : Number(form.black_digits),
         location_description: form.location_description || null,
         initial_reading: form.initial_reading,
+        installation_mode: form.installation_mode,
+        baseline_date: form.installation_mode === 'dashboard_baseline' ? form.baseline_date : null,
       });
       setShowAdd(false);
-      setForm({ customer_id: '', code: '', brand: '', model: '', red_digits: 3, black_digits: '', location_description: '', initial_reading: 0 });
+      setForm({ customer_id: '', code: '', brand: '', model: '', red_digits: 3, black_digits: '', location_description: '', initial_reading: 0, installation_mode: 'dashboard_baseline', baseline_date: new Date().toISOString().slice(0, 10) });
       load();
       notify('Hidrômetro associado', 'O medidor foi vinculado com sucesso.', 'success');
     } catch (error: unknown) {
@@ -1035,9 +1045,11 @@ export default function HydrometersPage() {
                   onChange={event => setForm({ ...form, customer_id: event.target.value })}
                   required
                 >
-                  <option value="">Selecione um cliente com perfil de medição...</option>
+                  <option value="">Selecione um cliente...</option>
                   {customers.map(customer => (
-                    <option key={customer.id} value={customer.id}>{customer.name} (CPF/CNPJ: {customer.cpf_cnpj})</option>
+                    <option key={customer.id} value={customer.id}>
+                      {customer.name} ({customer.has_hydrometer ? 'já possui hidrômetro' : 'sem hidrômetro'}) — {customer.cpf_cnpj}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -1084,9 +1096,35 @@ export default function HydrometersPage() {
                 <input className="form-input" placeholder="Ex: Muro frontal esquerdo" value={form.location_description} onChange={event => setForm({ ...form, location_description: event.target.value })} />
               </div>
 
-              <div className="form-group" style={{ marginBottom: 24 }}>
-                <label className="form-label">Leitura Inicial (m³)</label>
-                <input className="form-input" type="number" step="0.001" min="0" value={form.initial_reading} onChange={event => setForm({ ...form, initial_reading: parseFloat(event.target.value) })} required />
+              <div className="form-group" style={{ marginBottom: 16 }}>
+                <label className="form-label">Forma de instalação</label>
+                <select
+                  className="form-select"
+                  value={form.installation_mode}
+                  onChange={event => setForm({ ...form, installation_mode: event.target.value as 'dashboard_baseline' | 'field_capture' })}
+                >
+                  <option value="dashboard_baseline">Registrar leitura-base agora pelo dashboard</option>
+                  <option value="field_capture">Aguardar foto e instalação pelo app</option>
+                </select>
+              </div>
+
+              {form.installation_mode === 'dashboard_baseline' && (
+                <div className="form-grid" style={{ marginBottom: 16 }}>
+                  <div className="form-group">
+                    <label className="form-label">Última leitura-base (m³)</label>
+                    <input className="form-input" type="number" step="0.001" min="0" value={form.initial_reading} onChange={event => setForm({ ...form, initial_reading: Number(event.target.value) })} required />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Data da leitura-base</label>
+                    <input className="form-input" type="date" value={form.baseline_date} max={new Date().toISOString().slice(0, 10)} onChange={event => setForm({ ...form, baseline_date: event.target.value })} required />
+                  </div>
+                </div>
+              )}
+
+              <div style={{ marginBottom: 24, padding: 12, borderRadius: 8, background: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.5 }}>
+                {form.installation_mode === 'dashboard_baseline'
+                  ? 'A leitura será oficializada sem consumo e sem taxa de instalação. O próximo ciclo será uma leitura normal; não será necessária captura de instalação no app.'
+                  : 'O hidrômetro aparecerá como instalação pendente no app e a leitura-base só será oficial após a foto e a aprovação do gestor.'}
               </div>
 
               <div className="modal-footer">
