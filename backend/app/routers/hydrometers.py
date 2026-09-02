@@ -47,6 +47,10 @@ from app.services.reading_cycles import (
     hydrometer_available_for_field,
     register_administrative_baseline,
 )
+from app.services.reading_adjustments import (
+    ReadingAdjustmentError,
+    adjust_latest_approved_reading,
+)
 from app.services.vision_decision import fuse_burst_results
 from app.utils.security import get_current_user, require_admin
 from app.utils.storage import build_public_upload_url, decode_base64_upload, save_binary
@@ -1030,6 +1034,7 @@ async def update_hydrometer(
     if "allowed_radius_meters" in update_data and update_data["allowed_radius_meters"] is not None and update_data["allowed_radius_meters"] < 10:
         raise HTTPException(status_code=400, detail="Raio permitido deve ser pelo menos 10 metros")
     _validate_manual_base_adjustment(hydrometer, update_data)
+    adjusted_last_reading = update_data.pop("last_reading_value", None)
     if (
         ("latitude" in update_data or "longitude" in update_data)
         and update_data.get("latitude", hydrometer.latitude) is not None
@@ -1039,6 +1044,16 @@ async def update_hydrometer(
 
     for field, value in update_data.items():
         setattr(hydrometer, field, value)
+
+    if adjusted_last_reading is not None:
+        try:
+            await adjust_latest_approved_reading(
+                db,
+                hydrometer,
+                value=adjusted_last_reading,
+            )
+        except ReadingAdjustmentError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     await db.flush()
     updated = await _fetch_hydrometer_response(db, hydrometer.id)
