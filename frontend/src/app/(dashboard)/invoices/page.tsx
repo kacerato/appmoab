@@ -6,7 +6,8 @@ import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth';
 import Header from '@/components/Header';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
-import { Download, ChevronLeft, ChevronRight, MessageCircleMore, Loader2 } from 'lucide-react';
+import { Download, ChevronLeft, ChevronRight, MessageCircleMore, Loader2, Search, SlidersHorizontal, RefreshCw, X } from 'lucide-react';
+import styles from './invoices.module.css';
 
 interface Invoice {
   id: string;
@@ -54,6 +55,11 @@ function formatDateOnly(value: string | null | undefined) {
   return value ? new Date(`${value}T00:00:00`).toLocaleDateString('pt-BR') : '';
 }
 
+function formatMonth(value: string) {
+  const [year, month] = value.split('-');
+  return month && year ? `${month}/${year}` : value;
+}
+
 export default function InvoicesPage() {
   const router = useRouter();
   const { notify, confirm } = useAppFeedback();
@@ -71,6 +77,7 @@ export default function InvoicesPage() {
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const requestVersion = useRef(0);
   const sendLock = useRef(false);
 
@@ -189,6 +196,7 @@ export default function InvoicesPage() {
 
   const eligible = (data?.items || []).filter(canSend);
   const busy = sendingBatch || sendingId !== null;
+  const monthFilterCount = Number(!!referenceMonth) + Number(!!dueMonth);
   const resetSelection = () => { setSelected([]); setSendFeedback({}); setPage(1); };
 
   const totalPages = data ? Math.ceil(data.total / data.per_page) : 0;
@@ -197,7 +205,7 @@ export default function InvoicesPage() {
     <>
       <Header title="Faturas" subtitle={`${data?.total || 0} registros`} />
 
-      <div className="toolbar">
+      <div className={styles.tabs} aria-label="Status das faturas">
         {[
           { v: '', l: 'Todas' },
           { v: 'upcoming', l: 'A vencer' },
@@ -207,47 +215,55 @@ export default function InvoicesPage() {
           { v: 'overdue', l: 'Vencidas' },
           { v: 'cancelled', l: 'Canceladas' },
         ].map(f => (
-          <button key={f.v} disabled={busy} className={`btn ${filter === f.v ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => { setFilter(f.v); resetSelection(); }}>
+          <button key={f.v} aria-pressed={filter === f.v} disabled={busy} className={`btn ${filter === f.v ? 'btn-primary' : 'btn-secondary'} btn-sm`} onClick={() => { setFilter(f.v); resetSelection(); }}>
             {f.l}
           </button>
         ))}
       </div>
 
-      <p style={{ color: 'var(--text-secondary)', marginBottom: 16 }}>
-        Emitidas (antiga “Enviadas”) indica a cobrança emitida, não o envio por WhatsApp nem a aprovação da leitura.
-        Sem filtro de mês, aparecem referências de todos os meses, inclusive anteriores. Pagas, vencidas e canceladas ficam nas respectivas abas.
-      </p>
-      <div className="toolbar" style={{ alignItems: 'end', flexWrap: 'wrap' }}>
+      <div className={styles.controls}>
+        <form className={styles.search} role="search" onSubmit={e => { e.preventDefault(); setSearch(searchInput.trim()); resetSelection(); }}>
+          <input aria-label="Buscar cliente" value={searchInput} disabled={busy} onChange={e => setSearchInput(e.target.value)} placeholder="Buscar cliente..." />
+          <button className={`btn btn-ghost ${styles.iconButton}`} aria-label="Buscar cliente" title="Buscar cliente" disabled={busy}><Search size={18} /></button>
+        </form>
+        <button className="btn btn-secondary" aria-expanded={filtersOpen} aria-controls="invoice-month-filters" onClick={() => setFiltersOpen(current => !current)}>
+          <SlidersHorizontal size={16} /> Filtros {monthFilterCount > 0 && <span className={styles.count}>{monthFilterCount}</span>}
+        </button>
+        <button className={`btn btn-ghost ${styles.iconButton}`} aria-label="Atualizar faturas" title="Atualizar faturas" disabled={busy || loading} onClick={() => { void load(); }}><RefreshCw size={17} /></button>
+      </div>
+      <div id="invoice-month-filters" className={styles.filters} hidden={!filtersOpen}>
         <label>Referência da fatura
           <input className="form-input" aria-label="Referência da fatura" type="month" value={referenceMonth} disabled={busy} onChange={e => { setReferenceMonth(e.target.value); resetSelection(); }} />
         </label>
         <label>Vencimento do boleto
           <input className="form-input" aria-label="Mês de vencimento do boleto" type="month" value={dueMonth} disabled={busy} onChange={e => { setDueMonth(e.target.value); resetSelection(); }} />
         </label>
-        <form style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }} onSubmit={e => { e.preventDefault(); setSearch(searchInput.trim()); resetSelection(); }}>
-          <label>Cliente<input className="form-input" value={searchInput} disabled={busy} onChange={e => setSearchInput(e.target.value)} placeholder="Nome do cliente" /></label>
-          <button className="btn btn-secondary" disabled={busy}>Buscar</button>
-        </form>
-        <button className="btn btn-ghost" disabled={busy} onClick={() => { setReferenceMonth(''); setDueMonth(''); setSearch(''); setSearchInput(''); resetSelection(); }}>Limpar filtros</button>
-        <button className="btn btn-secondary" disabled={busy || loading} onClick={() => { void load(); }}>Atualizar</button>
       </div>
+      {(monthFilterCount > 0 || search) && (
+        <div className={styles.activeFilters} aria-label="Filtros aplicados">
+          {referenceMonth && <button className={styles.filterChip} disabled={busy} onClick={() => { setReferenceMonth(''); resetSelection(); }} aria-label={`Remover referência ${formatMonth(referenceMonth)}`}>Ref. {formatMonth(referenceMonth)} <X size={13} /></button>}
+          {dueMonth && <button className={styles.filterChip} disabled={busy} onClick={() => { setDueMonth(''); resetSelection(); }} aria-label={`Remover vencimento ${formatMonth(dueMonth)}`}>Venc. {formatMonth(dueMonth)} <X size={13} /></button>}
+          {search && <button className={styles.filterChip} disabled={busy} onClick={() => { setSearch(''); setSearchInput(''); resetSelection(); }} aria-label={`Remover busca por ${search}`}>{search} <X size={13} /></button>}
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setReferenceMonth(''); setDueMonth(''); setSearch(''); setSearchInput(''); resetSelection(); }}>Limpar</button>
+        </div>
+      )}
       {loadError && <p role="alert" style={{ color: 'var(--danger)' }}>Falha ao atualizar: {loadError}. Atualize a lista para continuar.</p>}
-      {isAdmin && (
-        <div className="toolbar" style={{ flexWrap: 'wrap' }}>
+      {isAdmin && selected.length > 0 && (
+        <div className={styles.selectionBar}>
+          <span aria-live="polite"><strong>{selected.length}</strong> {selected.length === 1 ? 'fatura selecionada' : 'faturas selecionadas'}</span>
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setSelected([])}>Desmarcar</button>
           <button className="btn btn-primary" disabled={busy || loading || !!loadError || !selected.length} onClick={sendSelected}>
-            {sendingBatch ? <Loader2 size={18} className="spinner" /> : <MessageCircleMore size={18} />} WhatsApp ({selected.length})
+            {sendingBatch ? <Loader2 size={18} className="spinner" /> : <MessageCircleMore size={18} />} Enviar pelo WhatsApp
           </button>
-          <button className="btn btn-ghost" disabled={busy || !selected.length} onClick={() => setSelected([])}>Limpar seleção</button>
-          <span style={{ color: 'var(--text-muted)' }}>Seleção somente desta página. Uma fatura por linha; não seleciona outras dívidas do cliente.</span>
         </div>
       )}
 
       <div className="table-wrapper">
-        <table className="data-table">
+        <table className={`data-table ${styles.table}`}>
           <thead>
             <tr>
               <th>{isAdmin && <label style={{ display: 'grid', placeItems: 'center', minWidth: 44, minHeight: 44 }}><input type="checkbox" aria-label="Selecionar faturas elegíveis desta página" disabled={busy || loading || !!loadError || !eligible.length} checked={eligible.length > 0 && eligible.every(inv => selected.includes(inv.id))} ref={node => { if (node) node.indeterminate = selected.length > 0 && selected.length < eligible.length; }} onChange={e => setSelected(e.target.checked ? eligible.map(inv => inv.id) : [])} /></label>}</th>
-              <th>Cliente</th><th>Ref</th><th>Consumo</th><th>Valor</th><th>Vencimento do boleto</th><th>Status da fatura</th><th>WhatsApp</th><th>Ações</th>
+              <th>Cliente</th><th>Referência</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>WhatsApp</th><th>Ações</th>
             </tr>
           </thead>
           <tbody>
@@ -260,7 +276,7 @@ export default function InvoicesPage() {
               const canSendWhatsApp = isAdmin && canSend(inv);
 
               return (
-                <tr key={inv.id} onClick={() => router.push(`/faturas/${inv.id}`)} style={{ cursor: 'pointer' }}>
+                <tr key={inv.id} className={selected.includes(inv.id) ? styles.selectedRow : undefined} onClick={() => router.push(`/faturas/${inv.id}`)} style={{ cursor: 'pointer' }}>
                   <td onClick={e => e.stopPropagation()}>{isAdmin && <label style={{ display: 'grid', placeItems: 'center', minWidth: 44, minHeight: 44 }} title={inv.whatsapp_block_reason || 'Selecionar esta fatura'}><input type="checkbox" aria-label={`Selecionar ${inv.customer_name}, referência ${inv.reference_month}`} disabled={busy || !!loadError || !canSendWhatsApp} checked={selected.includes(inv.id)} onChange={e => setSelected(current => e.target.checked ? [...current, inv.id] : current.filter(id => id !== inv.id))} /></label>}</td>
                   <td className="cell-primary">
                     {inv.customer_name}
@@ -270,14 +286,22 @@ export default function InvoicesPage() {
                       </div>
                     )}
                   </td>
-                  <td>{inv.reference_month}</td>
+                  <td>{formatMonth(inv.reference_month)}</td>
                   <td>{inv.consumption_m3.toFixed(2)} m³</td>
                   <td style={{ fontWeight: 700 }}>{fmt(inv.amount)}</td>
                   <td>{formatDateOnly(inv.payment_due_date || inv.due_date)}
-                    {inv.payment_due_date && inv.payment_due_date !== inv.due_date && <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>Dívida original: {formatDateOnly(inv.due_date)}</div>}
+                    {inv.payment_due_date && inv.payment_due_date !== inv.due_date && <div className={styles.secondaryDate}>Original: {formatDateOnly(inv.due_date)}</div>}
                   </td>
                   <td><span className={`badge ${inv.display_status || inv.status}`}>{inv.display_status_label || statusLabel(inv.status)}</span></td>
-                  <td><span>{whatsappLabel(inv.whatsapp_status)}</span><div style={{ fontSize: 12, color: 'var(--text-muted)', maxWidth: 240 }}>{inv.whatsapp_detail || inv.whatsapp_block_reason}</div></td>
+                  <td>
+                    <span className={styles.whatsappStatus}>{whatsappLabel(inv.whatsapp_status)}</span>
+                    {(inv.whatsapp_detail || inv.whatsapp_block_reason) && !['sent', 'delivered', 'read'].includes(inv.whatsapp_status || '') && (
+                      <details className={styles.deliveryDetails} onClick={e => e.stopPropagation()}>
+                        <summary>Detalhes</summary>
+                        <p>{inv.whatsapp_detail || inv.whatsapp_block_reason}</p>
+                      </details>
+                    )}
+                  </td>
                   <td>
                     <div style={{ display: 'flex', gap: 8 }}>
                       {canSendWhatsApp && (
@@ -322,6 +346,6 @@ function canSend(invoice: Invoice) {
 }
 
 function whatsappLabel(status: string | null) {
-  const labels: Record<string, string> = { queued: 'Na fila', sent: 'Enviada', delivered: 'Entregue', read: 'Lida', failed: 'Não enviada' };
-  return status ? labels[status] || status : 'Sem envio registrado';
+  const labels: Record<string, string> = { queued: 'Na fila', sent: 'Enviada', delivered: 'Entregue', read: 'Lida', failed: 'Falha no envio' };
+  return status ? labels[status] || status : 'Não enviada';
 }
