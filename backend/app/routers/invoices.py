@@ -31,6 +31,7 @@ from app.schemas.invoice import (
     InvoiceEventResponse,
     InvoiceAmountUpdate, InvoiceDueDateUpdate, InvoiceOverdueUpdate, InvoiceStatusUpdate,
     InvoiceCancelRequest, InvoiceReopenRequest,
+    InvoiceWhatsAppBatchRequest, InvoiceWhatsAppBatchResponse,
 )
 from app.schemas.invoice_document import InvoiceDocumentResponse, InvoiceDocumentUpload
 from app.services.billing_policy import calculate_overdue_amount, payment_due_date_for_provider
@@ -45,9 +46,11 @@ from app.services.invoice_documents import (
     validate_receipt_upload,
 )
 from app.services.invoice_whatsapp import (
+    MAX_ATTEMPTS,
     dispatch_invoice_notification,
     dispatch_invoice_notification_task,
     enqueue_invoice_whatsapp,
+    invoice_whatsapp_block_reason,
 )
 from app.services.notification_templates import (
     FLOW_NOTIFICATION_TYPES,
@@ -265,7 +268,7 @@ def _invoice_display_status(invoice: Invoice, today: date | None = None) -> tupl
         return "due_today", "Vence hoje", days_until_due
     labels = {
         "pending": "Pendente",
-        "sent": "Enviado",
+        "sent": "Emitida",
         "paid": "Pago",
         "overdue": "Vencido",
         "cancelled": "Cancelado",
@@ -304,6 +307,9 @@ def _invoice_response(invoice: Invoice) -> InvoiceResponse:
         "reading_status",
         "reading_kind",
         "can_reverse_reading",
+        "whatsapp_status",
+        "whatsapp_detail",
+        "whatsapp_block_reason",
     }
     # Construa o contrato apenas com colunas escalares. Isso impede que o
     # Pydantic dispare lazy-load assíncrono de relacionamentos em endpoints que
@@ -338,6 +344,15 @@ def _invoice_response(invoice: Invoice) -> InvoiceResponse:
     return resp
 
 
+def _due_month_range(value: str) -> tuple[date, date]:
+    try:
+        start = date.fromisoformat(f"{value}-01")
+        end = date(start.year + (start.month == 12), start.month % 12 + 1, 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Mês de vencimento inválido; use AAAA-MM.") from exc
+    return start, end
+
+
 async def _get_or_fetch_boleto_pdf(
     db: AsyncSession,
     invoice: Invoice,
@@ -359,6 +374,8 @@ async def list_invoices(
     status: str | None = None,
     customer_id: str | None = None,
     reference_month: str | None = None,
+    due_month: str | None = None,
+    search: str | None = Query(None, max_length=150),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -396,6 +413,7 @@ async def list_invoices(
             Invoice.updated_at,
         ),
         selectinload(Invoice.customer),
+        selectinload(Invoice.reading),
     )
 
     today = date.today()
@@ -409,6 +427,12 @@ async def list_invoices(
         query = query.where(Invoice.customer_id == uuid.UUID(customer_id))
     if reference_month:
         query = query.where(Invoice.reference_month == reference_month)
+    if due_month:
+        start, end = _due_month_range(due_month)
+        boleto_due = func.coalesce(Invoice.payment_due_date, Invoice.due_date)
+        query = query.where(boleto_due >= start, boleto_due < end)
+    if search and search.strip():
+        query = query.where(Invoice.customer.has(Customer.name.ilike(f"%{search.strip()}%")))
 
     count_q = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_q)).scalar() or 0
@@ -418,9 +442,33 @@ async def list_invoices(
     result = await db.execute(query)
     invoices = result.scalars().all()
 
+    # Uma consulta por página, sem carregar todo o histórico de cada cliente.
+    notifications = {}
+    if invoices:
+        deliveries = (await db.execute(
+            select(Notification)
+            .where(
+                Notification.invoice_id.in_([inv.id for inv in invoices]),
+                Notification.channel == "whatsapp",
+                Notification.type == FLOW_NOTIFICATION_TYPES["invoice_generated"],
+            )
+            .order_by(Notification.created_at)
+        )).scalars().all()
+        notifications = {item.invoice_id: item for item in deliveries}
     items = []
     for inv in invoices:
-        items.append(_invoice_response(inv))
+        item = _invoice_response(inv)
+        blocked = invoice_whatsapp_block_reason(inv)
+        item.whatsapp_block_reason = blocked[1] if blocked else None
+        delivery = notifications.get(inv.id)
+        if delivery:
+            item.whatsapp_status = delivery.status
+            item.whatsapp_detail = delivery.error_message
+            if delivery.status in {"sent", "delivered", "read"}:
+                item.whatsapp_block_reason = "Esta fatura já foi enviada pelo WhatsApp."
+            elif delivery.attempt_count >= MAX_ATTEMPTS:
+                item.whatsapp_block_reason = "Limite de tentativas atingido. Verifique o histórico da fatura."
+        items.append(item)
 
     return InvoiceListResponse(items=items, total=total, page=page, per_page=per_page)
 
@@ -1536,6 +1584,58 @@ async def force_emit_boleto(
         raise HTTPException(status_code=500, detail=f"Falha ao emitir cobranca Efí: {str(e)}")
 
 
+@router.post("/send-whatsapp-batch", response_model=InvoiceWhatsAppBatchResponse)
+async def send_invoice_whatsapp_batch(
+    data: InvoiceWhatsAppBatchRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Enfileira apenas as faturas escolhidas; não envia uma rajada no request."""
+    ids = sorted(set(data.invoice_ids))
+    invoices = (await db.execute(
+        select(Invoice)
+        .options(selectinload(Invoice.customer), selectinload(Invoice.reading))
+        .where(Invoice.id.in_(ids))
+        .order_by(Invoice.id)
+        .with_for_update()
+    )).scalars().all()
+    by_id = {invoice.id: invoice for invoice in invoices}
+    items = []
+    notification_ids = []
+    for invoice_id in ids:
+        invoice = by_id.get(invoice_id)
+        blocked = invoice_whatsapp_block_reason(invoice) if invoice else ("invoice_missing", "Fatura não encontrada.")
+        if blocked:
+            items.append(InvoiceWhatsAppDispatchResponse(
+                invoice_id=invoice_id, status="failed", reason=blocked[0], detail=blocked[1],
+            ))
+            continue
+        notification = await enqueue_invoice_whatsapp(
+            db, invoice, source="manual_batch", manual=True, requested_by=admin.id,
+        )
+        if notification.status in {"sent", "delivered", "read"}:
+            status, reason, detail = "sent", "already_sent", "Já enviada; nenhum envio duplicado foi criado."
+        elif notification.attempt_count >= MAX_ATTEMPTS:
+            status, reason, detail = "failed", "retry_exhausted", "Limite de tentativas atingido. Verifique o histórico da fatura."
+        else:
+            status, reason, detail = "queued", "accepted", "Na fila segura de envio."
+            notification_ids.append(str(notification.id))
+            _record_invoice_event(
+                db, invoice=invoice, event_type="whatsapp_invoice_requested", user=admin,
+                payload={"notification_id": str(notification.id), "source": "manual_batch"},
+            )
+        items.append(InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice_id, status=status, reason=reason, detail=detail,
+        ))
+    # Grave antes de iniciar tarefas com outra sessão. O Beat recupera a fila
+    # persistida se o processo cair após o commit.
+    await db.commit()
+    for notification_id in notification_ids:
+        background_tasks.add_task(dispatch_invoice_notification_task, notification_id)
+    return InvoiceWhatsAppBatchResponse(items=items)
+
+
 @router.post("/{invoice_id}/send-whatsapp", response_model=InvoiceWhatsAppDispatchResponse)
 async def send_invoice_whatsapp(
     invoice_id: str,
@@ -1544,13 +1644,20 @@ async def send_invoice_whatsapp(
 ):
     """Tenta enviar ou reenviar a fatura manualmente via WhatsApp com diagnóstico claro."""
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice).options(selectinload(Invoice.customer), selectinload(Invoice.reading)).where(Invoice.id == uuid.UUID(invoice_id))
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
         raise HTTPException(status_code=404, detail="Fatura não encontrada")
 
-    notification = await enqueue_invoice_whatsapp(db, invoice, source="manual_button")
+    blocked = invoice_whatsapp_block_reason(invoice)
+    if blocked:
+        return InvoiceWhatsAppDispatchResponse(
+            invoice_id=invoice.id, status="failed", reason=blocked[0], detail=blocked[1],
+        )
+    notification = await enqueue_invoice_whatsapp(
+        db, invoice, source="manual_button", manual=True, requested_by=admin.id,
+    )
     if not notification:
         return InvoiceWhatsAppDispatchResponse(
             invoice_id=invoice.id,

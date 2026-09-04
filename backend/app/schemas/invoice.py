@@ -51,6 +51,9 @@ class InvoiceResponse(BaseModel):
     reading_status: str | None = None
     reading_kind: str | None = None
     can_reverse_reading: bool = False
+    whatsapp_status: str | None = None
+    whatsapp_detail: str | None = None
+    whatsapp_block_reason: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -118,6 +121,14 @@ class InvoiceWhatsAppDispatchResponse(BaseModel):
     status: str
     reason: str
     detail: str | None = None
+
+
+class InvoiceWhatsAppBatchRequest(BaseModel):
+    invoice_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class InvoiceWhatsAppBatchResponse(BaseModel):
+    items: list[InvoiceWhatsAppDispatchResponse]
 
 
 class InvoiceEventResponse(BaseModel):

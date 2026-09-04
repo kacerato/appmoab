@@ -47,18 +47,40 @@ def _idempotency_key(invoice_id: uuid.UUID) -> str:
     return f"invoice:{invoice_id}:invoice_generated:whatsapp"
 
 
+def invoice_whatsapp_block_reason(invoice: Invoice) -> tuple[str, str] | None:
+    """Validação compartilhada pela seleção manual e pela entrega da fila."""
+    if invoice.status not in {"pending", "sent", "overdue"}:
+        return "invoice_closed", "Fatura paga ou cancelada não pode ser enviada."
+    if invoice.efi_status in {"identified", "approved", "paid", "settled", "canceled", "cancelled"}:
+        return "charge_unavailable", "Cobrança com pagamento identificado ou encerrada na Efí."
+    if invoice.reading_id and (not invoice.reading or invoice.reading.status != "approved"):
+        return "reading_not_approved", "A leitura vinculada precisa estar aprovada."
+    if not invoice.customer or not invoice.customer.phone:
+        return "phone_missing", "Cliente sem telefone cadastrado."
+    if len(whatsapp_service.normalize_phone(invoice.customer.phone)) not in {12, 13}:
+        return "phone_invalid", "Telefone incompleto ou inválido para WhatsApp."
+    if not invoice.efi_charge_id and not invoice.efi_payment_url:
+        return "boleto_missing", "A fatura ainda não possui cobrança emitida na Efí."
+    return None
+
+
 async def enqueue_invoice_whatsapp(
     db: AsyncSession,
     invoice: Invoice,
     *,
     source: str,
     force: bool = False,
+    manual: bool = False,
+    requested_by: uuid.UUID | None = None,
 ) -> Notification | None:
     """Cria ou reaproveita uma unica entrega para a fatura."""
     settings = await _settings(db)
-    if not notification_flow_enabled(settings, "invoice_generated"):
+    if not manual and not notification_flow_enabled(settings, "invoice_generated"):
         return None
 
+    # A notificação pode ainda não existir. Trave a fatura para serializar também
+    # essa primeira inserção entre o botão manual e a aprovação automática.
+    await db.execute(select(Invoice.id).where(Invoice.id == invoice.id).with_for_update())
     key = _idempotency_key(invoice.id)
     existing = (
         await db.execute(select(Notification).where(Notification.idempotency_key == key).with_for_update())
@@ -67,6 +89,14 @@ async def enqueue_invoice_whatsapp(
         if existing.status in {"sent", "delivered", "read"} and not force:
             return existing
         if existing.attempt_count >= MAX_ATTEMPTS and not force:
+            return existing
+        if manual:
+            existing.payload = {
+                **(existing.payload or {}), "manual_requested": True,
+                "source": source, "requested_by": str(requested_by) if requested_by else None,
+            }
+        # Repetir o clique não antecipa backoff, limite de frequência ou pausa.
+        if existing.next_attempt_at is not None and not force:
             return existing
         existing.status = "queued"
         existing.error_message = None
@@ -83,7 +113,11 @@ async def enqueue_invoice_whatsapp(
         idempotency_key=key,
         attempt_count=0,
         next_attempt_at=datetime.now(timezone.utc),
-        payload={"flow_key": "invoice_generated", "source": source, "mode": "pending"},
+        payload={
+            "flow_key": "invoice_generated", "source": source, "mode": "pending",
+            "manual_requested": manual,
+            "requested_by": str(requested_by) if requested_by else None,
+        },
     )
     db.add(notification)
     await db.flush()
@@ -114,6 +148,16 @@ async def _reserve_dispatch_slot(db: AsyncSession) -> tuple[bool, str | None]:
         acquired = (await db.execute(select(func.pg_try_advisory_xact_lock(DISPATCH_ADVISORY_LOCK_ID)))).scalar()
         if acquired is False:
             return False, "Outro envio já está em andamento. Esta fatura continua na fila."
+
+    paused_until = (await db.execute(
+        select(func.max(Notification.next_attempt_at)).where(
+            Notification.channel == "whatsapp",
+            Notification.payload["pause_reason"].as_string() == "account_restricted",
+            Notification.next_attempt_at > datetime.now(timezone.utc),
+        )
+    )).scalar()
+    if paused_until:
+        return False, "Conta temporariamente restrita. Novos envios também aguardam a pausa de segurança."
 
     limit = max(int(runtime_settings.whatsapp_invoice_rate_limit_per_minute), 1)
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -202,7 +246,7 @@ async def dispatch_invoice_notification(
     invoice = (
         await db.execute(
             select(Invoice)
-            .options(selectinload(Invoice.customer))
+            .options(selectinload(Invoice.customer), selectinload(Invoice.reading))
             .where(Invoice.id == notification.invoice_id)
         )
     ).scalar_one_or_none()
@@ -210,31 +254,23 @@ async def dispatch_invoice_notification(
         notification.attempt_count = MAX_ATTEMPTS
         _schedule_retry(notification, "Fatura ou cliente nao encontrado.")
         return {"status": "failed", "reason": "invoice_missing", "detail": notification.error_message}
-    if invoice.status == "cancelled":
+    blocked = invoice_whatsapp_block_reason(invoice)
+    if blocked:
         notification.status = "failed"
-        notification.error_message = "Fatura cancelada nao pode ser enviada."
-        notification.attempt_count = MAX_ATTEMPTS
+        notification.error_message = blocked[1]
         notification.next_attempt_at = None
-        return {"status": "failed", "reason": "invoice_cancelled", "detail": notification.error_message}
+        return {"status": "failed", "reason": blocked[0], "detail": blocked[1]}
+
+    if notification.next_attempt_at and notification.next_attempt_at > datetime.now(timezone.utc) and not force:
+        return {
+            "status": "queued", "reason": "scheduled",
+            "detail": notification.error_message or "Envio agendado na fila segura.",
+        }
 
     source = str((notification.payload or {}).get("source") or "invoice_dispatch")
-    if not invoice.customer.phone:
-        _schedule_retry(notification, "Cliente sem telefone cadastrado.")
-        notification.next_attempt_at = None
-        _event(db, invoice, False, notification, mode="phone_missing", source=source)
-        return {"status": "failed", "reason": "phone_missing", "detail": notification.error_message}
-    if len(whatsapp_service.normalize_phone(invoice.customer.phone)) < 12:
-        _schedule_retry(notification, "Telefone incompleto ou invalido para WhatsApp.")
-        notification.next_attempt_at = None
-        _event(db, invoice, False, notification, mode="phone_invalid", source=source)
-        return {"status": "failed", "reason": "phone_invalid", "detail": notification.error_message}
-    if not invoice.efi_charge_id and not invoice.efi_payment_url:
-        _schedule_retry(notification, "A fatura ainda nao possui cobranca emitida na Efi.")
-        _event(db, invoice, False, notification, mode="boleto_missing", source=source)
-        return {"status": "failed", "reason": "boleto_missing", "detail": notification.error_message}
 
     settings = await _settings(db)
-    if not notification_flow_enabled(settings, "invoice_generated"):
+    if not (notification.payload or {}).get("manual_requested") and not notification_flow_enabled(settings, "invoice_generated"):
         notification.status = "failed"
         notification.error_message = "Fluxo de fatura desativado nas configuracoes."
         notification.next_attempt_at = None
@@ -268,7 +304,7 @@ async def dispatch_invoice_notification(
         charge_type=invoice.charge_type,
         customer_name=invoice.customer.name,
         amount=invoice.amount,
-        due_date=invoice.due_date,
+        due_date=invoice.payment_due_date or invoice.due_date,
         reference_month=invoice.reference_month,
     )
     if invoice.efi_payment_url and invoice.efi_payment_url not in message:
@@ -312,6 +348,7 @@ async def dispatch_invoice_notification(
                 delay_seconds = 5 * 60
             _schedule_operational_wait(notification, detail, delay_seconds=delay_seconds)
             if error_code == "account_restricted":
+                notification.payload = {**(notification.payload or {}), "pause_reason": error_code}
                 await _pause_whatsapp_queue(
                     db,
                     until=datetime.now(timezone.utc) + timedelta(seconds=delay_seconds),
