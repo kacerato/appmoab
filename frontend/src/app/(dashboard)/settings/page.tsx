@@ -80,8 +80,9 @@ function fmt(v: number) {
 
 function routeWindowPreview(settings: Pick<SystemSetting, 'default_due_day' | 'route_window_days_before_due' | 'route_window_days_after_due' | 'route_window_enabled'>) {
   const today = new Date();
-  const dueDay = Math.min(Math.max(settings.default_due_day || 10, 1), 28);
-  const dueDate = new Date(today.getFullYear(), today.getMonth(), dueDay);
+  const dueDay = Math.min(Math.max(settings.default_due_day || 10, 1), 31);
+  const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const dueDate = new Date(today.getFullYear(), today.getMonth(), Math.min(dueDay, lastDay));
   const start = new Date(dueDate);
   start.setDate(start.getDate() - (settings.route_window_days_before_due || 0));
   const end = new Date(dueDate);
@@ -529,10 +530,11 @@ export default function SettingsPage() {
                   className="form-input"
                   type="number"
                   min={1}
-                  max={28}
+                  max={31}
                   value={systemSettings.default_due_day}
                   onChange={e => setSystemSettings(current => ({ ...current, default_due_day: parseInt(e.target.value, 10) || 10 }))}
                 />
+                <small>Se o mês não tiver esse dia, vence no último dia do mês.</small>
               </div>
               <div className="form-group">
                 <label className="form-label">Regra da janela</label>

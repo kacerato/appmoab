@@ -108,7 +108,7 @@ async def _generate_fixed_async():
     from app.services.billing import get_fixed_rate
     from app.models.system_setting import SystemSetting
     from sqlalchemy import select
-    from app.services.billing_policy import payment_due_date_for_provider
+    from app.services.billing_policy import payment_due_date_for_provider, resolve_invoice_due_date
     from app.services.efi_api import efi_service
     from app.services.invoice_whatsapp import dispatch_due_invoice_notifications, enqueue_invoice_whatsapp
 
@@ -141,7 +141,7 @@ async def _generate_fixed_async():
             if existing.scalar_one_or_none():
                 continue
 
-            due_date = date(now.year, now.month, customer.due_day)
+            due_date = resolve_invoice_due_date(now.date(), customer.due_day)
 
             invoice = Invoice(
                 customer_id=customer.id,

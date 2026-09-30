@@ -16,10 +16,11 @@ class OverdueCalculation:
 
 
 def resolve_invoice_due_date(reference: date, due_day: int) -> date:
-    """Mantem a competencia no mes de referencia, mesmo apos o dia de vencimento."""
-    if not 1 <= due_day <= 28:
-        raise ValueError("Dia de vencimento deve ficar entre 1 e 28")
-    return date(reference.year, reference.month, due_day)
+    """Mantem a competencia e limita dias inexistentes ao ultimo dia do mes."""
+    if not 1 <= due_day <= 31:
+        raise ValueError("Dia de vencimento deve ficar entre 1 e 31")
+    last_day = monthrange(reference.year, reference.month)[1]
+    return date(reference.year, reference.month, min(due_day, last_day))
 
 
 def payment_due_date_for_provider(invoice_due_date: date, today: date) -> date:

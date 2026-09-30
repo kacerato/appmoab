@@ -172,7 +172,8 @@ export default function NewCustomerPage() {
           <div className="form-grid">
             <div className="form-group">
               <label className="form-label">Dia de Vencimento</label>
-              <input className="form-input" type="number" min={1} max={28} value={form.due_day} onChange={e => set('due_day', parseInt(e.target.value, 10) || 10)} />
+              <input className="form-input" type="number" min={1} max={31} value={form.due_day} onChange={e => set('due_day', parseInt(e.target.value, 10) || 10)} />
+              <small>Se o mês não tiver esse dia, vence no último dia do mês.</small>
             </div>
             <div className="form-group">
               <label className="form-label">Tipo</label>

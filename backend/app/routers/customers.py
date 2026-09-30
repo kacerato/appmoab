@@ -26,6 +26,7 @@ from app.schemas.customer import (
     CustomerUpdate,
 )
 from app.schemas.customer_attachment import CustomerAttachmentCreate, CustomerAttachmentResponse
+from app.services.billing_policy import resolve_invoice_due_date
 from app.services.hydrometer_codes import get_next_hydrometer_code
 from app.services.reading_cycles import (
     ACTIONABLE_CYCLE_STATUSES,
@@ -45,8 +46,8 @@ class BulkDueDayUpdate(BaseModel):
     @field_validator("due_day")
     @classmethod
     def validate_due_day(cls, value: int) -> int:
-        if not 1 <= value <= 28:
-            raise ValueError("Dia de vencimento deve ser entre 1 e 28")
+        if not 1 <= value <= 31:
+            raise ValueError("Dia de vencimento deve ser entre 1 e 31")
         return value
 
 
@@ -70,7 +71,7 @@ def _active_route_cycles_query():
 
 
 def _resolve_month_date(base_day: int, reference: date) -> date:
-    return date(reference.year, reference.month, base_day)
+    return resolve_invoice_due_date(reference, base_day)
 
 
 def _customer_in_route_window(customer: Customer, settings: SystemSetting, today: date) -> bool:

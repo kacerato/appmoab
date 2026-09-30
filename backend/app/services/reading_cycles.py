@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.hydrometer import Hydrometer
 from app.models.reading import Reading
 from app.models.reading_cycle import ReadingCycle
+from app.services.billing_policy import resolve_invoice_due_date
 
 ACTIONABLE_CYCLE_STATUSES = ("open", "pending_review", "recapture_required")
 
@@ -29,7 +30,7 @@ def reference_month(value: date) -> str:
 
 def reference_due_date(reference: str, due_day: int) -> date:
     year, month = (int(part) for part in reference.split("-", 1))
-    return date(year, month, due_day)
+    return resolve_invoice_due_date(date(year, month, 1), due_day)
 
 
 def next_reference_month(reference: str) -> str:

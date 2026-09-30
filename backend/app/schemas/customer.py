@@ -30,8 +30,8 @@ class CustomerBase(BaseModel):
     @field_validator("due_day")
     @classmethod
     def validate_due_day(cls, value: int) -> int:
-        if not 1 <= value <= 28:
-            raise ValueError("Dia de vencimento deve ser entre 1 e 28")
+        if not 1 <= value <= 31:
+            raise ValueError("Dia de vencimento deve ser entre 1 e 31")
         return value
 
     @field_validator("state")
@@ -91,8 +91,8 @@ class CustomerUpdate(BaseModel):
     @field_validator("due_day")
     @classmethod
     def validate_due_day(cls, value: int | None) -> int | None:
-        if value is not None and not 1 <= value <= 28:
-            raise ValueError("Dia de vencimento deve ser entre 1 e 28")
+        if value is not None and not 1 <= value <= 31:
+            raise ValueError("Dia de vencimento deve ser entre 1 e 31")
         return value
 
 

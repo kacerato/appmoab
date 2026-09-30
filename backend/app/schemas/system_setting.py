@@ -43,8 +43,8 @@ class SystemSettingUpdate(BaseModel):
     @field_validator("default_due_day")
     @classmethod
     def validate_default_due_day(cls, value: int) -> int:
-        if not 1 <= value <= 28:
-            raise ValueError("Dia padrao de vencimento deve ficar entre 1 e 28")
+        if not 1 <= value <= 31:
+            raise ValueError("Dia padrao de vencimento deve ficar entre 1 e 31")
         return value
 
     @field_validator("daily_interest_percent", "late_fee_percent")
