@@ -121,6 +121,8 @@ def save_photo_from_base64(base64_data: str, prefix: str = "reading") -> str:
 
 
 def build_public_upload_url(filepath: str) -> str:
+    if not filepath:
+        return ""
     if filepath.startswith(HISTORICAL_IMPORT_PHOTO_PREFIX):
         return ""
     if filepath.startswith("r2://"):

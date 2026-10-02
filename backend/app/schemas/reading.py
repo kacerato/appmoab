@@ -1,6 +1,6 @@
 """Schemas de Leitura — Upload de foto + dados OCR + aprovação."""
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -53,6 +53,26 @@ class ReadingApprove(BaseModel):
     current_value: float | None = Field(default=None, ge=0)
     confirmed_code: str | None = None
     adjustment_reason: str | None = Field(default=None, max_length=500)
+
+
+class ManualReadingCreate(BaseModel):
+    """Nova leitura de consumo informada pelo cliente ao administrador."""
+    hydrometer_id: UUID
+    cycle_id: UUID
+    expected_previous_value: float = Field(ge=0, allow_inf_nan=False)
+    expected_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    current_value: float = Field(ge=0, allow_inf_nan=False)
+    reading_date: date
+    reason: str = Field(min_length=5, max_length=500)
+    photo_base64: str | None = Field(default=None, max_length=12_000_000)
+    acknowledge_high_consumption: bool = False
+
+    @model_validator(mode="after")
+    def validate_reason(self):
+        self.reason = self.reason.strip()
+        if len(self.reason) < 5:
+            raise ValueError("Informe o motivo da leitura manual")
+        return self
 
 
 class ReadingReject(BaseModel):

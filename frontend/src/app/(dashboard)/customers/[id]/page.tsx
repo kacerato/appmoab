@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, use, FormEvent, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
+import ManualReadingModal from '@/components/ManualReadingModal';
 import { useAppFeedback } from '@/components/AppFeedbackProvider';
 import { api } from '@/lib/api';
 import { fileToDataUrl } from '@/lib/file-base64';
@@ -85,6 +86,7 @@ interface ApprovedReading {
   collaborator_name: string | null;
   invoice_id: string | null;
   invoice_status: string | null;
+  validation_flags: { code: string; label: string; message: string }[];
 }
 
 function fmt(value: number) {
@@ -144,6 +146,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const [adjustingHydrometerId, setAdjustingHydrometerId] = useState<string | null>(null);
   const [adjustingHydrometerValue, setAdjustingHydrometerValue] = useState('');
   const [savingHydrometer, setSavingHydrometer] = useState(false);
+  const [manualHydrometer, setManualHydrometer] = useState<Hydrometer | null>(null);
 
   const [invoiceForm, setInvoiceForm] = useState({
     reading_id: '',
@@ -444,15 +447,18 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           {customer.hydrometers.length === 0 ? (
             <div className="empty-state" style={{ padding: 32 }}><p>{customer.has_hydrometer ? 'Nenhum hidrometro cadastrado' : 'Cliente sem hidrometro'}</p></div>
           ) : customer.hydrometers.map(hydrometer => (
-            <div key={hydrometer.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 12 }}>
+            <div key={hydrometer.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
               <div className="kpi-icon cyan" style={{ width: 36, height: 36 }}><Droplets size={16} /></div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 140 }}>
                 <div style={{ fontWeight: 700, fontSize: 14 }}>{hydrometer.code}</div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   Base atual: {formatM3(hydrometer.last_reading_value)} m³
                   {hydrometer.last_reading_date && ` • ${new Date(hydrometer.last_reading_date).toLocaleDateString('pt-BR')}`}
                 </div>
               </div>
+              <button className="btn btn-primary btn-sm" disabled={!hydrometer.is_active || customer.status !== 'active'} onClick={() => setManualHydrometer(hydrometer)}>
+                Registrar leitura manual
+              </button>
               <button
                 className="btn btn-secondary btn-sm"
                 onClick={() => openHydrometerAdjust(hydrometer)}
@@ -475,18 +481,24 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         </div>
         <div className="table-wrapper" style={{ border: 'none' }}>
           <table className="data-table">
-            <thead><tr><th>Referencia</th><th>Tipo</th><th>Leitura</th><th>Consumo</th><th>Capturada em</th><th>Foto</th></tr></thead>
+            <thead><tr><th>Referencia</th><th>Tipo</th><th>Leitura</th><th>Consumo</th><th>Data da leitura</th><th>Foto</th></tr></thead>
             <tbody>
               {!approvedReadings.length ? (
                 <tr><td colSpan={6}><div className="empty-state" style={{ padding: 24 }}><p>Nenhuma leitura aprovada.</p></div></td></tr>
               ) : approvedReadings.map(reading => (
                 <tr key={reading.id}>
                   <td className="cell-primary">{reading.reference_month || '--'}</td>
-                  <td>{reading.reading_kind === 'installation' ? 'Instalacao' : 'Agua'}</td>
+                  <td>
+                    {reading.reading_kind === 'installation' ? 'Instalacao' : 'Agua'}
+                    {reading.validation_flags?.some(flag => flag.code === 'manual_customer_report') && <div style={{ fontSize: 11, color: 'var(--text-muted)', maxWidth: 180, whiteSpace: 'normal' }}>Manual · informada pelo cliente<br />{reading.validation_flags.find(flag => flag.code === 'manual_customer_report')?.message}</div>}
+                    {reading.invoice_id && <a href={`/faturas/${reading.invoice_id}`} style={{ fontSize: 12 }}>Ver fatura</a>}
+                  </td>
                   <td>{formatM3(reading.current_value)} m³</td>
                   <td>{formatM3(reading.consumption)} m³</td>
                   <td>
-                    {new Date(reading.captured_at).toLocaleString('pt-BR')}
+                    {reading.validation_flags?.some(flag => flag.code === 'manual_customer_report')
+                      ? new Date(reading.captured_at).toLocaleDateString('pt-BR', { timeZone: 'America/Fortaleza' })
+                      : new Date(reading.captured_at).toLocaleString('pt-BR')}
                     {reading.collaborator_name ? <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{reading.collaborator_name}</div> : null}
                   </td>
                   <td>
@@ -495,7 +507,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                         Abrir foto
                       </a>
                     ) : (
-                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Sem foto (importada)</span>
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>Sem foto</span>
                     )}
                   </td>
                 </tr>
@@ -570,7 +582,7 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                   <td className="cell-primary">{inv.reference_month}</td>
                   <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : 'Fixo / Avulso'}</td>
                   <td style={{ fontWeight: 600 }}>{fmt(inv.amount)}</td>
-                  <td>{new Date(inv.due_date).toLocaleDateString('pt-BR')}</td>
+                  <td>{inv.due_date.split('T')[0].split('-').reverse().join('/')}</td>
                   <td><span className={`badge ${inv.display_status || inv.status}`}>{inv.display_status_label || statusLabel(inv.status)}</span></td>
                 </tr>
               ))}
@@ -578,6 +590,13 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
           </table>
         </div>
       </div>
+
+      {manualHydrometer && <ManualReadingModal hydrometer={manualHydrometer} onClose={() => { setManualHydrometer(null); load(); }} onSaved={result => {
+        setManualHydrometer(null);
+        load();
+        notify(result.boleto_status === 'sent' ? 'Leitura manual registrada e boleto emitido' : 'Leitura registrada; boleto pendente de emissão', result.boleto_status === 'sent' ? 'O ciclo foi concluído e a próxima leitura usará a nova base.' : 'A fatura foi criada. Abra a fatura e use Emitir boleto para tentar novamente.', result.boleto_status === 'sent' ? 'success' : 'warning');
+        router.push(`/faturas/${result.invoice_id}`);
+      }} />}
 
       {showInvoiceModal && (
         <div className="modal-overlay">

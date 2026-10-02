@@ -2,15 +2,19 @@
 Router de Leituras — Upload de foto, OCR, validação e aprovação.
 """
 
+import base64
+import binascii
+import io
 import logging
 import math
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from PIL import Image
 
 from app.database import async_session_factory, get_db
 from app.models.reading import Reading
@@ -23,7 +27,7 @@ from app.models.user import User
 from app.models.vision_inference import VisionInference
 from app.schemas.reading import (
     ReadingApprove, ReadingCreate, ReadingOCRResult, ReadingConfirm,
-    ReadingReject, ReadingResponse, ReadingListResponse,
+    ReadingReject, ReadingResponse, ReadingListResponse, ManualReadingCreate,
 )
 from app.services.glm_ocr import glm_ocr_service
 from app.services.billing import calculate_billing
@@ -39,6 +43,7 @@ from app.services.reading_cycles import (
     ensure_actionable_cycle,
     hydrometer_available_for_field,
     is_first_official_reading,
+    get_latest_approved_reading,
     promote_cycle_to_installation,
 )
 from app.utils.security import get_current_user, require_admin
@@ -52,6 +57,7 @@ CRITICAL_DISTANCE_MULTIPLIER = 4
 LOW_ACCURACY_THRESHOLD_METERS = 50.0
 ROLLOVER_PREVIOUS_THRESHOLD = 0.90
 ACTIVE_READING_STATUSES = ("pending", "approved")
+CUSTOMER_TIMEZONE = timezone(timedelta(hours=-3))
 
 
 def _installation_billing_values(settings: SystemSetting) -> tuple[float, float, float]:
@@ -299,6 +305,153 @@ async def list_readings(
     return ReadingListResponse(items=items, total=total, page=page, per_page=per_page)
 
 
+async def _manual_reading_context(db: AsyncSession, hydrometer_id: uuid.UUID, *, lock: bool = False):
+    query = select(Hydrometer).options(selectinload(Hydrometer.customer)).where(Hydrometer.id == hydrometer_id)
+    if lock:
+        query = query.with_for_update()
+    hydrometer = (await db.execute(query)).scalar_one_or_none()
+    if not hydrometer:
+        raise HTTPException(status_code=404, detail="Hidrômetro não encontrado")
+    if not hydrometer_available_for_field(hydrometer):
+        raise HTTPException(status_code=409, detail="Cliente e hidrômetro precisam estar ativos para registrar uma leitura.")
+    latest = await get_latest_approved_reading(db, hydrometer.id)
+    if latest is None or latest.current_value is None:
+        raise HTTPException(status_code=409, detail="Registre a leitura-base de instalação antes de lançar consumo manual.")
+    cycle = await ensure_actionable_cycle(db, hydrometer, lock=lock)
+    if cycle.cycle_type != "water":
+        raise HTTPException(status_code=409, detail="Conclua a instalação antes de registrar uma leitura de consumo.")
+    pending = (await db.execute(select(Reading.id).where(
+        Reading.hydrometer_id == hydrometer.id, Reading.status == "pending",
+    ).limit(1))).scalar_one_or_none()
+    if pending or cycle.status == "pending_review":
+        raise HTTPException(status_code=409, detail="Já existe uma captura aguardando aprovação. Resolva essa captura na aba Leituras antes de lançar outra.")
+    active = (await db.execute(select(Reading.id).where(
+        Reading.cycle_id == cycle.id, Reading.status == "approved",
+    ).limit(1))).scalar_one_or_none()
+    invoice = (await db.execute(select(Invoice.id).where(
+        Invoice.cycle_id == cycle.id, Invoice.status != "cancelled",
+    ).limit(1))).scalar_one_or_none()
+    if active or invoice:
+        raise HTTPException(status_code=409, detail="Este ciclo já possui leitura ou cobrança. Use o registro existente.")
+    return hydrometer, cycle, latest
+
+
+@router.get("/manual-context")
+async def manual_reading_context(
+    hydrometer_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    hydrometer, cycle, latest = await _manual_reading_context(db, hydrometer_id)
+    return {
+        "hydrometer_id": str(hydrometer.id), "cycle_id": str(cycle.id),
+        "reference_month": cycle.reference_month, "due_date": cycle.due_date.isoformat(),
+        "previous_value": latest.current_value,
+        "previous_date": latest.captured_at.astimezone(CUSTOMER_TIMEZONE).date().isoformat(),
+    }
+
+
+def _manual_consumption(hydrometer: Hydrometer, latest: Reading, data: ManualReadingCreate):
+    if not math.isclose(data.expected_previous_value, float(latest.current_value), rel_tol=0, abs_tol=0.0000005):
+        raise HTTPException(status_code=409, detail="A leitura anterior foi alterada. Reabra o lançamento para conferir o novo cálculo.")
+    today = datetime.now(CUSTOMER_TIMEZONE).date()
+    if data.reading_date > today:
+        raise HTTPException(status_code=422, detail="A data da leitura não pode estar no futuro.")
+    if data.reading_date <= latest.captured_at.astimezone(CUSTOMER_TIMEZONE).date():
+        raise HTTPException(status_code=422, detail="A nova leitura deve ter data posterior à última leitura oficial.")
+    if data.current_value >= _rollover_limit(hydrometer):
+        raise HTTPException(status_code=422, detail="O valor excede a capacidade do visor deste hidrômetro.")
+    consumption, _, _, flags = _evaluate_reading(
+        hydrometer=hydrometer, current_value=data.current_value, previous_value=float(latest.current_value),
+        latitude=None, longitude=None, location_accuracy_meters=None,
+    )
+    flags = [flag for flag in flags if flag["code"] != "location_missing"]
+    high_consumption = consumption > max(float(latest.consumption or 0) * 3, 50.0)
+    if high_consumption:
+        flags.append(_flag("consumption_spike", "Consumo elevado", "Consumo acima de 50 m³ e de três vezes o último consumo. Confira o valor informado.", "warning"))
+    flags.append(_flag("manual_customer_report", "Leitura informada pelo cliente", data.reason, "info"))
+    return consumption, flags, high_consumption
+
+
+def _save_manual_photo(photo: str | None) -> str:
+    if not photo:
+        return ""
+    try:
+        header, payload = photo.split(",", 1)
+        if header not in {"data:image/jpeg;base64", "data:image/png;base64", "data:image/webp;base64"}:
+            raise ValueError("Formato de imagem inválido")
+        raw = base64.b64decode(payload, validate=True)
+        if len(raw) > 8 * 1024 * 1024:
+            raise ValueError("Imagem maior que 8 MB")
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.format not in {"JPEG", "PNG", "WEBP"}:
+                raise ValueError("Formato de imagem inválido")
+            image.verify()
+    except (ValueError, binascii.Error, OSError, Image.DecompressionBombError) as exc:
+        raise HTTPException(status_code=422, detail="Envie uma foto JPG, PNG ou WebP válida de até 8 MB.") from exc
+    return save_photo_from_base64(photo, prefix="manual-reading")
+
+
+@router.post("/manual/preview")
+async def preview_manual_reading(
+    data: ManualReadingCreate,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    hydrometer, cycle, latest = await _manual_reading_context(db, data.hydrometer_id)
+    if cycle.id != data.cycle_id:
+        raise HTTPException(status_code=409, detail="O ciclo foi atualizado. Reabra o lançamento manual.")
+    consumption, flags, high = _manual_consumption(hydrometer, latest, data)
+    billing = await calculate_billing(db, consumption)
+    return {
+        "previous_value": latest.current_value, "current_value": data.current_value,
+        "consumption_m3": consumption, "amount": billing.final_amount,
+        "tariff_rate": billing.tariff_rate, "minimum_applied": billing.is_minimum_applied,
+        "reference_month": cycle.reference_month, "due_date": cycle.due_date.isoformat(),
+        "payment_due_date": payment_due_date_for_provider(cycle.due_date, datetime.now(CUSTOMER_TIMEZONE).date()).isoformat(),
+        "validation_flags": flags, "high_consumption": high,
+    }
+
+
+@router.post("/manual", status_code=201)
+async def create_manual_reading(
+    data: ManualReadingCreate,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    # Serializa lançamentos do mesmo medidor; o ciclo da tela impede que um
+    # segundo clique avance silenciosamente para a competência seguinte.
+    hydrometer, cycle, latest = await _manual_reading_context(db, data.hydrometer_id, lock=True)
+    if cycle.id != data.cycle_id:
+        raise HTTPException(status_code=409, detail="Este ciclo já foi concluído ou atualizado. Confira o histórico antes de lançar novamente.")
+    consumption, flags, high = _manual_consumption(hydrometer, latest, data)
+    if high and not data.acknowledge_high_consumption:
+        raise HTTPException(status_code=422, detail="Confirme que revisou o consumo elevado antes de registrar a leitura.")
+    billing = await calculate_billing(db, consumption)
+    if data.expected_amount is None or abs(data.expected_amount - billing.final_amount) > 0.005:
+        raise HTTPException(status_code=409, detail="Confira a prévia atualizada da cobrança antes de confirmar.")
+    reading = Reading(
+        hydrometer_id=hydrometer.id, collaborator_id=admin.id, cycle_id=cycle.id,
+        current_value=None, previous_value=float(latest.current_value), consumption=None,
+        photo_url=_save_manual_photo(data.photo_base64),
+        captured_at=datetime.combine(data.reading_date, time(12), tzinfo=CUSTOMER_TIMEZONE),
+        reference_month=cycle.reference_month, reading_kind="water", status="pending",
+        location_status="manual_dashboard", validation_flags=flags,
+        review_adjustment_reason=data.reason,
+    )
+    reading.hydrometer = hydrometer
+    reading.cycle = cycle
+    reading.vision_inference = None
+    db.add(reading)
+    await db.flush()
+    return await _approve_and_bill_reading(
+        db, reading, admin, background_tasks,
+        ReadingApprove(current_value=data.current_value, adjustment_reason=data.reason),
+        manual=True,
+    )
+
+
 @router.post("", response_model=ReadingOCRResult, status_code=201)
 async def create_reading(
     data: ReadingCreate,
@@ -314,6 +467,7 @@ async def create_reading(
         select(Hydrometer)
         .options(selectinload(Hydrometer.customer))
         .where(Hydrometer.id == data.hydrometer_id)
+        .with_for_update()
     )
     hydrometer = result.scalar_one_or_none()
     if not hydrometer:
@@ -508,6 +662,18 @@ async def approve_reading(
     reading = result.scalar_one_or_none()
     if not reading:
         raise HTTPException(status_code=404, detail="Leitura não encontrada")
+    return await _approve_and_bill_reading(db, reading, admin, background_tasks, data)
+
+
+async def _approve_and_bill_reading(
+    db: AsyncSession,
+    reading: Reading,
+    admin: User,
+    background_tasks: BackgroundTasks,
+    data: ReadingApprove | None,
+    *,
+    manual: bool = False,
+):
     if reading.status != "pending":
         raise HTTPException(status_code=400, detail=f"Leitura já está '{reading.status}'")
 
@@ -562,6 +728,12 @@ async def approve_reading(
             "Este valor inicia o hidrômetro e não representa consumo faturável.",
             "info",
         )]
+    elif manual:
+        consumption, _, _, _ = _evaluate_reading(
+            hydrometer=hydrometer, current_value=float(chosen_value), previous_value=reading.previous_value,
+            latitude=None, longitude=None, location_accuracy_meters=None,
+        )
+        location_status, distance, flags = "manual_dashboard", None, reading.validation_flags
     else:
         consumption, location_status, distance, flags = _evaluate_reading(
             hydrometer=hydrometer,
@@ -621,7 +793,7 @@ async def approve_reading(
 
     # A competencia pertence ao ciclo, nao ao dia em que o gestor aprovou.
     now = datetime.now(timezone.utc)
-    today = now.date()
+    today = now.astimezone(CUSTOMER_TIMEZONE).date() if manual else now.date()
     due_date = cycle.due_date
     ref_month = cycle.reference_month
 
@@ -678,14 +850,26 @@ async def approve_reading(
         event_type="invoice_created_from_reading",
         previous_status=None,
         new_status=invoice.status,
-        reason="Leitura aprovada gerou fatura",
+        reason="Leitura manual informada pelo cliente gerou fatura" if manual else "Leitura aprovada gerou fatura",
         payload={
             "reading_id": str(reading.id),
             "charge_type": charge_type,
             "reference_month": ref_month,
             "is_installation": is_installation_capture,
+            "source": "manual_customer_report" if manual else "reading_approval",
+            "manual_reason": reading.review_adjustment_reason if manual else None,
         },
     ))
+
+    if manual:
+        # Persiste leitura, base, ciclo e fatura juntos antes da chamada externa.
+        # Uma falha/timeout na Efí pode ser retomada na mesma fatura.
+        await db.commit()
+        # A emissão e as tentativas pela tela da fatura compartilham o mesmo
+        # bloqueio; depois de esperar, confira se outra tentativa já emitiu.
+        await db.refresh(invoice, with_for_update=True)
+        if invoice.efi_charge_id or invoice.efi_payment_url:
+            return _reading_invoice_result(reading, invoice)
 
     # Gera cobranca Efí
     try:
@@ -756,14 +940,18 @@ async def approve_reading(
     elif invoice.efi_pdf_url:
         background_tasks.add_task(_persist_invoice_boleto_document, str(invoice.id))
 
+    return _reading_invoice_result(reading, invoice, notification)
+
+
+def _reading_invoice_result(reading: Reading, invoice: Invoice, notification=None) -> dict:
     return {
         "message": "Leitura aprovada e fatura gerada",
         "reading_id": str(reading.id),
         "invoice_id": str(invoice.id),
-        "amount": amount,
-        "consumption_m3": consumption_m3,
-        "tariff_rate": tariff_rate,
-        "charge_type": charge_type,
+        "amount": invoice.amount,
+        "consumption_m3": invoice.consumption_m3,
+        "tariff_rate": invoice.tariff_rate,
+        "charge_type": invoice.charge_type,
         "boleto_status": invoice.status,
         "due_date": invoice.due_date.isoformat(),
         "payment_due_date": invoice.payment_due_date.isoformat() if invoice.payment_due_date else None,

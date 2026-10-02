@@ -1528,7 +1528,7 @@ async def force_emit_boleto(
 ):
     """Emite ou reemite a cobranca Efí para uma fatura existente."""
     result = await db.execute(
-        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id))
+        select(Invoice).options(selectinload(Invoice.customer)).where(Invoice.id == uuid.UUID(invoice_id)).with_for_update()
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
