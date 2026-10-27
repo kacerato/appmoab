@@ -758,7 +758,7 @@ function statusLabel(s: string) {
 }
 
 function chargeTypeLabel(s: string) {
-  const m: Record<string, string> = { water: 'Água', installation: 'Instalação', reconnection: 'Religamento', manual: 'Manual' };
+  const m: Record<string, string> = { water: 'Água', installation: 'Instalação', reconnection: 'Religamento', manual: 'Avulsa', fixed: 'Taxa fixa' };
   return m[s] || s;
 }
 

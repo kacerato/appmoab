@@ -113,7 +113,7 @@ def _attachment_response(attachment: CustomerAttachment) -> CustomerAttachmentRe
 
 
 OPEN_INVOICE_STATUSES = ("pending", "sent", "overdue")
-BILLING_CYCLE_CHARGE_TYPES = ("water", "installation")
+BILLING_CYCLE_CHARGE_TYPES = ("water", "installation", "fixed")
 
 
 def _next_due_date(customer: Customer, today: date) -> date:

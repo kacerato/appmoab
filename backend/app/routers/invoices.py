@@ -193,7 +193,16 @@ def _invoice_charge_message(invoice: Invoice) -> str:
         return f"Cobranca de religacao - Ref: {invoice.reference_month}"
     if invoice.charge_type == "manual":
         return f"Cobranca avulsa - Ref: {invoice.reference_month}"
+    if invoice.charge_type == "fixed":
+        return f"Taxa fixa mensal - Ref: {invoice.reference_month}"
     return f"Fatura de agua - Ref: {invoice.reference_month}"
+
+
+def _manual_invoice_charge_type(reading: Reading | None, requested: str) -> str:
+    """Preserva o tipo pedido; so a leitura vinculada define agua/instalacao."""
+    if reading is None:
+        return requested
+    return "installation" if reading.reading_kind == "installation" else "water"
 
 
 def _invoice_customer_message(settings: SystemSetting, invoice: Invoice) -> str:
@@ -761,7 +770,7 @@ async def create_manual_invoice(
         due_date=data.due_date,
         consumption_m3=reading.consumption if reading else data.consumption_m3,
         tariff_rate=data.tariff_rate,
-        charge_type=("installation" if reading and reading.reading_kind == "installation" else "water") if reading else data.charge_type,
+        charge_type=_manual_invoice_charge_type(reading, data.charge_type),
         status="pending"
     )
     db.add(invoice)

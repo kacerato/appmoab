@@ -186,6 +186,20 @@ async def _repair_cancelled_first_reading_as_installation(conn: AsyncConnection)
     """))
 
 
+async def _reclassify_fixed_rate_invoices(conn: AsyncConnection) -> None:
+    """Separa a taxa fixa dos clientes sem hidrometro das faturas de agua."""
+    await conn.execute(text("""
+        UPDATE invoices invoice
+        SET charge_type = 'fixed'
+        FROM customers customer
+        WHERE customer.id = invoice.customer_id
+          AND customer.has_hydrometer = false
+          AND invoice.charge_type = 'water'
+          AND invoice.reading_id IS NULL
+          AND invoice.consumption_m3 = 0
+    """))
+
+
 async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     """Mantem bancos existentes compatíveis antes de qualquer SELECT ORM."""
     await _add_column_if_missing(conn, "hydrometers", "red_digits INTEGER NOT NULL DEFAULT 3", "red_digits")
@@ -268,6 +282,7 @@ async def ensure_runtime_schema(conn: AsyncConnection) -> None:
     await _add_column_if_missing(conn, "system_settings", "auto_send_invoice_on_approval BOOLEAN NOT NULL DEFAULT true", "auto_send_invoice_on_approval")
     await _add_column_if_missing(conn, "system_settings", "notification_flows JSONB NOT NULL DEFAULT '{}'::jsonb", "notification_flows")
     await _repair_cancelled_first_reading_as_installation(conn)
+    await _reclassify_fixed_rate_invoices(conn)
 
     await _add_column_if_missing(conn, "notifications", "idempotency_key VARCHAR(255)", "idempotency_key")
     await _add_column_if_missing(conn, "notifications", "attempt_count INTEGER NOT NULL DEFAULT 0", "attempt_count")

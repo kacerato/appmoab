@@ -11,6 +11,19 @@ import { ArrowLeft, Calendar, Droplets, Edit2, FileText, Loader2, MapPin, Plus, 
 
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api').replace(/\/api$/, '');
 
+// Espelha BILLING_CYCLE_CHARGE_TYPES do backend: cobrancas que ocupam o ciclo mensal.
+const BILLING_CYCLE_CHARGE_TYPES = ['water', 'installation', 'fixed'];
+
+interface BillingCalculation {
+  consumption_m3: number;
+  tariff_tier_label: string;
+  tariff_rate: number;
+  gross_amount: number;
+  minimum_charge: number;
+  final_amount: number;
+  is_minimum_applied: boolean;
+}
+
 interface CustomerAttachment {
   id: string;
   original_name: string;
@@ -163,11 +176,17 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   });
 
   const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
+  const [autoCalculation, setAutoCalculation] = useState<BillingCalculation | null>(null);
+  const autoAmountEnabled = invoiceForm.auto_amount && Boolean(consumptionValue) && !Number.isNaN(consumptionValue);
+  // Só vale o cálculo do consumo vigente: evita usar a faixa de um valor já alterado.
+  const activeCalculation = autoAmountEnabled && autoCalculation?.consumption_m3 === consumptionValue
+    ? autoCalculation
+    : null;
   const billingReferenceMonth = customer?.next_invoice_reference_month || currentReferenceMonth();
   const currentCycleInvoice = useMemo(
     () => invoices.find(invoice => (
       invoice.reference_month === billingReferenceMonth
-      && (invoice.charge_type === 'water' || invoice.charge_type === 'installation')
+      && BILLING_CYCLE_CHARGE_TYPES.includes(invoice.charge_type)
     )),
     [billingReferenceMonth, invoices],
   );
@@ -226,6 +245,8 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         reference_month: invoiceForm.reference_month,
         due_date: invoiceForm.due_date,
         consumption_m3: consumptionValue || 0,
+        tariff_rate: activeCalculation?.tariff_rate || 0,
+        charge_type: 'manual',
       });
       setShowInvoiceModal(false);
       load();
@@ -329,19 +350,22 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   };
 
   useEffect(() => {
-    if (!invoiceForm.auto_amount || !consumptionValue || Number.isNaN(consumptionValue)) return;
+    if (!autoAmountEnabled) return;
     let active = true;
-    api.get<{ final_amount: number }>(`/tariffs/simulate/${consumptionValue}`)
+    api.get<BillingCalculation>(`/tariffs/simulate/${consumptionValue}`)
       .then(res => {
-        if (active) {
-          setInvoiceForm(current => ({ ...current, amount: res.final_amount.toFixed(2) }));
-        }
+        if (!active) return;
+        setAutoCalculation(res);
+        setInvoiceForm(current => ({ ...current, amount: res.final_amount.toFixed(2) }));
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!active) return;
+        notify('Falha ao calcular pela tabela', 'Informe o valor manualmente ou revise as faixas de tarifa.', 'warning');
+      });
     return () => {
       active = false;
     };
-  }, [invoiceForm.auto_amount, consumptionValue]);
+  }, [autoAmountEnabled, consumptionValue, notify]);
 
   if (loading || !customer) {
     return <div className="loading-page"><div className="spinner" style={{ width: 32, height: 32 }} /></div>;
@@ -632,6 +656,14 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
                   <input type="checkbox" checked={invoiceForm.auto_amount} onChange={e => setInvoiceForm({ ...invoiceForm, auto_amount: e.target.checked })} />
                   Calcular valor automaticamente pela tabela quando houver consumo
                 </label>
+                {autoAmountEnabled && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-muted)' }}>
+                    {activeCalculation
+                      ? `${activeCalculation.tariff_tier_label} · R$ ${activeCalculation.tariff_rate.toFixed(2)}/m³`
+                        + (activeCalculation.is_minimum_applied ? ` · taxa mínima de ${fmt(activeCalculation.minimum_charge)} aplicada` : '')
+                      : 'Calculando pela tabela de tarifas...'}
+                  </div>
+                )}
               </div>
               <div className="form-group" style={{ marginBottom: 16 }}>
                 <label className="form-label">Mes de referencia</label>

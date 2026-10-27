@@ -131,11 +131,13 @@ async def _generate_fixed_async():
         settings = settings_result.scalar_one_or_none() or SystemSetting(id=1)
 
         for customer in customers:
-            # Verifica se já existe fatura do mês
+            # Verifica se já existe a taxa fixa do mês. Uma cobranca avulsa ou de
+            # religamento no mesmo mes nao substitui a taxa fixa, logo nao bloqueia.
             existing = await db.execute(
                 select(Invoice).where(
                     Invoice.customer_id == customer.id,
                     Invoice.reference_month == ref_month,
+                    Invoice.charge_type == "fixed",
                 )
             )
             if existing.scalar_one_or_none():
@@ -152,6 +154,7 @@ async def _generate_fixed_async():
                 original_amount=fixed_rate,
                 reference_month=ref_month,
                 due_date=due_date,
+                charge_type="fixed",
                 status="pending",
             )
             db.add(invoice)

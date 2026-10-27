@@ -96,6 +96,11 @@ def render_invoice_customer_message(
             f"Olá {customer_name}, sua cobrança avulsa "
             f"no valor de {formatted_amount} vence em {formatted_due}."
         )
+    if charge_type == "fixed":
+        return (
+            f"Olá {customer_name}, sua taxa fixa mensal de {reference_month} "
+            f"no valor de {formatted_amount} vence em {formatted_due}."
+        )
 
     return render_notification_message(settings, "invoice_generated", {
         "nome": customer_name,
