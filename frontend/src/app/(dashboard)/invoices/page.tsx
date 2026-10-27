@@ -25,6 +25,7 @@ interface Invoice {
   display_status_label: string | null;
   days_until_due: number | null;
   reference_month: string;
+  charge_type: string;
   has_pdf: boolean;
   efi_pdf_url: string | null;
   efi_payment_url: string | null;
@@ -46,6 +47,14 @@ interface WhatsAppDispatchResult {
   reason: string;
   detail: string | null;
 }
+
+const CHARGE_TYPE_LABELS: Record<string, string> = {
+  water: 'Água',
+  installation: 'Instalação',
+  reconnection: 'Religamento',
+  manual: 'Avulsa',
+  fixed: 'Taxa fixa',
+};
 
 function fmt(v: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v);
@@ -74,6 +83,7 @@ export default function InvoicesPage() {
   const [sendingBatch, setSendingBatch] = useState(false);
   const [referenceMonth, setReferenceMonth] = useState('');
   const [dueMonth, setDueMonth] = useState('');
+  const [chargeType, setChargeType] = useState('');
   const [search, setSearch] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const [loadError, setLoadError] = useState('');
@@ -89,6 +99,7 @@ export default function InvoicesPage() {
       if (filter) params.set('status', filter);
       if (referenceMonth) params.set('reference_month', referenceMonth);
       if (dueMonth) params.set('due_month', dueMonth);
+      if (chargeType) params.set('charge_type', chargeType);
       if (search) params.set('search', search);
       const result = await api.get<ListRes>(`/invoices?${params}`, { skipCache: true });
       if (version !== requestVersion.current) return;
@@ -103,7 +114,7 @@ export default function InvoicesPage() {
     } finally {
       if (version === requestVersion.current) setLoading(false);
     }
-  }, [page, filter, referenceMonth, dueMonth, search]);
+  }, [page, filter, referenceMonth, dueMonth, chargeType, search]);
 
   useEffect(() => {
     load();
@@ -196,7 +207,7 @@ export default function InvoicesPage() {
 
   const eligible = (data?.items || []).filter(canSend);
   const busy = sendingBatch || sendingId !== null;
-  const monthFilterCount = Number(!!referenceMonth) + Number(!!dueMonth);
+  const monthFilterCount = Number(!!referenceMonth) + Number(!!dueMonth) + Number(!!chargeType);
   const resetSelection = () => { setSelected([]); setSendFeedback({}); setPage(1); };
 
   const totalPages = data ? Math.ceil(data.total / data.per_page) : 0;
@@ -238,13 +249,22 @@ export default function InvoicesPage() {
         <label>Vencimento do boleto
           <input className="form-input" aria-label="Mês de vencimento do boleto" type="month" value={dueMonth} disabled={busy} onChange={e => { setDueMonth(e.target.value); resetSelection(); }} />
         </label>
+        <label>Tipo de cobrança
+          <select className="form-select" aria-label="Tipo de cobrança" value={chargeType} disabled={busy} onChange={e => { setChargeType(e.target.value); resetSelection(); }}>
+            <option value="">Todos os tipos</option>
+            {Object.entries(CHARGE_TYPE_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
       </div>
       {(monthFilterCount > 0 || search) && (
         <div className={styles.activeFilters} aria-label="Filtros aplicados">
           {referenceMonth && <button className={styles.filterChip} disabled={busy} onClick={() => { setReferenceMonth(''); resetSelection(); }} aria-label={`Remover referência ${formatMonth(referenceMonth)}`}>Ref. {formatMonth(referenceMonth)} <X size={13} /></button>}
           {dueMonth && <button className={styles.filterChip} disabled={busy} onClick={() => { setDueMonth(''); resetSelection(); }} aria-label={`Remover vencimento ${formatMonth(dueMonth)}`}>Venc. {formatMonth(dueMonth)} <X size={13} /></button>}
+          {chargeType && <button className={styles.filterChip} disabled={busy} onClick={() => { setChargeType(''); resetSelection(); }} aria-label={`Remover tipo ${CHARGE_TYPE_LABELS[chargeType]}`}>{CHARGE_TYPE_LABELS[chargeType]} <X size={13} /></button>}
           {search && <button className={styles.filterChip} disabled={busy} onClick={() => { setSearch(''); setSearchInput(''); resetSelection(); }} aria-label={`Remover busca por ${search}`}>{search} <X size={13} /></button>}
-          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setReferenceMonth(''); setDueMonth(''); setSearch(''); setSearchInput(''); resetSelection(); }}>Limpar</button>
+          <button className="btn btn-ghost btn-sm" disabled={busy} onClick={() => { setReferenceMonth(''); setDueMonth(''); setChargeType(''); setSearch(''); setSearchInput(''); resetSelection(); }}>Limpar</button>
         </div>
       )}
       {loadError && <p role="alert" style={{ color: 'var(--danger)' }}>Falha ao atualizar: {loadError}. Atualize a lista para continuar.</p>}
@@ -263,14 +283,14 @@ export default function InvoicesPage() {
           <thead>
             <tr>
               <th>{isAdmin && <label style={{ display: 'grid', placeItems: 'center', minWidth: 44, minHeight: 44 }}><input type="checkbox" aria-label="Selecionar faturas elegíveis desta página" disabled={busy || loading || !!loadError || !eligible.length} checked={eligible.length > 0 && eligible.every(inv => selected.includes(inv.id))} ref={node => { if (node) node.indeterminate = selected.length > 0 && selected.length < eligible.length; }} onChange={e => setSelected(e.target.checked ? eligible.map(inv => inv.id) : [])} /></label>}</th>
-              <th>Cliente</th><th>Referência</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>WhatsApp</th><th>Ações</th>
+              <th>Cliente</th><th>Referência</th><th>Tipo</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th><th>WhatsApp</th><th>Ações</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9}><div className="loading-page" style={{ height: 200 }}><div className="spinner" /></div></td></tr>
+              <tr><td colSpan={10}><div className="loading-page" style={{ height: 200 }}><div className="spinner" /></div></td></tr>
             ) : !data?.items.length ? (
-              <tr><td colSpan={9}><div className="empty-state"><p>Nenhuma fatura encontrada</p></div></td></tr>
+              <tr><td colSpan={10}><div className="empty-state"><p>Nenhuma fatura encontrada</p></div></td></tr>
             ) : data.items.map(inv => {
               const feedback = sendFeedback[inv.id];
               const canSendWhatsApp = isAdmin && canSend(inv);
@@ -287,7 +307,8 @@ export default function InvoicesPage() {
                     )}
                   </td>
                   <td>{formatMonth(inv.reference_month)}</td>
-                  <td>{inv.consumption_m3.toFixed(2)} m³</td>
+                  <td>{CHARGE_TYPE_LABELS[inv.charge_type] || inv.charge_type}</td>
+                  <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : '—'}</td>
                   <td style={{ fontWeight: 700 }}>{fmt(inv.amount)}</td>
                   <td>{formatDateOnly(inv.payment_due_date || inv.due_date)}
                     {inv.payment_due_date && inv.payment_due_date !== inv.due_date && <div className={styles.secondaryDate}>Original: {formatDateOnly(inv.due_date)}</div>}

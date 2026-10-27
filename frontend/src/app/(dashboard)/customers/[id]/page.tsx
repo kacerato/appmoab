@@ -14,6 +14,16 @@ const API_BASE = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api'
 // Espelha BILLING_CYCLE_CHARGE_TYPES do backend: cobrancas que ocupam o ciclo mensal.
 const BILLING_CYCLE_CHARGE_TYPES = ['water', 'installation', 'fixed'];
 
+const CHARGE_TYPE_LABELS: Record<string, string> = {
+  water: 'Água',
+  installation: 'Instalação',
+  reconnection: 'Religamento',
+  manual: 'Avulsa',
+  fixed: 'Taxa fixa',
+};
+
+type ReconnectMode = 'reading_only' | 'with_fee';
+
 interface BillingCalculation {
   consumption_m3: number;
   tariff_tier_label: string;
@@ -177,6 +187,9 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
 
   const consumptionValue = useMemo(() => parseFloat(invoiceForm.consumption_m3 || '0'), [invoiceForm.consumption_m3]);
   const [autoCalculation, setAutoCalculation] = useState<BillingCalculation | null>(null);
+  const [reconnecting, setReconnecting] = useState<Hydrometer | null>(null);
+  const [reconnectingMode, setReconnectingMode] = useState<ReconnectMode | null>(null);
+  const [reconnectionFee, setReconnectionFee] = useState<number | null>(null);
   const autoAmountEnabled = invoiceForm.auto_amount && Boolean(consumptionValue) && !Number.isNaN(consumptionValue);
   // Só vale o cálculo do consumo vigente: evita usar a faixa de um valor já alterado.
   const activeCalculation = autoAmountEnabled && autoCalculation?.consumption_m3 === consumptionValue
@@ -231,6 +244,27 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       router.push('/clientes');
     } catch (err: unknown) {
       notify('Falha ao excluir cliente', err instanceof Error ? err.message : 'Erro ao excluir.', 'error');
+    }
+  };
+
+  const handleReconnect = async (mode: ReconnectMode) => {
+    if (!reconnecting || reconnectingMode) return;
+    setReconnectingMode(mode);
+    try {
+      await api.post(`/hydrometers/${reconnecting.id}/reconnect`, { mode });
+      setReconnecting(null);
+      load();
+      notify(
+        'Religamento registrado',
+        mode === 'with_fee'
+          ? 'O hidrômetro voltou para leitura e a taxa aparece nas faturas abaixo.'
+          : 'O hidrômetro voltou para leitura sem gerar cobrança.',
+        'success',
+      );
+    } catch (err: unknown) {
+      notify('Falha ao religar', err instanceof Error ? err.message : 'Erro ao religar hidrômetro.', 'error');
+    } finally {
+      setReconnectingMode(null);
     }
   };
 
@@ -348,6 +382,20 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
       setSavingHydrometer(false);
     }
   };
+
+  // A taxa vigente e so informativa no modal: quem cobra de fato e o backend.
+  useEffect(() => {
+    if (!reconnecting || reconnectionFee !== null) return;
+    let active = true;
+    api.get<{ reconnection_fee_amount: number }>('/system-settings')
+      .then(res => {
+        if (active) setReconnectionFee(res.reconnection_fee_amount);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [reconnecting, reconnectionFee]);
 
   useEffect(() => {
     if (!autoAmountEnabled) return;
@@ -474,12 +522,20 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
             <div key={hydrometer.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
               <div className="kpi-icon cyan" style={{ width: 36, height: 36 }}><Droplets size={16} /></div>
               <div style={{ flex: 1, minWidth: 140 }}>
-                <div style={{ fontWeight: 700, fontSize: 14 }}>{hydrometer.code}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontWeight: 700, fontSize: 14 }}>{hydrometer.code}</span>
+                  {!hydrometer.is_active && <span className="badge disconnected">Desligado</span>}
+                </div>
                 <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                   Base atual: {formatM3(hydrometer.last_reading_value)} m³
                   {hydrometer.last_reading_date && ` • ${new Date(hydrometer.last_reading_date).toLocaleDateString('pt-BR')}`}
                 </div>
               </div>
+              {!hydrometer.is_active && (
+                <button className="btn btn-primary btn-sm" onClick={() => setReconnecting(hydrometer)}>
+                  Religar
+                </button>
+              )}
               <button className="btn btn-primary btn-sm" disabled={!hydrometer.is_active || customer.status !== 'active'} onClick={() => setManualHydrometer(hydrometer)}>
                 Registrar leitura manual
               </button>
@@ -597,14 +653,15 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         </div>
         <div className="table-wrapper" style={{ border: 'none' }}>
           <table className="data-table">
-            <thead><tr><th>Referencia</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th></tr></thead>
+            <thead><tr><th>Referencia</th><th>Tipo</th><th>Consumo</th><th>Valor</th><th>Vencimento</th><th>Status</th></tr></thead>
             <tbody>
               {invoices.length === 0 ? (
-                <tr><td colSpan={5}><div className="empty-state" style={{ padding: 24 }}><p>Nenhuma fatura</p></div></td></tr>
+                <tr><td colSpan={6}><div className="empty-state" style={{ padding: 24 }}><p>Nenhuma fatura</p></div></td></tr>
               ) : invoices.map(inv => (
                 <tr key={inv.id} onClick={() => router.push(`/faturas/${inv.id}`)} style={{ cursor: 'pointer' }}>
                   <td className="cell-primary">{inv.reference_month}</td>
-                  <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : 'Fixo / Avulso'}</td>
+                  <td>{CHARGE_TYPE_LABELS[inv.charge_type] || inv.charge_type}</td>
+                  <td>{inv.consumption_m3 > 0 ? `${inv.consumption_m3.toFixed(2)} m³` : '—'}</td>
                   <td style={{ fontWeight: 600 }}>{fmt(inv.amount)}</td>
                   <td>{inv.due_date.split('T')[0].split('-').reverse().join('/')}</td>
                   <td><span className={`badge ${inv.display_status || inv.status}`}>{inv.display_status_label || statusLabel(inv.status)}</span></td>
@@ -621,6 +678,53 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
         notify(result.boleto_status === 'sent' ? 'Leitura manual registrada e boleto emitido' : 'Leitura registrada; boleto pendente de emissão', result.boleto_status === 'sent' ? 'O ciclo foi concluído e a próxima leitura usará a nova base.' : 'A fatura foi criada. Abra a fatura e use Emitir boleto para tentar novamente.', result.boleto_status === 'sent' ? 'success' : 'warning');
         router.push(`/faturas/${result.invoice_id}`);
       }} />}
+
+      {reconnecting && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 420 }} role="dialog" aria-modal="true" aria-labelledby="reconnect-title">
+            <div className="modal-header">
+              <div>
+                <h2 className="modal-title" id="reconnect-title">Religar hidrômetro {reconnecting.code}</h2>
+                <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: 13 }}>
+                  Deseja cobrar a taxa de religamento?
+                </p>
+              </div>
+              <button className="btn btn-ghost btn-icon" onClick={() => setReconnecting(null)} aria-label="Fechar"><X size={20} /></button>
+            </div>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <button
+                className="btn btn-primary"
+                style={{ height: 'auto', padding: 14, textAlign: 'left', justifyContent: 'flex-start' }}
+                disabled={Boolean(reconnectingMode)}
+                onClick={() => handleReconnect('with_fee')}
+              >
+                {reconnectingMode === 'with_fee' ? <Loader2 size={16} className="spinner" /> : (
+                  <span>
+                    <strong>Cobrar a taxa{reconnectionFee !== null ? ` de ${fmt(reconnectionFee)}` : ''}</strong>
+                    <br /><small>Religa e gera o boleto, que aparece nas faturas do cliente.</small>
+                  </span>
+                )}
+              </button>
+              <button
+                className="btn btn-ghost"
+                style={{ height: 'auto', padding: 14, textAlign: 'left', justifyContent: 'flex-start' }}
+                disabled={Boolean(reconnectingMode)}
+                onClick={() => handleReconnect('reading_only')}
+              >
+                {reconnectingMode === 'reading_only' ? <Loader2 size={16} className="spinner" /> : (
+                  <span>
+                    <strong>Religar sem cobrar</strong>
+                    <br /><small style={{ color: 'var(--text-muted)' }}>Volta para leitura sem gerar cobrança.</small>
+                  </span>
+                )}
+              </button>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-ghost" onClick={() => setReconnecting(null)} disabled={Boolean(reconnectingMode)}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showInvoiceModal && (
         <div className="modal-overlay">

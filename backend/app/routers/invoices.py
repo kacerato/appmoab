@@ -186,6 +186,9 @@ def _append_payment_link(message: str, invoice: Invoice) -> str:
     return f"{message}\n\nLink de pagamento: {link}"
 
 
+KNOWN_CHARGE_TYPES = ("water", "installation", "reconnection", "manual", "fixed")
+
+
 def _invoice_charge_message(invoice: Invoice) -> str:
     if invoice.charge_type == "installation":
         return f"Cobranca de instalacao - Ref: {invoice.reference_month}"
@@ -384,6 +387,7 @@ async def list_invoices(
     customer_id: str | None = None,
     reference_month: str | None = None,
     due_month: str | None = None,
+    charge_type: str | None = Query(None, max_length=30),
     search: str | None = Query(None, max_length=150),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -436,6 +440,10 @@ async def list_invoices(
         query = query.where(Invoice.customer_id == uuid.UUID(customer_id))
     if reference_month:
         query = query.where(Invoice.reference_month == reference_month)
+    if charge_type:
+        if charge_type not in KNOWN_CHARGE_TYPES:
+            raise HTTPException(status_code=400, detail="Tipo de cobranca invalido")
+        query = query.where(Invoice.charge_type == charge_type)
     if due_month:
         start, end = _due_month_range(due_month)
         boleto_due = func.coalesce(Invoice.payment_due_date, Invoice.due_date)

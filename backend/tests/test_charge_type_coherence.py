@@ -3,7 +3,11 @@ from datetime import date
 from types import SimpleNamespace
 
 from app.routers.customers import BILLING_CYCLE_CHARGE_TYPES
-from app.routers.invoices import _invoice_charge_message, _manual_invoice_charge_type
+from app.routers.invoices import (
+    KNOWN_CHARGE_TYPES,
+    _invoice_charge_message,
+    _manual_invoice_charge_type,
+)
 from app.services.billing_policy import should_block_overdue_charges_for_late_reading
 from app.services.notification_templates import render_invoice_customer_message
 
@@ -51,6 +55,20 @@ class FixedChargeTypeTest(unittest.TestCase):
         self.assertIn("taxa fixa mensal", message)
         self.assertIn("2026-06", message)
         self.assertIn("10/06/2026", message)
+
+
+class KnownChargeTypesTest(unittest.TestCase):
+    def test_every_charge_type_the_app_creates_is_filterable(self):
+        created_by_the_app = {"water", "installation", "reconnection", "manual", "fixed"}
+        self.assertEqual(set(KNOWN_CHARGE_TYPES), created_by_the_app)
+
+    def test_billing_cycle_types_are_a_subset_of_known_types(self):
+        self.assertTrue(set(BILLING_CYCLE_CHARGE_TYPES).issubset(KNOWN_CHARGE_TYPES))
+
+    def test_every_known_type_has_a_provider_message(self):
+        for charge_type in KNOWN_CHARGE_TYPES:
+            invoice = SimpleNamespace(charge_type=charge_type, reference_month="2026-06")
+            self.assertIn("2026-06", _invoice_charge_message(invoice))
 
 
 class ManualChargeMessageTest(unittest.TestCase):
