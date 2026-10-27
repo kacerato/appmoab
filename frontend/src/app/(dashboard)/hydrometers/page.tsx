@@ -61,7 +61,7 @@ const STICKERS_PER_ROW = 4;
 const STICKER_ROWS_PER_PAGE = 6;
 const STICKER_GAP_MM = 3;
 const PDF_DPI = 300;
-const STICKER_RENDER_SIZE_PX = 900;
+const STICKER_RENDER_SIZE_PX = 600;
 const COMPANY_NAME = 'MAR AZUL SERVIÇOS';
 const COMPANY_SUBTITLE = 'DISTRIBUIÇÃO DE ÁGUA';
 
@@ -557,24 +557,123 @@ const waitForDocumentImages = async (documentRef: Document) => {
   }));
 };
 
-const renderStickerSlot = async (slot: HTMLElement) => {
-  const bounds = slot.getBoundingClientRect();
-  if (!bounds.width || !bounds.height) {
-    throw new Error('A etiqueta não possui dimensões válidas para gerar o PDF.');
-  }
+type Html2CanvasRenderer = typeof import('html2canvas')['default'];
 
-  const { default: html2canvas } = await import('html2canvas');
-  return html2canvas(slot, {
-    backgroundColor: '#ffffff',
-    scale: STICKER_RENDER_SIZE_PX / bounds.width,
-    useCORS: true,
-    allowTaint: false,
-    logging: false,
-    width: bounds.width,
-    height: bounds.height,
-    windowWidth: slot.ownerDocument.documentElement.scrollWidth,
-    windowHeight: slot.ownerDocument.documentElement.scrollHeight,
+const waitForElementImages = async (root: ParentNode) => {
+  await Promise.all(Array.from(root.querySelectorAll('img')).map(image => {
+    if (image.complete && image.naturalWidth > 0) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('Falha ao carregar uma imagem da etiqueta.'));
+    });
+  }));
+};
+
+const renderStickerBatch = async (
+  slots: HTMLElement[],
+  html2canvas: Html2CanvasRenderer,
+) => {
+  if (!slots.length) return [];
+
+  const documentRef = slots[0].ownerDocument;
+  const renderRoot = documentRef.createElement('div');
+  renderRoot.setAttribute('aria-hidden', 'true');
+  Object.assign(renderRoot.style, {
+    position: 'fixed',
+    left: '0',
+    top: '0',
+    zIndex: '2147483647',
+    display: 'grid',
+    gridTemplateColumns: `repeat(${STICKERS_PER_ROW}, ${STICKER_DESIGN_DIAMETER_MM}mm)`,
+    gridAutoRows: `${STICKER_DESIGN_DIAMETER_MM}mm`,
+    gap: '4mm',
+    width: 'max-content',
+    padding: '0',
+    margin: '0',
+    overflow: 'visible',
+    background: '#ffffff',
   });
+
+  const stages = slots.map(slot => {
+    const sticker = slot.querySelector<HTMLElement>('.meter-sticker');
+    if (!sticker) throw new Error('Não foi possível localizar o conteúdo da etiqueta.');
+
+    const stage = documentRef.createElement('div');
+    Object.assign(stage.style, {
+      position: 'relative',
+      width: `${STICKER_DESIGN_DIAMETER_MM}mm`,
+      height: `${STICKER_DESIGN_DIAMETER_MM}mm`,
+      overflow: 'hidden',
+      background: '#ffffff',
+    });
+
+    const clone = sticker.cloneNode(true) as HTMLElement;
+    clone.style.transform = 'none';
+    clone.style.transformOrigin = 'top left';
+    clone.style.boxShadow = 'none';
+    stage.appendChild(clone);
+    renderRoot.appendChild(stage);
+    return stage;
+  });
+
+  documentRef.body.appendChild(renderRoot);
+
+  try {
+    await waitForElementImages(renderRoot);
+    const rootBounds = renderRoot.getBoundingClientRect();
+    const firstStageBounds = stages[0].getBoundingClientRect();
+    if (!rootBounds.width || !rootBounds.height || !firstStageBounds.width) {
+      throw new Error('As etiquetas não possuem dimensões válidas para gerar o PDF.');
+    }
+
+    const renderedBatch = await html2canvas(renderRoot, {
+      backgroundColor: '#ffffff',
+      scale: STICKER_RENDER_SIZE_PX / firstStageBounds.width,
+      useCORS: true,
+      allowTaint: false,
+      logging: false,
+      imageTimeout: 0,
+      width: rootBounds.width,
+      height: rootBounds.height,
+      windowWidth: Math.ceil(rootBounds.width),
+      windowHeight: Math.ceil(rootBounds.height),
+      scrollX: 0,
+      scrollY: 0,
+    });
+
+    const scaleX = renderedBatch.width / rootBounds.width;
+    const scaleY = renderedBatch.height / rootBounds.height;
+
+    return stages.map(stage => {
+      const bounds = stage.getBoundingClientRect();
+      const sourceX = Math.round((bounds.left - rootBounds.left) * scaleX);
+      const sourceY = Math.round((bounds.top - rootBounds.top) * scaleY);
+      const sourceWidth = Math.round(bounds.width * scaleX);
+      const sourceHeight = Math.round(bounds.height * scaleY);
+
+      const stickerCanvas = document.createElement('canvas');
+      stickerCanvas.width = STICKER_RENDER_SIZE_PX;
+      stickerCanvas.height = STICKER_RENDER_SIZE_PX;
+      const context = stickerCanvas.getContext('2d');
+      if (!context) throw new Error('Canvas indisponível para recortar a etiqueta.');
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, stickerCanvas.width, stickerCanvas.height);
+      context.drawImage(
+        renderedBatch,
+        sourceX,
+        sourceY,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        stickerCanvas.width,
+        stickerCanvas.height,
+      );
+      return stickerCanvas;
+    });
+  } finally {
+    renderRoot.remove();
+  }
 };
 
 const createStickerPdf = async (cards: string[], title: string) => {
@@ -605,11 +704,10 @@ const createStickerPdf = async (cards: string[], title: string) => {
     const slots = Array.from(frameDocument.querySelectorAll<HTMLElement>('.sticker-slot'));
     if (!slots.length) throw new Error('Nenhuma etiqueta foi encontrada para gerar o PDF.');
 
-    const renderedStickers: HTMLCanvasElement[] = [];
-    for (const slot of slots) {
-      renderedStickers.push(await renderStickerSlot(slot));
-    }
+    const sheet = frameDocument.querySelector<HTMLElement>('.sheet');
+    if (sheet) sheet.style.display = 'none';
 
+    const { default: html2canvas } = await import('html2canvas');
     const mmToPixels = (millimeters: number) => Math.round((millimeters / 25.4) * PDF_DPI);
     const pageWidthPixels = mmToPixels(210);
     const pageHeightPixels = mmToPixels(297);
@@ -622,7 +720,10 @@ const createStickerPdf = async (cards: string[], title: string) => {
     const stickersPerPage = STICKERS_PER_ROW * STICKER_ROWS_PER_PAGE;
     const pdfPages: PdfJpegPage[] = [];
 
-    for (let pageStart = 0; pageStart < renderedStickers.length; pageStart += stickersPerPage) {
+    for (let pageStart = 0; pageStart < slots.length; pageStart += stickersPerPage) {
+      const pageSlots = slots.slice(pageStart, pageStart + stickersPerPage);
+      const renderedStickers = await renderStickerBatch(pageSlots, html2canvas);
+
       const pageCanvas = document.createElement('canvas');
       pageCanvas.width = pageWidthPixels;
       pageCanvas.height = pageHeightPixels;
@@ -631,22 +732,22 @@ const createStickerPdf = async (cards: string[], title: string) => {
       pageContext.fillStyle = '#ffffff';
       pageContext.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
 
-      renderedStickers
-        .slice(pageStart, pageStart + stickersPerPage)
-        .forEach((sticker, localIndex) => {
-          const column = localIndex % STICKERS_PER_ROW;
-          const row = Math.floor(localIndex / STICKERS_PER_ROW);
-          const x = startX + column * (stickerPixels + gapPixels);
-          const y = startY + row * (stickerPixels + gapPixels);
-          pageContext.drawImage(sticker, x, y, stickerPixels, stickerPixels);
-        });
+      renderedStickers.forEach((sticker, localIndex) => {
+        const column = localIndex % STICKERS_PER_ROW;
+        const row = Math.floor(localIndex / STICKERS_PER_ROW);
+        const x = startX + column * (stickerPixels + gapPixels);
+        const y = startY + row * (stickerPixels + gapPixels);
+        pageContext.drawImage(sticker, x, y, stickerPixels, stickerPixels);
+      });
 
-      const jpegDataUrl = pageCanvas.toDataURL('image/jpeg', 0.98);
+      const jpegDataUrl = pageCanvas.toDataURL('image/jpeg', 0.95);
       pdfPages.push({
         bytes: dataUrlToBytes(jpegDataUrl),
         width: pageCanvas.width,
         height: pageCanvas.height,
       });
+
+      await new Promise(resolve => window.setTimeout(resolve, 0));
     }
 
     return buildPdfBlob(pdfPages);
@@ -654,7 +755,6 @@ const createStickerPdf = async (cards: string[], title: string) => {
     frame.remove();
   }
 };
-
 export default function HydrometersPage() {
   const { notify } = useAppFeedback();
   const [items, setItems] = useState<Hydrometer[]>([]);
